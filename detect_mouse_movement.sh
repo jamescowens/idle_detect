@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Version 3 - 20250304.
+# Version 4 - 20250306.
 
 config_file="$1"
 
@@ -33,16 +33,14 @@ find_mouse_ids() {
     current_x=()
     current_y=()
 
-    search_term="id="
-
     for pointer in "${pointer_array[@]}"; do
 
       mouse_id=$(echo "$pointer" | sed 's/.*id=\([0-9]*\).*/\1/'  | head -n 1)
 
-      if [ ! -z "$mouse_id" ]; then
+      if [[ ! -z "$mouse_id" ]]; then
         mouse_found=1
 
-        echo "mouse_id =" $mouse_id
+        # echo "mouse_id =" $mouse_id
 
         mouse_id_array[${#mouse_id_array[@]}]=$mouse_id
 
@@ -57,27 +55,68 @@ find_mouse_ids() {
     previous_pointer_array_size=$pointer_array_size
   fi
 
-  if ((mouse_found==0)); then
+  if ((mouse_found == 0)); then
     echo "Error: Mouse device not found."
     exit 1
   fi
 }
 
+# Function to check idle time for all logged-in users
+check_all_ttys_idle() {
+  readarray -t idle_seconds_array < <(w -h | awk '{
+    idle = $5;
+    seconds = 0;
 
-source_config
+    if (idle ~ /^[0-9.]+s$/) {
+      gsub(/s/,"",idle);
+      seconds = idle;
+    } else if (idle ~ /^[0-9]+:[0-9]+$/) {
+      split(idle, a, ":");
+      seconds = a[1] * 60 + a[2];
+    } else if (idle ~ /^[0-9]+m$/) {
+      gsub(/m/,"",idle);
+      seconds = idle * 60;
+    } else if (idle ~ /^[0-9]+days$/) {
+      gsub(/days/,"",idle);
+      seconds = idle * 24 * 60 * 60;
+    } else if (idle ~ /[0-9]+:[0-9]+:[0-9]+/) {
+      split(idle, a, ":");
+      seconds = a[1] * 3600 + a[2] * 60 + a[3];
+    } else if (idle ~ /[0-9]+:[0-9]+m$/) {
+      gsub(/m/,"",idle);
+      split(idle, a, ":");
+      seconds = a[1] * 3600 + a[2] * 60 + a[3];
+    } else if (idle ~ /[0-9]+:[0-9]+/ && idle !~ /:/){
+      #In my particular case, when uptime was 1-23:59:00, for example,
+      #the IDLE would print the hours and minutes without :
+      seconds = idle * 3600; #assuming no : means only hours
+    } else {
+      # Handle other cases or print an error
+      seconds = -1;  # Indicate an unhandled format
+    }
 
-sleep "$initial_sleep"
+    print seconds;
+  }'
+  )
 
-previous_pointer_array_size=0
-last_active_state=0
-last_active_time=0
-active_state=0
+  for idle_seconds in ""${idle_seconds_array[@]}""; do
+    idle_seconds_rnd=$(echo "scale=0; $idle_seconds / 1" | bc)
 
-find_mouse_ids
+    if [[ -z "$idle_seconds_rnd" ]] || [[ "$idle_seconds_rnd" -eq -1 ]]; then
+      # User might have just logged out, or other edge case. Skip.
+      continue
+    fi
 
-while true; do
-  source_config
+    if ((idle_seconds_rnd >= inactivity_time_trigger)); then
+      active_state=$((0 | active_state))
+    else
+      active_state=$((1 | active_state))
+    fi
+  done
+}
 
+# Function to check idle time for X session pointers
+check_all_pointers_idle() {
   find_mouse_ids
 
   for mouse_id in "${mouse_id_array[@]}"; do
@@ -101,6 +140,34 @@ while true; do
       fi
     fi
   done
+}
+
+source_config
+
+sleep "$initial_sleep"
+
+previous_pointer_array_size=0
+last_active_state=0
+last_active_time=0
+process_source_config=0
+
+while true; do
+  active_state=0
+
+  # Skip the source config on the first pass, since it was just done before entering the loop.
+  if ((process_source_config == 1)); then
+      source_config
+  else
+      process_source_config=1
+  fi
+
+  if ((monitor_pointers == 1)); then
+      check_all_pointers_idle
+  fi
+
+  if ((monitor_ttys == 1)); then
+      check_all_ttys_idle
+  fi
 
   if ((active_state != last_active_state)); then
     if ((active_state == 0)); then
