@@ -2,15 +2,6 @@
 
 password=$(cat /var/lib/boinc/gui_rpc_auth.cfg);
 
-boinccmd --host localhost:31418 --passwd $password --set_run_mode never
+boinccmd --host localhost --passwd $password --set_run_mode never
 
-password=$(cat /var/lib/boinc_2/gui_rpc_auth.cfg);
-
-boinccmd --host localhost:31420 --passwd $password --set_run_mode never
-
-password=$(cat /var/lib/boinc_3/gui_rpc_auth.cfg);
-
-boinccmd --host localhost:31422 --passwd $password --set_run_mode never
-
-#FAHClient --send-pause
-
+echo "Set BOINC client to run mode \"never\"."
