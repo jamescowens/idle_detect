@@ -4,7 +4,7 @@ Description=BOINC Idle Detection Service
 [Service]
 Type=simple
 ProtectHome=false
-ExecStart=/usr/local/bin/detect_mouse_movement.sh /home/jco/.config/boinc_idle_detect.conf
+ExecStart=/usr/local/bin/idle_detect.sh /home/jco/.config/idle_detect.conf
 
 [Install]
 WantedBy=default.target

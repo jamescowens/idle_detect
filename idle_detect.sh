@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "detect_mouse_movement.sh version 5 - 202503010."
+echo "idle_detect.sh version 5 - 202503010."
 
 config_file="$1"
 
