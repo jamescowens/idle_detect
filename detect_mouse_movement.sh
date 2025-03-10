@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "detect_mouse_movement.sh version 4 - 202503010."
+echo "detect_mouse_movement.sh version 5 - 202503010."
 
 config_file="$1"
 
@@ -25,51 +25,105 @@ debug_echo() {
   fi
 }
 
+# Function to check for executable existence
+check_executable() {
+  local executable="$1"
+
+  if command -v "$executable" &> /dev/null; then
+    debug_echo "Executable '$executable' found."
+    return 0 # Success
+  else
+    echo "ERROR: Executable '$executable' not found."
+    return 1 # Failure
+  fi
+}
+
+
+check_gui_session_type() {
+  # Check the DISPLAY environment variable
+  if [[ -n "$DISPLAY" ]]; then
+    # DISPLAY is set, indicating a graphical session
+
+    # Check for Wayland
+    if [[ -n "$WAYLAND_DISPLAY" ]]; then
+      echo "WAYLAND"
+    elif [[ -n "$XDG_SESSION_TYPE" && "$XDG_SESSION_TYPE" == "wayland" ]]; then
+      echo "WAYLAND_XDG"
+    # Check for X11
+    elif [[ -n "$WINDOWID" ]]; then
+      echo "X11"
+    elif [[ -n "$XAUTHORITY" ]]; then
+      echo "X11_XAUTHORITY"
+    else
+      #If DISPLAY is set, but no other environment variable indicates wayland or X11, it is likely X11.
+      echo "X11_LIKELY"
+    fi
+
+  else
+    # DISPLAY is not set, indicating a text-based session
+    echo "TTY"
+  fi
+}
+
 # Get the ID of the mouse device(s). Initialize the sparse location arrays with zeroes for the valid mouse pointers.
 find_mouse_ids() {
-  readarray -t pointer_array < <(xinput list | grep -i "slave.*pointer")
+  display_type="$(check_gui_session_type)"
 
-  pointer_array_size=${#pointer_array[@]}
+  debug_echo "display_type =" "$display_type"
 
-  # This theoretically could fail if someone were to remove and then add a device within
-  # one second so that the device count remains the same, but the mouse_id shifts; however,
-  # this is highly improbable, and not worth the extra CPU expense to run this without
-  # condition.
-  if ((pointer_array_size != previous_pointer_array_size)); then
-    mouse_found=0
+  if [[ "$display_type" -eq "X11" ]] || [[ "$display_type" -eq "X11_XAUTHORITY" ]] || [[ "$display_type" -eq "X11_LIKELY" ]]; then
+    if check_executable "xinput"; then
 
-    mouse_id_array=()
-    old_x=()
-    old_y=()
-    current_x=()
-    current_y=()
+      readarray -t pointer_array < <(xinput list | grep -i "slave.*pointer")
 
-    for pointer in "${pointer_array[@]}"; do
+      pointer_array_size=${#pointer_array[@]}
 
-      mouse_id=$(echo "$pointer" | sed 's/.*id=\([0-9]*\).*/\1/'  | head -n 1)
+      # This theoretically could fail if someone were to remove and then add a device within
+      # one second so that the device count remains the same, but the mouse_id shifts; however,
+      # this is highly improbable, and not worth the extra CPU expense to run this without
+      # condition.
+      if ((pointer_array_size != previous_pointer_array_size)); then
+        mouse_found=0
 
-      if [[ ! -z "$mouse_id" ]]; then
-        mouse_found=1
+        mouse_id_array=()
+        old_x=()
+        old_y=()
+        current_x=()
+        current_y=()
 
-        debug_echo "mouse_id =" $mouse_id
+        for pointer in "${pointer_array[@]}"; do
 
-        # Note these are sparse arrays.
-        mouse_id_array[${#mouse_id_array[@]}]=$mouse_id
+          mouse_id=$(echo "$pointer" | sed 's/.*id=\([0-9]*\).*/\1/'  | head -n 1)
 
-        old_x[$mouse_id]=0
-        old_y[$mouse_id]=0
+          if [[ ! -z "$mouse_id" ]]; then
+            mouse_found=1
 
-        current_x[$mouse_id]=0
-        current_y[$mouse_id]=0
+            debug_echo "mouse_id =" $mouse_id
+
+            # Note these are sparse arrays.
+            mouse_id_array[${#mouse_id_array[@]}]=$mouse_id
+
+            old_x[$mouse_id]=0
+            old_y[$mouse_id]=0
+
+            current_x[$mouse_id]=0
+            current_y[$mouse_id]=0
+          fi
+        done
+
+        previous_pointer_array_size=$pointer_array_size
+
+        if ((mouse_found == 0)); then
+          return 1
+        else
+          return 0
+        fi
+
       fi
-    done
-
-    previous_pointer_array_size=$pointer_array_size
-  fi
-
-  if ((mouse_found == 0)); then
-    echo "Error: Mouse device not found."
-    exit 1
+    else
+      # xinput missing for X session is a hard failure.
+      return 2
+    fi
   fi
 }
 
@@ -77,57 +131,69 @@ find_mouse_ids() {
 check_all_ttys_idle() {
   debug_echo "check_all_ttys_idle"
 
-  readarray -t idle_seconds_array < <(w -h | awk '{
-    idle = $5;
-    seconds = 0;
+  local status=0
 
-    if (idle ~ /^[0-9.]+s$/) {
-      gsub(/s/,"",idle);
-      seconds = idle;
-    } else if (idle ~ /^[0-9]+:[0-9]+$/) {
-      split(idle, a, ":");
-      seconds = a[1] * 60 + a[2];
-    } else if (idle ~ /^[0-9]+m$/) {
-      gsub(/m/,"",idle);
-      seconds = idle * 60;
-    } else if (idle ~ /^[0-9]+days$/) {
-      gsub(/days/,"",idle);
-      seconds = idle * 24 * 60 * 60;
-    } else if (idle ~ /[0-9]+:[0-9]+:[0-9]+/) {
-      split(idle, a, ":");
-      seconds = a[1] * 3600 + a[2] * 60 + a[3];
-    } else if (idle ~ /[0-9]+:[0-9]+m$/) {
-      gsub(/m/,"",idle);
-      split(idle, a, ":");
-      seconds = a[1] * 3600 + a[2] * 60 + a[3];
-    } else if (idle ~ /[0-9]+:[0-9]+/ && idle !~ /:/){
-      #In my particular case, when uptime was 1-23:59:00, for example,
-      #the IDLE would print the hours and minutes without :
-      seconds = idle * 3600; #assuming no : means only hours
-    } else {
-      # Handle other cases or print an error
-      seconds = -1;  # Indicate an unhandled format
-    }
+  if check_executable "w"; then
 
-    print seconds;
-  }'
-  )
+    readarray -t idle_seconds_array < <(w -h | awk '{
+      idle = $5;
+      seconds = 0;
 
-  for idle_seconds in ""${idle_seconds_array[@]}""; do
-    idle_seconds_rnd=$(echo "scale=0; $idle_seconds / 1" | bc)
+      if (idle ~ /^[0-9.]+s$/) {
+        gsub(/s/,"",idle);
+        seconds = idle;
+      } else if (idle ~ /^[0-9]+:[0-9]+$/) {
+        split(idle, a, ":");
+        seconds = a[1] * 60 + a[2];
+      } else if (idle ~ /^[0-9]+m$/) {
+        gsub(/m/,"",idle);
+        seconds = idle * 60;
+      } else if (idle ~ /^[0-9]+days$/) {
+        gsub(/days/,"",idle);
+        seconds = idle * 24 * 60 * 60;
+      } else if (idle ~ /[0-9]+:[0-9]+:[0-9]+/) {
+        split(idle, a, ":");
+        seconds = a[1] * 3600 + a[2] * 60 + a[3];
+      } else if (idle ~ /[0-9]+:[0-9]+m$/) {
+        gsub(/m/,"",idle);
+        split(idle, a, ":");
+        seconds = a[1] * 3600 + a[2] * 60 + a[3];
+      } else if (idle ~ /[0-9]+:[0-9]+/ && idle !~ /:/){
+        #In my particular case, when uptime was 1-23:59:00, for example,
+        #the IDLE would print the hours and minutes without :
+        seconds = idle * 3600; #assuming no : means only hours
+      } else {
+        # Handle other cases or print an error
+        seconds = -1;  # Indicate an unhandled format
+      }
 
-    if [[ -z "$idle_seconds_rnd" ]] || [[ "$idle_seconds_rnd" -eq -1 ]]; then
-      # User might have just logged out, or other edge case. Skip.
-      echo "WARNING: detect_mouse_movement.sh: tty activity detection encountered an unknown time format or other unknown error."
-      continue
-    fi
+      print seconds;
+    }'
+    )
 
-    if ((idle_seconds_rnd >= inactivity_time_trigger)); then
-      active_state=$((0 | active_state))
-    else
-      active_state=$((1 | active_state))
-    fi
-  done
+    for idle_seconds in ""${idle_seconds_array[@]}""; do
+      idle_seconds_rnd=$(echo "scale=0; $idle_seconds / 1" | bc)
+
+      if [[ -z "$idle_seconds_rnd" ]] || [[ "$idle_seconds_rnd" -eq -1 ]]; then
+        # User might have just logged out, or other edge case. Skip.
+        echo "WARNING: tty activity detection encountered an unknown time format or other unknown error."
+
+        status=1
+
+        continue
+      fi
+
+      if ((idle_seconds_rnd >= inactivity_time_trigger)); then
+        active_state=$((0 | active_state))
+      else
+        active_state=$((1 | active_state))
+      fi
+    done
+  else
+    status=2
+  fi
+
+  return $status
 }
 
 # Function to check idle time for X session pointers
@@ -135,6 +201,14 @@ check_all_pointers_idle() {
   debug_echo "check_all_pointers_idle"
 
   find_mouse_ids
+
+  local result=$?
+
+  if [[ $result -eq 2 ]]; then
+    return 2
+  elif [[ $result -eq 1 ]]; then
+    return 1
+  fi
 
   for mouse_id in "${mouse_id_array[@]}"; do
     # Note this contains more text than just the coordinates, but we don't care, because
@@ -162,7 +236,11 @@ check_all_pointers_idle() {
     debug_echo "set active_state=0"
     active_state=0
   fi
+
+  return 0
 }
+
+# This is the main execution below.
 
 source_config
 
@@ -175,7 +253,6 @@ last_active_time=0
 process_source_config=0
 
 while true; do
-
   # Skip the source config on the first pass, since it was just done before entering the loop.
   if ((process_source_config == 1)); then
     source_config
@@ -185,10 +262,24 @@ while true; do
 
   if ((monitor_pointers == 1)); then
     check_all_pointers_idle
+
+    if [[ $? -eq 2 ]]; then
+      exit 1
+    fi
   fi
 
   if ((monitor_ttys == 1)); then
+    # Monitor pointers acts as the reset for the active_state for each loop
+    # if both are enabled. If monitor_pointers is false, then the reset is here
+    if ((monitor_pointers == 0)); then
+      active_state=0
+    fi
+
     check_all_ttys_idle
+
+    if [[ $? -eq 2 ]]; then
+      exit 1
+    fi
   fi
 
   if ((active_state != last_active_state)); then
