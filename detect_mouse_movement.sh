@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Version 4 - 20250308.
+echo "detect_mouse_movement.sh version 4 - 202503010."
 
 config_file="$1"
 
@@ -10,11 +10,11 @@ timestamp() {
 
 # Source the config file
 source_config() {
-  debug_echo "source_config"
   current_mtime=$(stat -c %Y "$config_file")
 
   if [ "$previous_mtime" != "$current_mtime" ]; then
     source "$config_file"
+    debug_echo "source_config"
     previous_mtime="$current_mtime"
   fi
 }
@@ -31,7 +31,11 @@ find_mouse_ids() {
 
   pointer_array_size=${#pointer_array[@]}
 
-  if ((pointer_array_size!=previous_pointer_array_size)); then
+  # This theoretically could fail if someone were to remove and then add a device within
+  # one second so that the device count remains the same, but the mouse_id shifts; however,
+  # this is highly improbable, and not worth the extra CPU expense to run this without
+  # condition.
+  if ((pointer_array_size != previous_pointer_array_size)); then
     mouse_found=0
 
     mouse_id_array=()
@@ -49,6 +53,7 @@ find_mouse_ids() {
 
         debug_echo "mouse_id =" $mouse_id
 
+        # Note these are sparse arrays.
         mouse_id_array[${#mouse_id_array[@]}]=$mouse_id
 
         old_x[$mouse_id]=0
@@ -113,6 +118,7 @@ check_all_ttys_idle() {
 
     if [[ -z "$idle_seconds_rnd" ]] || [[ "$idle_seconds_rnd" -eq -1 ]]; then
       # User might have just logged out, or other edge case. Skip.
+      echo "WARNING: detect_mouse_movement.sh: tty activity detection encountered an unknown time format or other unknown error."
       continue
     fi
 
@@ -131,6 +137,9 @@ check_all_pointers_idle() {
   find_mouse_ids
 
   for mouse_id in "${mouse_id_array[@]}"; do
+    # Note this contains more text than just the coordinates, but we don't care, because
+    # we are simply doing a comparison to see if anything changed and it isn't worth
+    # the extra CPU time to extract the coordinate from the string.
     current_x[$mouse_id]=$(xinput query-state $mouse_id | grep "valuator\[0\]")
     current_y[$mouse_id]=$(xinput query-state $mouse_id | grep "valuator\[1\]")
 
@@ -154,9 +163,6 @@ check_all_pointers_idle() {
     active_state=0
   fi
 }
-
-# This will be overridden by the config.
-debug=1
 
 source_config
 
