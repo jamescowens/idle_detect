@@ -1,6 +1,6 @@
 #!/bin/bash
 
-echo "idle_detect.sh version 5 - 202503010."
+echo "idle_detect.sh version 6 - 202503011."
 
 config_file="$1"
 
@@ -112,18 +112,17 @@ find_mouse_ids() {
         done
 
         previous_pointer_array_size=$pointer_array_size
-
-        if ((mouse_found == 0)); then
-          return 1
-        else
-          return 0
-        fi
-
       fi
     else
       # xinput missing for X session is a hard failure.
       return 2
     fi
+  fi
+
+  if ((mouse_found == 0)); then
+    return 1
+  else
+    return 0
   fi
 }
 
@@ -200,41 +199,55 @@ check_all_ttys_idle() {
 check_all_pointers_idle() {
   debug_echo "check_all_pointers_idle"
 
-  find_mouse_ids
+  # Use xprintidle if it is present.
+  if check_executable "xprintidle"; then
+    idle_milliseconds=$(xprintidle)
 
-  local result=$?
+    idle_seconds_rnd=$(echo "scale=0; $idle_milliseconds / 1000" | bc)
 
-  if [[ $result -eq 2 ]]; then
-    return 2
-  elif [[ $result -eq 1 ]]; then
-    return 1
-  fi
-
-  for mouse_id in "${mouse_id_array[@]}"; do
-    # Note this contains more text than just the coordinates, but we don't care, because
-    # we are simply doing a comparison to see if anything changed and it isn't worth
-    # the extra CPU time to extract the coordinate from the string.
-    current_x[$mouse_id]=$(xinput query-state $mouse_id | grep "valuator\[0\]")
-    current_y[$mouse_id]=$(xinput query-state $mouse_id | grep "valuator\[1\]")
-
-    # Check if mouse has moved
-    if [ "${current_x[$mouse_id]}" != "${old_x[$mouse_id]}" ] || [ "${current_y[$mouse_id]}" != "${old_y[$mouse_id]}" ]; then
-      last_active_time=$(timestamp)
-      debug_echo "last_active_time =" "$last_active_time"
-
+    if ((idle_seconds_rnd >= inactivity_time_trigger)); then
+      debug_echo "set active_state=0"
+      active_state=0
+    else
       active_state=1
-
-      old_x[$mouse_id]="${current_x[$mouse_id]}"
-      old_y[$mouse_id]="${current_y[$mouse_id]}"
-
     fi
-  done
+  else
+    find_mouse_ids
 
-  current_time=$(timestamp)
+    local result=$?
 
-  if ((current_time - last_active_time >= inactivity_time_trigger)); then
-    debug_echo "set active_state=0"
-    active_state=0
+    if [[ $result -eq 2 ]]; then
+      return 2
+    elif [[ $result -eq 1 ]]; then
+      return 1
+    fi
+
+    for mouse_id in "${mouse_id_array[@]}"; do
+      # Note this contains more text than just the coordinates, but we don't care, because
+      # we are simply doing a comparison to see if anything changed and it isn't worth
+      # the extra CPU time to extract the coordinate from the string.
+      current_x[$mouse_id]=$(xinput query-state $mouse_id | grep "valuator\[0\]")
+      current_y[$mouse_id]=$(xinput query-state $mouse_id | grep "valuator\[1\]")
+
+      # Check if mouse has moved
+      if [ "${current_x[$mouse_id]}" != "${old_x[$mouse_id]}" ] || [ "${current_y[$mouse_id]}" != "${old_y[$mouse_id]}" ]; then
+        last_active_time=$(timestamp)
+        debug_echo "last_active_time =" "$last_active_time"
+
+        active_state=1
+
+        old_x[$mouse_id]="${current_x[$mouse_id]}"
+        old_y[$mouse_id]="${current_y[$mouse_id]}"
+
+      fi
+    done
+
+    current_time=$(timestamp)
+
+    if ((current_time - last_active_time >= inactivity_time_trigger)); then
+      debug_echo "set active_state=0"
+      active_state=0
+    fi
   fi
 
   return 0
@@ -251,6 +264,7 @@ active_state=0
 last_active_state=0
 last_active_time=0
 process_source_config=0
+mouse_found=0
 
 while true; do
   # Skip the source config on the first pass, since it was just done before entering the loop.
@@ -261,6 +275,9 @@ while true; do
   fi
 
   if ((monitor_pointers == 1)); then
+    # Check all pointers idle is a no-op and will return status of 1 if no mouse was found.
+    # It will return 2 and cause a script exit with failure if the xinput executable is not
+    # found (and monitor_pointers is set to 1).
     check_all_pointers_idle
 
     if [[ $? -eq 2 ]]; then
