@@ -11,3 +11,9 @@ systemd user level (i.e. accessed via systemctl --user), although it still does 
 the responsiveness of the idle check with CPU usage for the check itself.
 
 This code is licensed under the MIT license.
+
+### Current dependencies:
+ - xprintidle and/or xinput for X session idle detection
+ - w for tty idle detection
+
+Wayland not currently implemented yet

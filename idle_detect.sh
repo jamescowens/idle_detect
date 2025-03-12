@@ -1,5 +1,7 @@
 #!/bin/bash
 
+# (c) Copyright 2025 James C. Owens
+
 config_file="$1"
 
 timestamp() {
