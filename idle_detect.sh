@@ -10,6 +10,17 @@ hr_timestamp() {
   date --utc +"%m/%d/%Y %H:%M:%S.%N"
 }
 
+min() {
+  first="$1"
+  second="$2"
+
+  if ((first < second)); then
+    echo "$first"
+  else
+    echo "$second"
+  fi
+}
+
 # Source the config file
 source_config() {
   current_mtime=$(stat -c %Y "$config_file")
@@ -149,6 +160,10 @@ check_all_ttys_idle() {
   debug_log "check_all_ttys_idle"
 
   local status=0
+  local idle_seconds=0
+  local idle_seconds_rnd=0
+  local tty_idle_seconds=0
+  local first_pass=0
 
   if check_executable "w"; then
 
@@ -188,10 +203,12 @@ check_all_ttys_idle() {
     }'
     )
 
-    for idle_seconds in ""${idle_seconds_array[@]}""; do
-      idle_seconds_rnd=$(echo "scale=0; $idle_seconds / 1" | bc)
+    local tty_check_timestamp=$(timestamp)
 
-      if [[ -z "$idle_seconds_rnd" ]] || [[ "$idle_seconds_rnd" -eq -1 ]]; then
+    for idle_seconds in ""${idle_seconds_array[@]}""; do
+      tty_idle_seconds_rnd=$(echo "scale=0; $idle_seconds / 1" | bc)
+
+      if [[ -z "$tty_idle_seconds_rnd" ]] || [[ "$tty_idle_seconds_rnd" -eq -1 ]]; then
         # User might have just logged out, or other edge case. Skip.
         log "WARNING: tty activity detection encountered an unknown time format or other unknown error."
 
@@ -200,14 +217,32 @@ check_all_ttys_idle() {
         continue
       fi
 
-      # Note that this accumulates the active state as an or condition on each tty, which is also "ored"
-      # from the active_state determined by the pointer check if enabled.
-      if ((idle_seconds_rnd >= inactivity_time_trigger)); then
-        active_state=$((0 | active_state))
+      # This allows us to initialize the tty_idle_seconds above as a local with initial value 0.
+      if ((first_pass == 0)); then
+        tty_idle_seconds="$tty_idle_seconds_rnd"
+        first_pass=1
       else
-        active_state=$((1 | active_state))
+        tty_idle_seconds=$(min "$tty_idle_seconds" "$tty_idle_seconds_rnd")
       fi
     done
+
+    # To handle the case of a short term ssh session where someone logs in, executes a command (which effectively
+    # puts the idle to zero), and then logs out, where the session is destroyed, we must remember the idle seconds
+    # at the last check, and then ensure that the idle seconds for this check is no more than the last check plus
+    # the clock time elapsed. Otherwise as soon as the ssh session is destroyed, the idle time will revert to the
+    # minimum of the remaining entries, which could meet the idle criteria, even though little time has actually
+    # elapsed.
+    local tty_idle_seconds_limit=$((last_tty_idle_seconds + tty_check_timestamp - last_tty_check_timestamp))
+
+    tty_idle_seconds=$(min "$tty_idle_seconds" "$tty_idle_seconds_limit")
+
+    # Note that this accumulates the active state as an or condition from the active_state determined by the
+    # pointer check if enabled.
+    if ((tty_idle_seconds >= inactivity_time_trigger)); then
+      active_state=$((0 | active_state))
+    else
+      active_state=$((1 | active_state))
+    fi
   else
     status=2 # Failure to find the executable is a hard error if monitor_ttys is 1.
   fi
@@ -276,7 +311,7 @@ check_all_pointers_idle() {
 
 source_config
 
-log "idle_detect.sh version 7 - 202503012."
+log "idle_detect.sh alpha version 8 - 202503012."
 
 sleep "$initial_sleep"
 
@@ -284,6 +319,8 @@ previous_pointer_array_size=0
 active_state=0
 last_active_state=0
 last_active_time=0
+last_tty_check_timestamp=0
+last_tty_idle_seconds=0
 process_source_config=0
 mouse_found=0
 
