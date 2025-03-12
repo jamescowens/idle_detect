@@ -1,11 +1,13 @@
 #!/bin/bash
 
-echo "idle_detect.sh version 6 - 202503011."
-
 config_file="$1"
 
 timestamp() {
   date --utc +"%s"
+}
+
+hr_timestamp() {
+  date --utc +"%m/%d/%Y %H:%M:%S.%N"
 }
 
 # Source the config file
@@ -14,14 +16,30 @@ source_config() {
 
   if [ "$previous_mtime" != "$current_mtime" ]; then
     source "$config_file"
-    debug_echo "source_config"
+    debug_log "source_config"
     previous_mtime="$current_mtime"
   fi
 }
 
-debug_echo() {
+log() {
+  string=$(hr_timestamp)
+
+  for arg in "$@"; do
+    string="$string $arg"
+  done
+
+  echo "$string"
+}
+
+debug_log() {
   if ((debug == 1)); then
-    echo "$1" "$2"
+    string=""
+
+    for arg in "$@"; do
+      string="$string $arg"
+    done
+
+    log "$string"
   fi
 }
 
@@ -30,10 +48,10 @@ check_executable() {
   local executable="$1"
 
   if command -v "$executable" &> /dev/null; then
-    debug_echo "Executable '$executable' found."
+    debug_log "Executable '$executable' found."
     return 0 # Success
   else
-    echo "ERROR: Executable '$executable' not found."
+    log "ERROR: Executable '$executable' not found."
     return 1 # Failure
   fi
 }
@@ -69,7 +87,7 @@ check_gui_session_type() {
 find_mouse_ids() {
   display_type="$(check_gui_session_type)"
 
-  debug_echo "display_type =" "$display_type"
+  debug_log "display_type =" "$display_type"
 
   if [[ "$display_type" -eq "X11" ]] || [[ "$display_type" -eq "X11_XAUTHORITY" ]] || [[ "$display_type" -eq "X11_LIKELY" ]]; then
     if check_executable "xinput"; then
@@ -98,7 +116,7 @@ find_mouse_ids() {
           if [[ ! -z "$mouse_id" ]]; then
             mouse_found=1
 
-            debug_echo "mouse_id =" $mouse_id
+            debug_log "mouse_id =" $mouse_id
 
             # Note these are sparse arrays.
             mouse_id_array[${#mouse_id_array[@]}]=$mouse_id
@@ -128,7 +146,7 @@ find_mouse_ids() {
 
 # Function to check idle time for all logged-in users
 check_all_ttys_idle() {
-  debug_echo "check_all_ttys_idle"
+  debug_log "check_all_ttys_idle"
 
   local status=0
 
@@ -175,13 +193,15 @@ check_all_ttys_idle() {
 
       if [[ -z "$idle_seconds_rnd" ]] || [[ "$idle_seconds_rnd" -eq -1 ]]; then
         # User might have just logged out, or other edge case. Skip.
-        echo "WARNING: tty activity detection encountered an unknown time format or other unknown error."
+        log "WARNING: tty activity detection encountered an unknown time format or other unknown error."
 
         status=1
 
         continue
       fi
 
+      # Note that this accumulates the active state as an or condition on each tty, which is also "ored"
+      # from the active_state determined by the pointer check if enabled.
       if ((idle_seconds_rnd >= inactivity_time_trigger)); then
         active_state=$((0 | active_state))
       else
@@ -189,7 +209,7 @@ check_all_ttys_idle() {
       fi
     done
   else
-    status=2
+    status=2 # Failure to find the executable is a hard error if monitor_ttys is 1.
   fi
 
   return $status
@@ -197,7 +217,7 @@ check_all_ttys_idle() {
 
 # Function to check idle time for X session pointers
 check_all_pointers_idle() {
-  debug_echo "check_all_pointers_idle"
+  debug_log "check_all_pointers_idle"
 
   # Use xprintidle if it is present.
   if check_executable "xprintidle"; then
@@ -206,7 +226,6 @@ check_all_pointers_idle() {
     idle_seconds_rnd=$(echo "scale=0; $idle_milliseconds / 1000" | bc)
 
     if ((idle_seconds_rnd >= inactivity_time_trigger)); then
-      debug_echo "set active_state=0"
       active_state=0
     else
       active_state=1
@@ -232,7 +251,7 @@ check_all_pointers_idle() {
       # Check if mouse has moved
       if [ "${current_x[$mouse_id]}" != "${old_x[$mouse_id]}" ] || [ "${current_y[$mouse_id]}" != "${old_y[$mouse_id]}" ]; then
         last_active_time=$(timestamp)
-        debug_echo "last_active_time =" "$last_active_time"
+        debug_log "last_active_time =" "$last_active_time"
 
         active_state=1
 
@@ -245,7 +264,7 @@ check_all_pointers_idle() {
     current_time=$(timestamp)
 
     if ((current_time - last_active_time >= inactivity_time_trigger)); then
-      debug_echo "set active_state=0"
+      debug_log "set active_state=0"
       active_state=0
     fi
   fi
@@ -256,6 +275,8 @@ check_all_pointers_idle() {
 # This is the main execution below.
 
 source_config
+
+log "idle_detect.sh version 7 - 202503012."
 
 sleep "$initial_sleep"
 
