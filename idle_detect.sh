@@ -59,12 +59,21 @@ debug_log() {
 # Function to check for executable existence
 check_executable() {
   local executable="$1"
+  local soft_error=0
+
+  if [ $# -ge 1 ]; then
+    soft_error="$2"
+  fi
 
   if command -v "$executable" &> /dev/null; then
-    debug_log "Executable '$executable' found."
+    debug_log "Executable \"$executable\" found."
     return 0 # Success
   else
-    log "ERROR: Executable '$executable' not found."
+    if ((soft_error != 1)); then
+      log "ERROR: Executable '$executable' not found."
+    else
+      debug_log "Executable \"$executable\" not found."
+    fi
     return 1 # Failure
   fi
 }
@@ -257,7 +266,7 @@ check_all_pointers_idle() {
   debug_log "check_all_pointers_idle"
 
   # Use xprintidle if it is present.
-  if check_executable "xprintidle"; then
+  if check_executable "xprintidle" 1; then
     idle_milliseconds=$(xprintidle)
 
     idle_seconds_rnd=$(echo "scale=0; $idle_milliseconds / 1000" | bc)
