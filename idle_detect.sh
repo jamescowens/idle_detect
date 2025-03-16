@@ -6,27 +6,7 @@ config_file="$1"
 
 source "$(dirname "$0")/idle_detect_resources.sh"
 
-# Function to check for executable existence
-check_executable() {
-  local executable="$1"
-  local soft_error=0
-
-  if [ $# -ge 1 ]; then
-    soft_error="$2"
-  fi
-
-  if command -v "$executable" &> /dev/null; then
-    debug_log "Executable \"$executable\" found."
-    return 0 # Success
-  else
-    if ((soft_error != 1)); then
-      log "ERROR: Executable \"$executable\" not found."
-    else
-      debug_log "Executable \"$executable\" not found."
-    fi
-    return 1 # Failure
-  fi
-}
+source "/etc/event_detect.conf"
 
 # Function to determine GUI session type
 check_gui_session_type() {

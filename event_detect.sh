@@ -8,9 +8,26 @@ source "$(dirname "$0")/idle_detect_resources.sh"
 
 source_config
 
+sleep "$startup_delay"
+
+# Function to handle signals
+handle_signals() {
+  case "$1" in
+    SIGINT)
+      terminate_subshells "$1"
+      ;;
+    SIGTERM)
+      terminate_subshells "$1"
+      ;;
+    *)
+      log "WARNING: Unknown signal received."
+      ;;
+  esac
+}
+
 # Function to terminate subshells
 terminate_subshells() {
-  log "Ctrl+C detected. Ensuring subshells are terminated..."
+  log "$1 detected. Ensuring subshells are terminated..."
 
   for pid in "${event_device_monitors_pid_array[@]}"; do
     debug_log "killing PID" "$pid"
@@ -26,19 +43,18 @@ if ! check_executable "evemu-record"; then
   exit 1
 fi
 
-# Trap SIGINT (Ctrl+C)
-trap terminate_subshells SIGINT
+# Trap SIGINT (Ctrl+C) and SIGTERM
+trap 'handle_signals SIGINT' SIGINT
+trap 'handle_signals SIGTERM' SIGTERM
 
 for n in /sys/class/input/event*; do
   device="$(cat $n/device/name)"
 
   for pointing_device in "${dev_input_devices[@]}"; do
     if [ "$pointing_device" = "$device" ]; then
-      #insert_index="${#event_device_id_array[@]}"
-
       event_device_id_array["${#event_device_id_array[@]}"]="$(basename $n)"
 
-      debug_log "input device" "$device" "selected"
+      log "input device" "$device" "selected at /dev/input/$(basename $n)"
     fi
   done
 done

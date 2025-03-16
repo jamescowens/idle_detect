@@ -1,0 +1,10 @@
+[Unit]
+Description=DC Event Detection Service
+
+[Service]
+Type=simple
+ProtectHome=false
+ExecStart=/usr/local/bin/event_detect.sh /etc/event_detect.conf
+
+[Install]
+WantedBy=default.target
