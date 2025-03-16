@@ -57,6 +57,26 @@ enumerate_event_device_ids() {
   done
 }
 
+check_event_device_ids_changed() {
+  event_device_id_count="$(find /dev/input/event* | wc -l)"
+
+  if ((event_device_id_count_init == 0)); then
+    event_device_id_count_prev="$event_device_id_count"
+
+    event_device_id_count_init=1
+
+    return 0
+  else
+    if ((event_device_id_count!=event_device_id_count_prev)); then
+      event_device_id_count_prev="$event_device_id_count"
+
+      return 1
+    else
+      return 0
+    fi
+  fi
+}
+
 check_evemu_record_exists() {
   if ! check_executable "evemu-record"; then
     log "ERROR: evemu-record not found but is required to do mouse movement monitoring directly from input event devices."
@@ -76,7 +96,7 @@ initiate_event_activity_recorders() {
   for event_id in "${event_device_id_array[@]}"; do
     debug_log "/dev/input/$event_id"
 
-    evemu-record "/dev/input/$event_id" | { count=0; while IFS= read -r line; do ((count++)); echo "$count" > "/run/event_detect/"$event_id"_count.dat"; done; } & subshell_pid=$!
+    evemu-record "/dev/input/$event_id" 2> /dev/null | { count=0; while IFS= read -r line; do ((count++)); echo "$count" > "/run/event_detect/"$event_id"_count.dat"; done; } & subshell_pid=$!
 
     event_device_monitors_pid_array["${#event_device_monitors_pid_array[@]}"]="$subshell_pid"
 
@@ -87,7 +107,6 @@ initiate_event_activity_recorders() {
 
 # Wait for all subshells to finish - this blocks.
 wait_for_event_activity_recorders() {
-
   wait "${event_device_monitors_pid_array[@]}"
 }
 
@@ -106,19 +125,44 @@ trap 'handle_signals SIGTERM' SIGTERM
 trap 'handle_signals SIGHUP' SIGHUP
 
 signal=""
+event_device_id_count=0;
+monitor_pid=0
 
-log "event_detect.sh PID:" "$BASHPID"
+main_script_pid="$BASHPID"
+
+log "event_detect.sh PID:" "$main_script_pid"
 
 check_evemu_record_exists
 
 mkdir_event_detect
 
+(
+  event_device_id_count_prev=0;
+  event_device_id_count_init=0;
+
+  while true; do
+    check_event_device_ids_changed
+
+    result="$?"
+
+    if ((result != 0)); then
+      kill -s SIGHUP "$main_script_pid"
+    fi
+
+    sleep 1
+  done
+) & monitor_pid=$!
+
+log "event id monitor PID =" "$monitor_pid"
+
 while true; do
   if [[ "$signal" = "SIGINT" ]] || [[ "$signal" = "SIGTERM" ]]; then
+    log "killing event id monitor PID" "$monitor_pid"
+
+    kill -s SIGTERM "$monitor_pid" > /dev/null 2>&1
+
     exit 0
   else
-    # SIGHUP received - reset signal.
-    debug_log "reset signal"
     signal=""
   fi
 
