@@ -4,57 +4,7 @@
 
 config_file="$1"
 
-timestamp() {
-  date --utc +"%s"
-}
-
-hr_timestamp() {
-  date --utc +"%m/%d/%Y %H:%M:%S.%N"
-}
-
-min() {
-  first="$1"
-  second="$2"
-
-  if ((first < second)); then
-    echo "$first"
-  else
-    echo "$second"
-  fi
-}
-
-# Source the config file
-source_config() {
-  current_mtime=$(stat -c %Y "$config_file")
-
-  if [ "$previous_mtime" != "$current_mtime" ]; then
-    source "$config_file"
-    debug_log "source_config"
-    previous_mtime="$current_mtime"
-  fi
-}
-
-log() {
-  string=$(hr_timestamp)
-
-  for arg in "$@"; do
-    string="$string $arg"
-  done
-
-  echo "$string"
-}
-
-debug_log() {
-  if ((debug == 1)); then
-    string=""
-
-    for arg in "$@"; do
-      string="$string $arg"
-    done
-
-    log "$string"
-  fi
-}
+source "$(dirname "$0")/idle_detect_resources.sh"
 
 # Function to check for executable existence
 check_executable() {
@@ -70,7 +20,7 @@ check_executable() {
     return 0 # Success
   else
     if ((soft_error != 1)); then
-      log "ERROR: Executable '$executable' not found."
+      log "ERROR: Executable \"$executable\" not found."
     else
       debug_log "Executable \"$executable\" not found."
     fi
@@ -78,7 +28,7 @@ check_executable() {
   fi
 }
 
-
+# Function to determine GUI session type
 check_gui_session_type() {
   # Check the DISPLAY environment variable
   if [[ -n "$DISPLAY" ]]; then
@@ -261,12 +211,55 @@ check_all_ttys_idle() {
   return $status
 }
 
-# Function to check idle time for X session pointers
+# Function to check idle time for pointers
 check_all_pointers_idle() {
   debug_log "check_all_pointers_idle"
 
+  local event_count_dat_count=0
+
+  # If use_dev_input_events=1 then use /dev/input/event*
+  if ((use_dev_input_events == 1)) || [[ "$display_type" = "WAYLAND" ]] || [[ "$display_type" = "WAYLAND_XDG" ]]; then
+    if ((event_monitor_baselined == 0)); then
+      for event_count_dat in "$event_count_files_path"/event*_count.dat; do
+        event_count_dat_count=$(cat "$event_count_dat")
+
+        event_count=$((event_count + event_count_dat_count))
+        event_count_previous="$event_count"
+
+
+        event_monitor_baselined=1
+      done
+
+      debug_log "event_count baseline =" "$event_count_previous"
+    else
+      event_count=0
+
+      for event_count_dat in "$event_count_files_path"/event*_count.dat; do
+        event_count_dat_count=$(cat "$event_count_dat")
+
+        event_count=$((event_count + event_count_dat_count))
+      done
+    fi
+
+    debug_log "event_count =" "$event_count"
+
+    current_time=$(timestamp)
+
+    # This will almost assuredly catch a situation where a device is added or subtracted
+    # from the idle_detect.conf file
+    if ((event_count != event_count_previous)); then
+      last_active_time=$(timestamp)
+      debug_log "last_active_time =" "$last_active_time"
+
+      active_state=1
+
+      event_count_previous="$event_count"
+    elif ((current_time - last_active_time >= inactivity_time_trigger)); then
+      debug_log "set active_state=0"
+      active_state=0
+    fi
   # Use xprintidle if it is present.
-  if check_executable "xprintidle" 1; then
+  elif check_executable "xprintidle" 1; then
     idle_milliseconds=$(xprintidle)
 
     idle_seconds_rnd=$(echo "scale=0; $idle_milliseconds / 1000" | bc)
@@ -322,7 +315,7 @@ check_all_pointers_idle() {
 
 source_config
 
-log "idle_detect.sh alpha version 8 - 202503012."
+log "idle_detect.sh alpha version 9 - 20250315."
 
 sleep "$initial_sleep"
 
@@ -334,6 +327,9 @@ last_tty_check_timestamp=0
 last_tty_idle_seconds=0
 process_source_config=0
 mouse_found=0
+event_monitor_baselined=0
+event_count=0
+event_count_previous=0
 
 while true; do
   # Skip the source config on the first pass, since it was just done before entering the loop.
