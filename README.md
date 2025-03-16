@@ -15,5 +15,4 @@ This code is licensed under the MIT license.
 ### Current dependencies:
  - xprintidle and/or xinput for X session idle detection
  - w for tty idle detection
-
-Wayland not currently implemented yet
+ - evemu-record for Wayland (or if desired, low level X session) idle detection
