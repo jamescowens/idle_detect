@@ -71,19 +71,58 @@ terminate_subshells() {
 enumerate_event_device_ids() {
   debug_log "enumerate_event_device_ids called"
 
+  local n
+  local device
+  local config_file_devices_specified=0
+  local every_device_id_array_size=0
+  local mouse_link_exists=0
+
   event_device_id_array=()
 
+  if [[ ! -z "$(echo -n "$dev_input_devices" | tr -s '[:space:]')" ]]; then
+    debug_log "specific devices specified from event_detect.conf"
+
+    config_file_devices_specified=1
+  fi
+
   for n in /sys/class/input/event*; do
-    device="$(<$n/device/name)"
 
-    for pointing_device in "${dev_input_devices[@]}"; do
-      if [ "$pointing_device" = "$device" ]; then
-        event_device_id_array["${#event_device_id_array[@]}"]="$(basename $n)"
+    # If dev_input_devices is not specified (blank) then use the /device/mouse symlink
+    # hint to select for monitoring, otherwise match to provided device names
+    # in dev_input_devices
+    if ((config_file_devices_specified == 0)); then
+      mouse_link_exists="$(find $n/device/mouse* 2>/dev/null | wc -l)"
 
-        log "input device" "$device" "selected at /dev/input/$(basename $n)"
+      if ((mouse_link_exists > 0)); then
+        device="$(<$n/device/name)"
+
+        event_device_id_array["$event_device_id_array_size"]="$(basename "$n")"
+
+        event_device_id_array_size="${#event_device_id_array[@]}"
+
+        log "input device \"$device\" selected at /dev/input/$(basename $n)"
       fi
-    done
+    else
+      device="$(<$n/device/name)"
+
+      for pointing_device in "${dev_input_devices[@]}"; do
+        if [ "$pointing_device" = "$device" ]; then
+
+          event_device_id_array["$event_device_id_array_size"]="$(basename $n)"
+
+          event_device_id_array_size="${#event_device_id_array[@]}"
+
+          log "input device \"$device\" selected at /dev/input/$(basename $n)"
+        fi
+      done
+    fi
   done
+
+  if ((event_device_id_array_size==0)); then
+    return 1
+  else
+    return 0
+  fi
 }
 
 check_event_device_ids_changed() {
@@ -278,6 +317,18 @@ while true; do
   fi
 
   enumerate_event_device_ids
+
+  result="$?"
+  if ((result != 0)); then
+    log "ERROR: No pointing devices identified to monitor. Exiting."
+    log "killing event id monitor PID" "$monitor_pid"
+
+    kill -s SIGTERM "$monitor_pid" > /dev/null 2>&1
+
+    clean_up_event_dat_files
+
+    exit 1
+  fi
 
   initiate_event_activity_recorders
 
