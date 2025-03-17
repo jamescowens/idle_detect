@@ -53,6 +53,12 @@ and then sudo systemctl daemon-reload
 
 14. Check the status of both the services: sudo systemctl status dc_event_detection, and systemctl --user status dc_idle_detection
 
+15. Copy the dc_pause and dc_unpause scripts to /usr/local/bin and modify to your liking (they are currently set up to control BOINC in its default installation):
+sudo cp dc_pause /usr/local/bin
+sudo cp dc_unpause /usr/local/bin
+sudo nano /usr/local/bin/dc_pause
+sudo nano /usr/local/bin/dc_unpause
+
 15. The user level idle_detection script detects changes to the idle_detect.conf file and re-sources the changes; however if you change the event_detect.conf file for the system event detection service, then you currently need to restart the system level dc_event_detection service via sudo systemctl restart dc_event_detection.
 
 ### This is alpha level code and is currently subject to rapid change.
