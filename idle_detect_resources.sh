@@ -1,5 +1,9 @@
 #!/bin/bash
 
+version() {
+  echo "idle_detect/event_detect alpha version 10 - 20250316."
+}
+
 timestamp() {
   date --utc +"%s"
 }

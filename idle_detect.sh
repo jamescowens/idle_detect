@@ -295,7 +295,7 @@ check_all_pointers_idle() {
 
 source_config
 
-log "idle_detect.sh alpha version 9 - 20250315."
+log "$(version)"
 
 sleep "$initial_sleep"
 
