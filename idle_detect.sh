@@ -146,7 +146,7 @@ check_all_ttys_idle() {
 
     local tty_check_timestamp=$(timestamp)
 
-    for idle_seconds in ""${idle_seconds_array[@]}""; do
+    for idle_seconds in "${idle_seconds_array[@]}"; do
       tty_idle_seconds_rnd=$(echo "scale=0; $idle_seconds / 1" | bc)
 
       if [[ -z "$tty_idle_seconds_rnd" ]] || [[ "$tty_idle_seconds_rnd" -eq -1 ]]; then
@@ -195,13 +195,16 @@ check_all_ttys_idle() {
 check_all_pointers_idle() {
   debug_log "check_all_pointers_idle"
 
+  local event_id_count=0
   local event_count_dat_count=0
 
   # If use_dev_input_events=1 then use /dev/input/event*
   if ((use_dev_input_events == 1)) || [[ "$display_type" = "WAYLAND" ]] || [[ "$display_type" = "WAYLAND_XDG" ]]; then
     if ((event_monitor_baselined == 0)); then
       for event_count_dat in "$event_count_files_path"/event*_count.dat; do
-        event_count_dat_count=$(cat "$event_count_dat")
+        ((event_id_count++))
+
+        event_count_dat_count=$(< "$event_count_dat")
 
         event_count=$((event_count + event_count_dat_count))
         event_count_previous="$event_count"
@@ -210,18 +213,27 @@ check_all_pointers_idle() {
         event_monitor_baselined=1
       done
 
-      debug_log "event_count baseline =" "$event_count_previous"
+      debug_log "event_count baseline = $event_count_previous"
     else
       event_count=0
 
       for event_count_dat in "$event_count_files_path"/event*_count.dat; do
-        event_count_dat_count=$(cat "$event_count_dat")
+        ((event_id_count++))
+
+        event_count_dat_count=$(< "$event_count_dat")
 
         event_count=$((event_count + event_count_dat_count))
       done
     fi
 
-    debug_log "event_count =" "$event_count"
+    debug_log "event_id_count = $event_id_count"
+    debug_log "event_count = $event_count"
+
+    # If the event_id_count is 0, then there were no devices found to monitor, so return 1
+    if ((event_id_count == 0)); then
+      log "WARNING: no pointing devices found to monitor for activity."
+      return 1
+    fi
 
     current_time=$(timestamp)
 
@@ -229,13 +241,13 @@ check_all_pointers_idle() {
     # from the idle_detect.conf file
     if ((event_count != event_count_previous)); then
       last_active_time=$(timestamp)
-      debug_log "last_active_time =" "$last_active_time"
+      debug_log "last_active_time = $last_active_time"
 
       active_state=1
 
       event_count_previous="$event_count"
     elif ((current_time - last_active_time >= inactivity_time_trigger)); then
-      debug_log "set active_state=0"
+      debug_log "set active_state = 0"
       active_state=0
     fi
   # Use xprintidle if it is present.
@@ -270,7 +282,7 @@ check_all_pointers_idle() {
       # Check if mouse has moved
       if [ "${current_x[$mouse_id]}" != "${old_x[$mouse_id]}" ] || [ "${current_y[$mouse_id]}" != "${old_y[$mouse_id]}" ]; then
         last_active_time=$(timestamp)
-        debug_log "last_active_time =" "$last_active_time"
+        debug_log "last_active_time = $last_active_time"
 
         active_state=1
 
@@ -283,7 +295,7 @@ check_all_pointers_idle() {
     current_time=$(timestamp)
 
     if ((current_time - last_active_time >= inactivity_time_trigger)); then
-      debug_log "set active_state=0"
+      debug_log "set active_state = 0"
       active_state=0
     fi
   fi
