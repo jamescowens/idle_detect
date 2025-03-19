@@ -74,7 +74,7 @@ enumerate_event_device_ids() {
   local n
   local device
   local config_file_devices_specified=0
-  local every_device_id_array_size=0
+  local event_device_id_array_size=0
   local mouse_link_exists=0
 
   event_device_id_array=()
@@ -273,7 +273,7 @@ check_evemu_record_exists
 
 mkdir_event_detect
 
-# This is a parallet subshell that implements the event device id
+# This is a parallel subshell that implements the event device id
 # monitoring. It simply checks the count of devices in /dev/input/event*
 # and if it changes, sends a SIGHUP to the parent shell. This in
 # turn will be caught by the parent shell handle_signals() which
