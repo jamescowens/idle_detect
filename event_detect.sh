@@ -175,6 +175,7 @@ initiate_event_activity_recorders() {
     local signal_command=""
     local read_result=""
     local fifo_result=""
+    local write_result=""
 
     fifo="$event_count_files_path/${event_id}_signal.dat"
     echo "none" > "$fifo"
@@ -212,6 +213,15 @@ initiate_event_activity_recorders() {
 
           if ((read_result == 0)); then
             ((count++))
+
+            #atomic_file_write "$count" "$event_count_files_path/${event_id}_count.dat" 1
+
+            #write_result="$?"
+
+            #if ((write_result != 0)); then
+            #  debug_log "atomic_file_write for count failed"
+            #fi
+
             echo "$count" > "$event_count_files_path/${event_id}_count.dat"
           fi
 
@@ -236,6 +246,114 @@ initiate_event_activity_recorders() {
   log "event activity recorder pids:" "${event_device_monitors_pid_array[@]}"
 }
 
+compute_last_active_time() {
+  local event_id_count=0
+  local event_count_dat_count=0
+  local data_in=0
+
+  # If use_dev_input_events=1 then use /dev/input/event*
+  if ((event_monitor_baselined == 0)); then
+    for event_count_dat in "$event_count_files_path"/event*_count.dat; do
+      ((event_id_count++))
+
+      #data_in=$(atomic_file_read "$event_count_dat" 0.1)
+
+      #result="$?"
+      #debug_log "event_count_dat atomic file read result = $result"
+
+      #if ((result == 0)); then
+      #  event_count_dat_count="$data_in"
+      #fi
+
+      event_count_dat_count=$(< "$event_count_dat")
+
+      event_count=$((event_count + event_count_dat_count))
+
+      event_monitor_baselined=1
+    done
+
+    event_count_previous="$event_count"
+
+    debug_log "event_count = $event_count"
+    debug_log "event_count baseline = $event_count_previous"
+  else
+    event_count=0
+
+    for event_count_dat in "$event_count_files_path"/event*_count.dat; do
+      ((event_id_count++))
+
+      #data_in=$(atomic_file_read "$event_count_dat" 0.1)
+
+      #result="$?"
+      #debug_log "event_count_dat atomic file read result = $result"
+
+      #if ((result == 0)); then
+      #  event_count_dat_count="$data_in"
+      #fi
+
+      event_count_dat_count=$(< "$event_count_dat")
+
+      event_count=$((event_count + event_count_dat_count))
+    done
+  fi
+
+  debug_log "event_id_count = $event_id_count"
+  debug_log "event_count = $event_count"
+  debug_log "event_count_previous = $event_count_previous"
+
+  # If the event_id_count is 0, then there were no devices found to monitor, so return 1
+  if ((event_id_count == 0)); then
+    log "WARNING: no pointing devices found to monitor for activity."
+    return 1
+  fi
+
+  if ((event_count != event_count_previous)); then
+    last_active_time="$(timestamp)"
+
+    debug_log "last_active_time = $last_active_time"
+
+    echo "$last_active_time" > "$event_count_files_path/last_active_time.dat"
+
+    event_count_previous="$event_count"
+  fi
+}
+
+monitor_event_activity_recorders() {
+  # This is a parallel subshell that implements the event device id
+  # monitoring. It simply checks the count of devices in /dev/input/event*
+  # and if it changes, sends a SIGHUP to the parent shell. This in
+  # turn will be caught by the parent shell handle_signals() which
+  # in turn will call terminate_subshells(). The terminate subshells
+  # will cause the wait_for_event_activity_recorders to unblock.
+  (
+    event_device_id_count_prev=0;
+    event_device_id_count_init=0;
+
+    # TODO: Replace this with proper coordinating pause.
+    sleep 2
+
+    while true; do
+      check_event_device_ids_changed
+
+      result="$?"
+
+      if ((result != 0)); then
+        debug_log "event device id count changed: sending SIGHUP to parent shell"
+        kill -s SIGHUP "$main_script_pid"
+      fi
+
+      # Doing the compuet_last_active_time in this loop ensures that this check
+      # is coordinated with the SIGHUP actions if a device is removed/inserted.
+      compute_last_active_time
+
+      sleep 1
+    done
+
+  ) & monitor_pid=$!
+
+  log "event id monitor PID =" "$monitor_pid"
+}
+
 # Wait for all subshells to finish - this blocks.
 wait_for_event_activity_recorders() {
   debug_log "wait_for_event_activity_recorders called"
@@ -248,13 +366,30 @@ clean_up_event_dat_files() {
   debug_log "clean_up_event_dat_files called"
 
   for event_id in "${event_device_id_array[@]}"; do
-      debug_log "removing " "$event_count_files_path/$event_id""_count.dat"
 
+    if [[ -f "$event_count_files_path/${event_id}_count.dat" ]]; then
       rm "$event_count_files_path/${event_id}_count.dat"
+      debug_log "removing " "$event_count_files_path/${event_id}_count.dat"
+    fi
+
+    if [[ -f "$event_count_files_path/${event_id}_evemu_pid.dat" ]]; then
       rm "$event_count_files_path/${event_id}_evemu_pid.dat"
+      debug_log "removing " "$event_count_files_path/${event_id}_pid.dat"
+    fi
+
+    if [[ -f "$event_count_files_path/${event_id}_signal.dat" ]]; then
       rm "$event_count_files_path/${event_id}_signal.dat"
+      debug_log "removing " "$event_count_files_path/${event_id}_signal.dat"
+    fi
   done
+
+  if [[ -f "$event_count_files_path/last_active_time.dat" ]]; then
+    rm "$event_count_files_path/last_active_time.dat"
+    debug_log "removing " "$event_count_files_path/last_active_time.dat"
+  fi
 }
+
+# This is the "main" part of the script.
 
 # Trap SIGINT (Ctrl+C), SIGTERM, and SIGHUP
 trap 'handle_signals SIGINT' SIGINT
@@ -264,6 +399,10 @@ trap 'handle_signals SIGHUP' SIGHUP
 signal=""
 event_device_id_count=0;
 monitor_pid=0
+event_monitor_baselined=0
+event_count=0
+event_count_previous=0
+last_active_time=0
 
 main_script_pid="$BASHPID"
 
@@ -273,35 +412,14 @@ check_evemu_record_exists
 
 mkdir_event_detect
 
-# This is a parallel subshell that implements the event device id
-# monitoring. It simply checks the count of devices in /dev/input/event*
-# and if it changes, sends a SIGHUP to the parent shell. This in
-# turn will be caught by the parent shell handle_signals() which
-# in turn will call terminate_subshells(). The terminate subshells
-# will cause the wait_for_event_activity_recorders to unblock.
-(
-  event_device_id_count_prev=0;
-  event_device_id_count_init=0;
+echo "$last_active_time" > "$event_count_files_path/last_active_time.dat"
 
-  while true; do
-    check_event_device_ids_changed
+monitor_event_activity_recorders
 
-    result="$?"
-
-    if ((result != 0)); then
-      debug_log "event device id count changed: sending SIGHUP to parent shell"
-      kill -s SIGHUP "$main_script_pid"
-    fi
-
-    sleep 1
-  done
-
-) & monitor_pid=$!
-
-log "event id monitor PID =" "$monitor_pid"
-
+# This loop runs until a SIGINT or SIGTERM is caught, or if no devices are found
+# to monitor.
 while true; do
-  # This runs if the wait_for_event_activity_recorders is unblocked
+  # This if runs if the wait_for_event_activity_recorders is unblocked
   # below with a SIGINT or SIGTERM and does a final cleanup and
   # then script exit.
   if [[ "$signal" = "SIGINT" ]] || [[ "$signal" = "SIGTERM" ]]; then

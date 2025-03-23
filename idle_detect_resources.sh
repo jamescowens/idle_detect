@@ -1,7 +1,7 @@
 #!/bin/bash
 
 version() {
-  echo "idle_detect/event_detect alpha version 10 - 20250316."
+  echo "idle_detect/event_detect alpha version 11 - 20250322."
 }
 
 timestamp() {
@@ -77,3 +77,55 @@ check_executable() {
     return 1 # Failure
   fi
 }
+
+# Arg 1 is data to write
+# Arg 2 is the file to write to (which also is the lockfile)
+# Arg 3 is the timeout
+atomic_file_write() {
+  local arg_size="${#@}"
+
+  if ((arg_size != 3)); then
+    log "ERROR: atomic_file_write takes three arguments."
+    return 1
+  fi
+
+  (
+    exec 9> "$2"
+
+    if flock -w "$3" -x 9; then
+      # Critical section: write data to the locked file
+      echo "$1" > "$2"
+      return 0
+    else
+      log "ERROR: Failed to take a lock on $2 by timeout of $3 seconds."
+      return 1
+    fi
+    # Lock is automatically released when fd 9 is closed
+  )
+}
+
+# Arg 1 is the file to read from (which also is the lockfile)
+# Arg 2 is the timeout
+atomic_file_read() {
+  local arg_size="${#@}"
+
+  if ((arg_size != 2)); then
+    log "ERROR: atomic_file_write takes three arguments."
+    return 1
+  fi
+
+  (
+    exec 9< "$1"
+
+    if flock -w "$2" -s 9; then
+      # Critical section: read data from the locked file
+      cat "$1"
+      return 0
+    else
+      log "ERROR: Failed to take a lock on $1 by timeout of $2 seconds."
+      return 1
+    fi
+    # Lock is automatically released when fd 9 is closed
+  )
+}
+

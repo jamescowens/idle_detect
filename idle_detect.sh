@@ -198,58 +198,22 @@ check_all_pointers_idle() {
   local event_id_count=0
   local event_count_dat_count=0
 
-  # If use_dev_input_events=1 then use /dev/input/event*
+  # If use_dev_input_events=1 then use /dev/input/event* via event_detect.sh output
   if ((use_dev_input_events == 1)) || [[ "$display_type" = "WAYLAND" ]] || [[ "$display_type" = "WAYLAND_XDG" ]]; then
-    if ((event_monitor_baselined == 0)); then
-      for event_count_dat in "$event_count_files_path"/event*_count.dat; do
-        ((event_id_count++))
 
-        event_count_dat_count=$(< "$event_count_dat")
+    current_time="$(timestamp)"
 
-        event_count=$((event_count + event_count_dat_count))
-        event_count_previous="$event_count"
+    if [[ -f "$event_count_files_path/last_active_time.dat" ]]; then
+      last_active_time=$(<"$event_count_files_path/last_active_time.dat")
 
-
-        event_monitor_baselined=1
-      done
-
-      debug_log "event_count baseline = $event_count_previous"
-    else
-      event_count=0
-
-      for event_count_dat in "$event_count_files_path"/event*_count.dat; do
-        ((event_id_count++))
-
-        event_count_dat_count=$(< "$event_count_dat")
-
-        event_count=$((event_count + event_count_dat_count))
-      done
+      if ((current_time - last_active_time >= inactivity_time_trigger)); then
+        debug_log "set active_state = 0"
+        active_state=0
+      else
+        active_state=1
+      fi
     fi
 
-    debug_log "event_id_count = $event_id_count"
-    debug_log "event_count = $event_count"
-
-    # If the event_id_count is 0, then there were no devices found to monitor, so return 1
-    if ((event_id_count == 0)); then
-      log "WARNING: no pointing devices found to monitor for activity."
-      return 1
-    fi
-
-    current_time=$(timestamp)
-
-    # This will almost assuredly catch a situation where a device is added or subtracted
-    # from the idle_detect.conf file
-    if ((event_count != event_count_previous)); then
-      last_active_time=$(timestamp)
-      debug_log "last_active_time = $last_active_time"
-
-      active_state=1
-
-      event_count_previous="$event_count"
-    elif ((current_time - last_active_time >= inactivity_time_trigger)); then
-      debug_log "set active_state = 0"
-      active_state=0
-    fi
   # Use xprintidle if it is present.
   elif check_executable "xprintidle" 1; then
     idle_milliseconds=$(xprintidle)
