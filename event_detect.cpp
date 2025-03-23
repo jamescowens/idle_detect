@@ -1,3 +1,9 @@
+/*
+ * Copyright (C) 2025 James C. Owens
+ *
+ * This code is licensed under the MIT license
+ */
+
 //#include <fstream>
 
 #include <event_detect.h>

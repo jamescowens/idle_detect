@@ -1,3 +1,9 @@
+/*
+ * Copyright (C) 2025 James C. Owens
+ *
+ * This code is licensed under the MIT license
+ */
+
 #ifndef EVENT_DETECT_H
 #define EVENT_DETECT_H
 
