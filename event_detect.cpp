@@ -5,6 +5,7 @@
  */
 
 //#include <fstream>
+#include <fcntl.h>
 
 #include <event_detect.h>
 
@@ -28,10 +29,13 @@ EventRecorders g_event_recorders;
 EventMonitor::EventMonitor()
     : m_interrupt_monitor(false)
     , m_event_device_paths()
+    , m_initialized(false)
 {}
 
 EventMonitor::EventMonitor(std::vector<fs::path> event_device_paths)
-    : m_event_device_paths(event_device_paths)
+    : m_interrupt_monitor(false)
+    , m_event_device_paths(event_device_paths)
+    , m_initialized(false)
 {}
 
 void EventMonitor::EventActivityMonitorThread()
@@ -42,6 +46,8 @@ void EventMonitor::EventActivityMonitorThread()
     size_t event_devices_size_prev = 0;
 
     while (true) {
+        debug_log("event monitor thread loop");
+
         std::unique_lock<std::mutex> lock(mtx_event_monitor_thread);
         cv_monitor_thread.wait_for(lock, std::chrono::seconds(1), []{ return g_event_monitor.m_interrupt_monitor.load(); });
 
@@ -49,25 +55,32 @@ void EventMonitor::EventActivityMonitorThread()
             break;
         }
 
-        std::stringstream message;
-
-        message << "event_activity_monitor";
-
-        log(message.str());
-
         event_devices_size_prev = GetEventDevices().size();
 
         UpdateEventDevices();
 
         event_devices_size = GetEventDevices().size();
 
-        if (event_devices_size != event_devices_size_prev) {
+        if (m_initialized && event_devices_size != event_devices_size_prev) {
             log("Input event device count changed. Restarting recorder threads.");
             pthread_kill(main_thread_id, SIGHUP);
+            m_initialized = false;
+        } else {
+            m_initialized = true;
         }
+
+        std::stringstream message;
+
+        message << "event_activity_monitor loop: GetTotalEventCount() = " << g_event_recorders.GetTotalEventCount();
+        debug_log(message.str());
+
     }
 }
 
+bool EventMonitor::IsInitialized()
+{
+    return m_initialized;
+}
 
 std::vector<fs::path> EventMonitor::EnumerateEventDevices()
 {
@@ -78,6 +91,12 @@ std::vector<fs::path> EventMonitor::EnumerateEventDevices()
     fs::path event_device_path = "/sys/class/input";
 
     std::vector<fs::path> event_device_candidates = FindDirEntriesWithWildcard(event_device_path, "event.*");
+
+    std::stringstream message;
+
+    message << "event_device_candidates size = " << event_device_candidates.size();
+
+    debug_log(message.str());
 
     for (const auto& event_device : event_device_candidates) {
         std::stringstream message;
@@ -94,6 +113,12 @@ std::vector<fs::path> EventMonitor::EnumerateEventDevices()
         exit(1);
     }
 
+    std::stringstream message2;
+
+    message2 << "event_devices size = " << event_devices.size();
+
+    debug_log(message2.str());
+
     return event_devices;
 }
 
@@ -106,6 +131,8 @@ std::vector<fs::path> EventMonitor::GetEventDevices()
 
 void EventMonitor::UpdateEventDevices()
 {
+    debug_log("EventMonitor::UpdateEventDevices() called");
+
     std::unique_lock<std::mutex> lock(mtx_event_monitor);
 
     m_event_device_paths = EnumerateEventDevices();
@@ -181,9 +208,9 @@ fs::path EventRecorders::EventRecorder::GetEventDevicePath()
 
 int64_t EventRecorders::EventRecorder::GetEventCount()
 {
-    std::unique_lock<std::mutex> lock(mtx_event_recorder);
+    // No explicit lock needed.
 
-    return m_event_count;
+    return m_event_count.load();
 }
 
 void EventRecorders::EventRecorder::EventActivityRecorderThread()
@@ -191,13 +218,49 @@ void EventRecorders::EventRecorder::EventActivityRecorderThread()
     debug_log("EventRecorders::EventRecorder::EventActivityRecorderThread() called");
     debug_log(GetEventDevicePath());
 
-    //std::ofstream fifo(event_count_files_path + "/" + event_id + "_signal.dat");
-    //fifo << "none";
-    //fifo.close();
+    fs::path device_access_path = "/dev/input" / GetEventDevicePath().filename();
+
+    debug_log(device_access_path.c_str());
+
+    int fd = open(device_access_path.c_str(), O_RDONLY | O_NONBLOCK);;
+    struct libevdev *dev = nullptr;
+
+    if (fd < 0) {
+        std::stringstream message;
+
+        message << "Failed to open device: " << strerror(errno);
+
+        error_log(message.str());
+        return; //TODO: Error handling
+    }
+
+    // Initialize libevdev
+    int rc = libevdev_new_from_fd(fd, &dev);
+    if (rc < 0) {
+        std::stringstream message;
+
+        message << "Failed to init libevdev: " << strerror(-rc);
+
+        error_log(message.str())
+            ;
+        close(fd);
+        return; //TODO: Error handling
+    }
+
+    {
+        std::stringstream message;
+
+        message << "Device: " << libevdev_get_name(dev) << std::endl
+                << "Path: " << device_access_path << std::endl
+                << "Physical Path: " << libevdev_get_phys(dev) << std::endl
+                << "Unique: " << libevdev_get_uniq(dev) << std::endl;
+
+        debug_log(message.str());
+    }
+
+    struct input_event ev;
 
     while (true) {
-        // Simulate evemu-record
-
         std::unique_lock<std::mutex> lock(g_event_recorders.mtx_event_recorder_threads);
         g_event_recorders.cv_recorder_threads.wait_for(lock, std::chrono::seconds(1),
                                                        []{ return g_event_recorders.m_interrupt_recorders.load(); });
@@ -206,13 +269,50 @@ void EventRecorders::EventRecorder::EventActivityRecorderThread()
             break;
         }
 
-        std::stringstream message;
+        {
+            std::stringstream message;
 
-        message << "event_activity_recorder for "
-                << GetEventDevicePath();
+            message << "event_activity_recorder for "
+                    << GetEventDevicePath();
 
-        log(message.str());
+            log(message.str());
+        }
+
+        int libevdev_mode_flag = LIBEVDEV_READ_FLAG_NORMAL;
+        while (true) {
+            rc = libevdev_next_event(dev, libevdev_mode_flag /* | LIBEVDEV_READ_FLAG_BLOCKING */, &ev);
+
+            if (rc == LIBEVDEV_READ_STATUS_SUCCESS) {
+                ++m_event_count;
+
+                libevdev_mode_flag = LIBEVDEV_READ_FLAG_NORMAL;
+            } else if (rc == LIBEVDEV_READ_STATUS_SYNC) {
+                ++m_event_count;
+
+                libevdev_mode_flag = LIBEVDEV_READ_FLAG_SYNC;
+
+            } else if (rc == -EAGAIN) {
+                // No event available, break to the outer loop to listen for signals
+                break;
+            } else if (rc == -ENODEV) {
+                // Device disconnected
+                log("Device disconnected");
+                break;
+            } else {
+                std::stringstream message;
+
+                message << "Error reading event: " << strerror(-rc);
+
+                error_log(message.str());
+                break;
+            }
+        }
     }
+
+    // Cleanup
+    libevdev_free(dev);
+    close(fd);
+
 }
 
 void HandleSignals(int signum)
@@ -282,12 +382,7 @@ void CleanUpEventDatFiles()
 {
     debug_log("CleanUpEventDatFiles() called");
 
-    //for (const std::string& event_id : event_device_id_array) {
-    //    std::remove((event_count_files_path + "/" + event_id + "_count.dat").c_str());
-    //    std::remove((event_count_files_path + "/" + event_id + "_evemu_pid.dat").c_str());
-    //    std::remove((event_count_files_path + "/" + event_id + "_signal.dat").c_str());
-    //}
-    //std::remove((event_count_files_path + "/last_active_time.dat").c_str());
+    // Currently nothing to do. May be removed.
 }
 
 int main()
@@ -321,13 +416,16 @@ int main()
 
     log("event_detect C++ program started");
 
-    //std::ofstream last_active_time_file(event_count_files_path + "/last_active_time.dat");
-    //last_active_time_file << "0";
-    //last_active_time_file.close();
-
     InitiateEventActivityMonitor();
 
+
+
     while (true) {
+        // wait for InitiateEventActivityMonitor() thread to finish initializing:
+        while(!g_event_monitor.IsInitialized()) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
+
         // Includes the reset of EventActivityRecorders
         InitiateEventActivityRecorders();
 
@@ -352,12 +450,6 @@ int main()
             log("killing event id monitor thread");
             g_event_monitor.m_interrupt_monitor = true;
             g_event_monitor.cv_monitor_thread.notify_all();
-
-            /*
-            if (monitor_thread.second.joinable()) {
-                monitor_thread.second.join();
-            }
-            */
 
             if (g_event_monitor.m_event_monitor_thread.joinable()) {
                 g_event_monitor.m_event_monitor_thread.join();

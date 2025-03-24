@@ -94,6 +94,8 @@ public:
 
     void EventActivityMonitorThread();
 
+    bool IsInitialized();
+
 private:
     static std::vector<fs::path> EnumerateEventDevices();
 
@@ -101,6 +103,8 @@ private:
     mutable std::mutex mtx_event_monitor_thread;
 
     std::vector<fs::path> m_event_device_paths;
+
+    bool m_initialized;
 };
 
 class EventRecorders
@@ -133,7 +137,7 @@ public:
 
         fs::path m_event_device_path;
 
-        int64_t m_event_count;
+        std::atomic<int64_t> m_event_count;
     };
 
     int64_t GetTotalEventCount();

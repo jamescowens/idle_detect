@@ -18,6 +18,8 @@ SOURCES = \
 
 INCLUDEPATH = /usr/include/libevdev-1.0
 
+LIBS += -levdev
+
 #DEFINES = 
 
 DISTFILES += \
