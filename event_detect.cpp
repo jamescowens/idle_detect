@@ -420,6 +420,9 @@ void InitiateEventActivityRecorders()
     for (auto& recorder : g_event_recorders.GetEventRecorders()) {
         recorder->m_event_recorder_thread = std::thread(&EventRecorders::EventRecorder::EventActivityRecorderThread,
                                                         recorder);
+
+        // Spread the thread start out a little bit.
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
 
      for (const auto& recorder : g_event_recorders.GetEventRecorders()) {
