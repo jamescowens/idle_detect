@@ -449,7 +449,17 @@ void CleanUpEventDatFiles()
     debug_log("INFO: %s: started",
               __func__);
 
-    // Currently nothing to do.
+    fs::path last_active_time_path = g_event_data_path / g_last_active_time_cpp_filename;
+
+    if (fs::exists(last_active_time_path)) {
+        try {
+            fs::remove(last_active_time_path);
+        } catch (std::exception& e) {
+            log("WARNING: %s: last_active_time file %s could not be removed",
+                __func__,
+                last_active_time_path);
+        }
+    }
 }
 
 std::string GetArg(std::string arg, std::string default_value)
