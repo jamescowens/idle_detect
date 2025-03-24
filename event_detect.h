@@ -12,11 +12,9 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <iostream>
 #include <mutex>
 #include <map>
-#include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
@@ -34,7 +32,7 @@ namespace fs = std::filesystem;
 
 bool g_debug = 0;
 
-[[nodiscard]] inline std::vector<std::string> split(const std::string& s, const std::string& delim)
+[[nodiscard]] std::vector<std::string> StringSplit(const std::string& s, const std::string& delim)
 {
     size_t pos = 0;
     size_t end = 0;
@@ -51,7 +49,7 @@ bool g_debug = 0;
     return elems;
 }
 
-[[nodiscard]] inline std::string TrimString(const std::string& str, const std::string& pattern = " \f\n\r\t\v")
+[[nodiscard]] std::string TrimString(const std::string& str, const std::string& pattern = " \f\n\r\t\v")
 {
     std::string::size_type front = str.find_first_not_of(pattern);
     if (front == std::string::npos) {
@@ -59,6 +57,55 @@ bool g_debug = 0;
     }
     std::string::size_type end = str.find_last_not_of(pattern);
     return str.substr(front, end - front + 1);
+}
+
+[[nodiscard]] std::string StripQuotes(const std::string& str) {
+    if (str.empty()) {
+        return str; // No quotes to strip from an empty string.
+    }
+
+    std::string result = str; // Create a copy so we can modify it.
+
+    if (result.front() == '"' || result.front() == '\'') {
+        result.erase(0, 1); // Remove the leading quote.
+    }
+
+    if (!result.empty() && (result.back() == '"' || result.back() == '\'')) {
+        result.pop_back(); // Remove the trailing quote.
+    }
+
+    return result;
+}
+
+/**
+ * Converts the given character to its lowercase equivalent.
+ * This function is locale independent. It only converts uppercase
+ * characters in the standard 7-bit ASCII range.
+ * This is a feature, not a limitation.
+ *
+ * @param[in] c     the character to convert to lowercase.
+ * @return          the lowercase equivalent of c; or the argument
+ *                  if no conversion is possible.
+ */
+constexpr char ToLower(char c)
+{
+    return (c >= 'A' && c <= 'Z' ? (c - 'A') + 'a' : c);
+}
+
+/**
+ * Returns the lowercase equivalent of the given string.
+ * This function is locale independent. It only converts uppercase
+ * characters in the standard 7-bit ASCII range.
+ * This is a feature, not a limitation.
+ *
+ * @param[in] str   the string to convert to lowercase.
+ * @returns         lowercased equivalent of str
+ */
+std::string ToLower(const std::string& str)
+{
+    std::string r;
+    for (auto ch : str) r += ToLower((unsigned char)ch);
+    return r;
 }
 
 //!
@@ -155,6 +202,24 @@ void error_log(const char* fmt, const Args&... args)
     std::cerr << LogPrintStr(error_fmt.c_str(), args...);
 }
 
+[[nodiscard]] int ParseStringToInt(const std::string& str){
+    try{
+        return std::stoi(str);
+    }
+    catch (const std::invalid_argument& e){
+        error_log("%s: Invalid argument: %s",
+                  __func__,
+                  e.what());
+        throw;
+    }
+    catch (const std::out_of_range& e){
+        error_log("%s: Out of range: %s",
+                  __func__,
+                  e.what());
+        throw;
+    }
+}
+
 std::multimap<std::string, std::string> ReadConfig(const std::string& filename) {
     std::multimap<std::string, std::string> config;
     std::ifstream file(filename);
@@ -173,13 +238,14 @@ std::multimap<std::string, std::string> ReadConfig(const std::string& filename) 
             continue;
         }
 
-        std::vector line_elements = split(line, "=");
+        std::vector line_elements = StringSplit(line, "=");
 
         if (line_elements.size() != 2) {
             continue;
         }
 
-        config.insert(std::make_pair(TrimString(line_elements[0]), TrimString(line_elements[1])));
+        config.insert(std::make_pair(StripQuotes(TrimString(line_elements[0])),
+                                     StripQuotes(TrimString(line_elements[1]))));
     }
 
     file.close();

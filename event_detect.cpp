@@ -4,24 +4,32 @@
  * This code is licensed under the MIT license
  */
 
+#include <cstring>
 #include <fcntl.h>
 
 #include <event_detect.h>
 
 pthread_t g_main_thread_id = 0;
-int g_exit_code = 0;
+std::atomic<int> g_exit_code = 0;
 
-//std::atomic<int64_t> event_count = 0;
-
+//!
+//! \brief global that holds config parameter name-value pairs that were read from config file.
+//!
 std::multimap<std::string, std::string> g_config;
 
+int g_startup_delay = 0;
 fs::path g_event_data_path;
+bool g_write_last_active_time_to_file = false;
 std::string g_last_active_time_cpp_filename;
 
-// Global event monitor singleton
+//!
+//! \brief Global event monitor singleton
+//!
 EventMonitor g_event_monitor;
 
-// Global event recorders singleton
+//!
+//! \brief Global event recorders singleton
+//!
 EventRecorders g_event_recorders;
 
 // Class EventMonitor
@@ -94,30 +102,32 @@ void EventMonitor::EventActivityMonitorThread()
                   __func__,
                   m_last_active_time.load());
 
-        fs::path last_active_time_filepath = g_event_data_path / g_last_active_time_cpp_filename;
+        if (g_write_last_active_time_to_file) {
+            fs::path last_active_time_filepath = g_event_data_path / g_last_active_time_cpp_filename;
 
-        // Open the file for writing (overwrites)
-        std::ofstream output_file(last_active_time_filepath);
+            // Open the file for writing (overwrites)
+            std::ofstream output_file(last_active_time_filepath);
 
-        if (!output_file.is_open()) {
-            error_log("%s: Could not open file %s for writing.",
-                      __func__,
-                      last_active_time_filepath);
+            if (!output_file.is_open()) {
+                error_log("%s: Could not open file %s for writing.",
+                          __func__,
+                          last_active_time_filepath);
 
-            g_exit_code = 1;
-            pthread_kill(g_main_thread_id, SIGTERM);; //TODO: Error handling
-        }
+                g_exit_code = 1;
+                pthread_kill(g_main_thread_id, SIGTERM);;
+            }
 
-        output_file << m_last_active_time << std::endl;
+            output_file << m_last_active_time << std::endl;
 
-        if (!output_file.good()) {
-            error_log("%s: Error writing to file %s.",
-                      __func__,
-                      last_active_time_filepath);
-            output_file.close();
+            if (!output_file.good()) {
+                error_log("%s: Error writing to file %s.",
+                          __func__,
+                          last_active_time_filepath);
+                output_file.close();
 
-            g_exit_code = 1;
-            pthread_kill(g_main_thread_id, SIGTERM);;
+                g_exit_code = 1;
+                pthread_kill(g_main_thread_id, SIGTERM);;
+            }
         }
     }
 }
@@ -289,8 +299,8 @@ void EventRecorders::EventRecorder::EventActivityRecorderThread()
                   __func__,
                   device_access_path,
                   strerror(errno));
-
-        return; //TODO: Better error handling
+        g_exit_code = 1;
+        return;
     }
 
     // Initialize libevdev
@@ -302,7 +312,8 @@ void EventRecorders::EventRecorder::EventActivityRecorderThread()
                   strerror(-rc));
 
         close(fd);
-        return; //TODO: Better error handling
+        g_exit_code = 1;
+        return;
     }
 
     debug_log("INFO: %s: Device: %s, Path: %s, Physical Path: %s, Unique: %s",
@@ -451,11 +462,27 @@ void ProcessArgs()
 {
     std::string debug_arg = GetArg("debug", "true");
 
-    if (debug_arg == "1" || debug_arg == "true") {
+    if (debug_arg == "1" || ToLower(debug_arg) == "true") {
         g_debug = 1;
     }
 
+    try {
+        g_startup_delay = ParseStringToInt(GetArg("startup_delay", "0"));
+    } catch (std::exception& e) {
+        error_log("%s: startup_delay parameter in config file has invalid value: %s",
+                  __func__,
+                  e.what());
+    }
+
     g_event_data_path = GetArg("event_count_files_path", "/run/event_detect");
+
+    try {
+        g_write_last_active_time_to_file = ParseStringToInt(GetArg("write_last_active_time_to_file", "0"));
+    } catch (std::exception& e) {
+        error_log("%s: write_last_active_time_to_file in config file has invalid value: %s",
+                  __func__,
+                  e.what());
+    }
 
     g_last_active_time_cpp_filename = GetArg("last_active_time_cpp_filename", "last_active_time.dat");
 }
@@ -484,6 +511,14 @@ int main(int argc, char* argv[])
     }
 
     ProcessArgs();
+
+    if (g_startup_delay > 0) {
+        log("INFO: %s: Waiting for %u seconds to start.",
+            __func__,
+            g_startup_delay);
+
+        std::this_thread::sleep_for(std::chrono::seconds(g_startup_delay));
+    }
 
     int sig = 0;
 
