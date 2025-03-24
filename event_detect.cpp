@@ -9,6 +9,7 @@
 #include <event_detect.h>
 
 pthread_t main_thread_id = 0;
+int exit_code = 0;
 
 //std::atomic<bool> interrupt_recorders = 0;
 //std::atomic<bool> interrupt_monitor = 0;
@@ -37,7 +38,8 @@ EventMonitor::EventMonitor(std::vector<fs::path> event_device_paths)
 
 void EventMonitor::EventActivityMonitorThread()
 {
-    debug_log("EventMonitor::EventActivityMonitorThread() called");
+    debug_log("INFO: %s: started",
+              __func__);
 
     size_t event_devices_size = 0;
     size_t event_devices_size_prev = 0;
@@ -49,7 +51,8 @@ void EventMonitor::EventActivityMonitorThread()
     m_last_active_time = GetUnixEpochTime();
 
     while (true) {
-        debug_log("event monitor thread loop");
+        debug_log("INFO: %s: event monitor thread loop at top of iteration",
+                  __func__);
 
         std::unique_lock<std::mutex> lock(mtx_event_monitor_thread);
         cv_monitor_thread.wait_for(lock, std::chrono::seconds(1), []{ return g_event_monitor.m_interrupt_monitor.load(); });
@@ -65,7 +68,9 @@ void EventMonitor::EventActivityMonitorThread()
         event_devices_size = GetEventDevices().size();
 
         if (m_initialized && event_devices_size != event_devices_size_prev) {
-            log("Input event device count changed. Restarting recorder threads.");
+            log("INFO: %s: Input event device count changed. Restarting recorder threads.",
+                __func__);
+
             pthread_kill(main_thread_id, SIGHUP);
             m_initialized = false;
         } else {
@@ -74,24 +79,18 @@ void EventMonitor::EventActivityMonitorThread()
 
         event_count = g_event_recorders.GetTotalEventCount();
 
-        {
-            std::stringstream message;
-
-            message << "event_activity_monitor loop: event_count = " << event_count;
-            debug_log(message.str());
-        }
+        debug_log("INFO: %s: loop: event_count = %lld",
+                  __func__,
+                  event_count);
 
         if (event_count != event_count_prev) {
             m_last_active_time = GetUnixEpochTime();
             event_count_prev = event_count;
         }
 
-        {
-            std::stringstream message;
-
-            message << "event_activity_monitor loop: m_last_active_time = " << m_last_active_time.load();
-            log(message.str());
-        }
+         debug_log("INFO: %s: loop: m_last_active_time = %lld",
+                  __func__,
+                  m_last_active_time.load());
     }
 }
 
@@ -102,7 +101,8 @@ bool EventMonitor::IsInitialized()
 
 std::vector<fs::path> EventMonitor::EnumerateEventDevices()
 {
-    debug_log("EventMonitor::EnumerateEventDevices() called");
+    debug_log("INFO: %s: started",
+              __func__);
 
     std::vector<fs::path> event_devices;
 
@@ -110,13 +110,9 @@ std::vector<fs::path> EventMonitor::EnumerateEventDevices()
 
     std::vector<fs::path> event_device_candidates = FindDirEntriesWithWildcard(event_device_path, "event.*");
 
-    {
-        std::stringstream message;
-
-        message << "event_device_candidates size = " << event_device_candidates.size();
-
-        debug_log(message.str());
-    }
+    debug_log("INFO: %s: event_device_candidates.size() = %u",
+              __func__,
+              event_device_candidates.size());
 
     for (const auto& event_device : event_device_candidates) {
         std::stringstream message;
@@ -129,17 +125,16 @@ std::vector<fs::path> EventMonitor::EnumerateEventDevices()
     }
 
     if (event_devices.empty()) {
-        log("ERROR: No pointing devices identified to monitor. Exiting.");
-        exit(1);
+        error_log("%s: No pointing devices identified to monitor. Exiting.",
+                  __func__);
+
+        exit_code = 1;
+        pthread_kill(main_thread_id, SIGTERM);
     }
 
-    {
-        std::stringstream message;
-
-        message << "event_devices size = " << event_devices.size();
-
-        debug_log(message.str());
-    }
+    debug_log("INFO: %s: event_devices.size() = %u",
+              __func__,
+              event_devices.size());
 
     return event_devices;
 }
@@ -153,7 +148,8 @@ std::vector<fs::path> EventMonitor::GetEventDevices()
 
 void EventMonitor::UpdateEventDevices()
 {
-    debug_log("EventMonitor::UpdateEventDevices() called");
+    debug_log("INFO: %s: started",
+              __func__);
 
     std::unique_lock<std::mutex> lock(mtx_event_monitor);
 
@@ -237,48 +233,51 @@ int64_t EventRecorders::EventRecorder::GetEventCount()
 
 void EventRecorders::EventRecorder::EventActivityRecorderThread()
 {
-    debug_log("EventRecorders::EventRecorder::EventActivityRecorderThread() called");
-    debug_log(GetEventDevicePath());
+    debug_log("INFO: %s: started",
+              __func__);
+
+    debug_log("INFO: %s: GetEventDevicePath() = %s",
+              __func__,
+              GetEventDevicePath());
 
     fs::path device_access_path = "/dev/input" / GetEventDevicePath().filename();
 
-    debug_log(device_access_path.c_str());
+    debug_log("INFO: %s: device_access_path = %s",
+              __func__,
+              device_access_path);
 
+    // Note this c-string here should not be a problem for /dev/input, which is
+    // standardized and doesn't do anything funky with filenames in other character sets.
     int fd = open(device_access_path.c_str(), O_RDONLY | O_NONBLOCK);;
     struct libevdev *dev = nullptr;
 
     if (fd < 0) {
-        std::stringstream message;
+        error_log("%s: Failed to open device %s: %s",
+                  __func__,
+                  device_access_path,
+                  strerror(errno));
 
-        message << "Failed to open device: " << strerror(errno);
-
-        error_log(message.str());
-        return; //TODO: Error handling
+        return; //TODO: Better error handling
     }
 
     // Initialize libevdev
     int rc = libevdev_new_from_fd(fd, &dev);
     if (rc < 0) {
-        std::stringstream message;
+         error_log("%s: Failed to init libevdev for device %s: %s",
+                  __func__,
+                  device_access_path,
+                  strerror(-rc));
 
-        message << "Failed to init libevdev: " << strerror(-rc);
-
-        error_log(message.str())
-            ;
         close(fd);
-        return; //TODO: Error handling
+        return; //TODO: Better error handling
     }
 
-    {
-        std::stringstream message;
-
-        message << "Device: " << libevdev_get_name(dev) << std::endl
-                << "Path: " << device_access_path << std::endl
-                << "Physical Path: " << libevdev_get_phys(dev) << std::endl
-                << "Unique: " << libevdev_get_uniq(dev) << std::endl;
-
-        debug_log(message.str());
-    }
+    debug_log("INFO: %s: Device: %s, Path: %s, Physical Path: %s, Unique: %s",
+              __func__,
+              libevdev_get_name(dev),
+              device_access_path,
+              libevdev_get_phys(dev),
+              libevdev_get_uniq(dev));
 
     struct input_event ev;
 
@@ -291,14 +290,9 @@ void EventRecorders::EventRecorder::EventActivityRecorderThread()
             break;
         }
 
-        {
-            std::stringstream message;
-
-            message << "event_activity_recorder for "
-                    << GetEventDevicePath();
-
-            debug_log(message.str());
-        }
+        debug_log("INFO: %s: event_activity_recorder loop iteration for %s",
+                  __func__,
+                  GetEventDevicePath());
 
         int libevdev_mode_flag = LIBEVDEV_READ_FLAG_NORMAL;
         while (true) {
@@ -309,6 +303,7 @@ void EventRecorders::EventRecorder::EventActivityRecorderThread()
 
                 libevdev_mode_flag = LIBEVDEV_READ_FLAG_NORMAL;
             } else if (rc == LIBEVDEV_READ_STATUS_SYNC) {
+                // We only need to count events to detect activity.
                 ++m_event_count;
 
                 libevdev_mode_flag = LIBEVDEV_READ_FLAG_SYNC;
@@ -321,11 +316,12 @@ void EventRecorders::EventRecorder::EventActivityRecorderThread()
                 error_log("Device disconnected");
                 break;
             } else {
-                std::stringstream message;
+                error_log("%s: reading event: %s",
+                          __func__,
+                          strerror(-rc));
 
-                message << "Error reading event: " << strerror(-rc);
-
-                error_log(message.str());
+                // We will break from the read loop and hopefully when it is reentered after 1 sec from the
+                // outer thread loop, the error will clear.
                 break;
             }
         }
@@ -334,26 +330,29 @@ void EventRecorders::EventRecorder::EventActivityRecorderThread()
     // Cleanup
     libevdev_free(dev);
     close(fd);
-
 }
 
 void HandleSignals(int signum)
 {
-    debug_log("HandleSignals() called");
+    debug_log("INFO: %s: started",
+              __func__);
 
     switch (signum) {
     case SIGINT:
-        debug_log("SIGINT received.");
+        debug_log("INFO: %s: SIGINT received",
+                  __func__);
         g_event_recorders.m_interrupt_recorders = true;
         g_event_recorders.cv_recorder_threads.notify_all();
         break;
     case SIGTERM:
-        debug_log("SIGTERM received");
+        debug_log("INFO: %s: SIGTERM received",
+                  __func__);
         g_event_recorders.m_interrupt_recorders = true;
         g_event_recorders.cv_recorder_threads.notify_all();
         break;
     case SIGHUP:
-        debug_log("SIGHUP received");
+        debug_log("INFO: %s: SIGHUP received",
+                  __func__);
         g_event_recorders.m_interrupt_recorders = true;
         g_event_recorders.cv_recorder_threads.notify_all();
         break;
@@ -365,7 +364,8 @@ void HandleSignals(int signum)
 
 void InitiateEventActivityRecorders()
 {
-    debug_log("InitiateEventActivityRecorders() called");
+    debug_log("INFO: %s: started",
+              __func__);
 
     g_event_recorders.m_interrupt_recorders = false;
 
@@ -377,14 +377,10 @@ void InitiateEventActivityRecorders()
     }
 
      for (const auto& recorder : g_event_recorders.GetEventRecorders()) {
-        std::stringstream message;
-
-        message << "event device path = "
-                << recorder->GetEventDevicePath()
-                << " thread id = "
-                << recorder->m_event_recorder_thread.get_id();
-
-        debug_log(message.str());
+        debug_log("INFO: %s: GetEventRecorders() range loop: event device path = %s, thread id = %lld",
+                  __func__,
+                  recorder->GetEventDevicePath(),
+                  recorder->m_event_recorder_thread.get_id());
     }
 
     std::cout << std::endl;
@@ -392,7 +388,8 @@ void InitiateEventActivityRecorders()
 
 void InitiateEventActivityMonitor()
 {
-    debug_log("InitiateEventActivityMonitor() called");
+    debug_log("INFO: %s: started",
+              __func__);
 
     g_event_monitor.m_interrupt_monitor = false;
 
@@ -402,9 +399,10 @@ void InitiateEventActivityMonitor()
 
 void CleanUpEventDatFiles()
 {
-    debug_log("CleanUpEventDatFiles() called");
+    debug_log("INFO: %s: started",
+              __func__);
 
-    // Currently nothing to do. May be removed.
+    // Currently nothing to do.
 }
 
 int main()
@@ -436,18 +434,14 @@ int main()
         return 1;
     }
 
-    log("event_detect C++ program started");
+    log("INFO: %s: event_detect C++ program started",
+        __func__);
 
-    {
-        std::stringstream message;
-        message << "main pid: " << main_thread_id;
-
-        debug_log(message.str());
-    }
+    debug_log("INFO: %s: main_thread_id = %lld",
+              __func__,
+              main_thread_id);
 
     InitiateEventActivityMonitor();
-
-
 
     while (true) {
         // wait for InitiateEventActivityMonitor() thread to finish initializing:
@@ -463,8 +457,10 @@ int main()
             HandleSignals(sig);
         }
 
-        // Wait for all threads to finish (blocks)
-        log("joining event activity worker threads");
+        log("INFO: %s: joining event activity worker threads",
+            __func__);
+
+        // Wait for all threads to finish (this blocks)
         for (auto& recorder : g_event_recorders.GetEventRecorders()) {
             if (recorder->m_event_recorder_thread.joinable()) {
                 recorder->m_event_recorder_thread.join();
@@ -476,7 +472,9 @@ int main()
         }
 
         if (sig == SIGINT || sig == SIGTERM) {
-            log("killing event id monitor thread");
+            log("INFO: %s: joining event id monitor thread",
+                __func__);
+
             g_event_monitor.m_interrupt_monitor = true;
             g_event_monitor.cv_monitor_thread.notify_all();
 
@@ -490,5 +488,5 @@ int main()
         }
     }
 
-    return 0;
+    return exit_code;
 }

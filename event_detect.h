@@ -25,61 +25,11 @@
 #include <sys/wait.h>
 #include <libevdev/libevdev.h>
 #include <libevdev/libevdev-uinput.h>
+#include <tinyformat.h>
 
 namespace fs = std::filesystem;
 
 bool debug = 1;
-
-void log(const std::string& message)
-{
-    std::stringstream out;
-
-    out << message << std::endl;
-
-    std::cout << out.str();
-}
-
-void debug_log(const std::string& message)
-{
-    if (debug) {
-        log(message);
-    }
-}
-
-void error_log(const std::string& message)
-{
-    std::stringstream out;
-
-    out << message << std::endl;
-
-    std::cerr << out.str();
-}
-
-std::vector<fs::path> FindDirEntriesWithWildcard(const fs::path& directory, const std::string& wildcard)
-{
-    std::vector<fs::path> matching_entries;
-    std::regex regex_wildcard(wildcard); //convert wildcard to regex.
-
-    if (!fs::exists(directory) || !fs::is_directory(directory)) {
-        std::stringstream message;
-
-        message << "directory to search for regex expression \""
-                << "does not exist or is not a directory: "
-                << directory;
-
-        debug_log(message.str());
-
-        return matching_entries;
-    }
-
-    for (const auto& entry : fs::directory_iterator(directory)) {
-        if (std::regex_match(entry.path().filename().string(), regex_wildcard)) {
-            matching_entries.push_back(entry.path());
-        }
-    }
-
-    return matching_entries;
-}
 
 int64_t GetUnixEpochTime()
 {
@@ -93,6 +43,79 @@ int64_t GetUnixEpochTime()
     int64_t seconds = std::chrono::duration_cast<std::chrono::seconds>(duration).count();
 
     return seconds;
+}
+
+std::string FormatISO8601DateTime(int64_t time) {
+    struct tm ts;
+    time_t time_val = time;
+    if (gmtime_r(&time_val, &ts) == nullptr) {
+         return {};
+    }
+
+    return strprintf("%04i-%02i-%02iT%02i:%02i:%02iZ", ts.tm_year + 1900, ts.tm_mon + 1, ts.tm_mday, ts.tm_hour, ts.tm_min, ts.tm_sec);
+}
+
+template <typename... Args>
+static inline std::string LogPrintStr(const char* fmt, const Args&... args)
+{
+    std::string log_msg = FormatISO8601DateTime(GetUnixEpochTime()) + " ";
+
+    try {
+        log_msg += tfm::format(fmt, args...);
+    } catch (tinyformat::format_error& fmterr) {
+        /* Original format string will have newline so don't add one here */
+        log_msg += "Error \"" + std::string(fmterr.what()) + "\" while formatting log message: " + fmt;
+    }
+
+    log_msg += "\n";
+
+    return log_msg;
+}
+
+template <typename... Args>
+void log(const char* fmt, const Args&... args)
+{
+    std::cout << LogPrintStr(fmt, args...);
+}
+
+
+template <typename... Args>
+void debug_log(const char* fmt, const Args&... args)
+{
+    if (debug) {
+        log(fmt, args...);
+    }
+}
+
+
+template <typename... Args>
+void error_log(const char* fmt, const Args&... args)
+{
+    std::cerr << "ERROR: " << LogPrintStr(fmt, args...);
+}
+
+std::vector<fs::path> FindDirEntriesWithWildcard(const fs::path& directory, const std::string& wildcard)
+{
+    std::vector<fs::path> matching_entries;
+    std::regex regex_wildcard(wildcard); //convert wildcard to regex.
+
+    if (!fs::exists(directory) || !fs::is_directory(directory)) {
+         debug_log("WARNING: %s, directory %s to search for regex expression \"%s\""
+                  "does not exist or is not a directory.",
+                  __func__,
+                  directory,
+                  wildcard);
+
+        return matching_entries;
+    }
+
+    for (const auto& entry : fs::directory_iterator(directory)) {
+        if (std::regex_match(entry.path().filename().string(), regex_wildcard)) {
+            matching_entries.push_back(entry.path());
+        }
+    }
+
+    return matching_entries;
 }
 
 class EventMonitor

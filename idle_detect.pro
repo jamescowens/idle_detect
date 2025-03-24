@@ -11,7 +11,8 @@ QMAKE_CXXFLAGS += -std=c++17
 QT = core gui widgets
 
 HEADERS = \
-    event_detect.h
+    event_detect.h \
+    tinyformat.h
 
 SOURCES = \
    event_detect.cpp
