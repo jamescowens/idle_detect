@@ -77,6 +77,20 @@ std::vector<fs::path> FindDirEntriesWithWildcard(const fs::path& directory, cons
     return matching_entries;
 }
 
+int64_t GetUnixEpochTime()
+{
+    // Get the current time point
+    auto now = std::chrono::system_clock::now();
+
+    // Convert the time point to a duration since the epoch
+    auto duration = now.time_since_epoch();
+
+    // Convert the duration to seconds
+    int64_t seconds = std::chrono::duration_cast<std::chrono::seconds>(duration).count();
+
+    return seconds;
+}
+
 class EventMonitor
 {
 public:
@@ -103,6 +117,8 @@ private:
     mutable std::mutex mtx_event_monitor_thread;
 
     std::vector<fs::path> m_event_device_paths;
+
+    std::atomic<int64_t> m_last_active_time;
 
     bool m_initialized;
 };

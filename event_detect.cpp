@@ -44,6 +44,12 @@ void EventMonitor::EventActivityMonitorThread()
 
     size_t event_devices_size = 0;
     size_t event_devices_size_prev = 0;
+    int64_t event_count_prev = 0;
+    int64_t event_count = 0;
+
+    // Set the last active time to the current time at the start of monitoring. This is most likely correct
+    // since actions will have to be taken on the system to start this program.
+    m_last_active_time = GetUnixEpochTime();
 
     while (true) {
         debug_log("event monitor thread loop");
@@ -69,11 +75,25 @@ void EventMonitor::EventActivityMonitorThread()
             m_initialized = true;
         }
 
-        std::stringstream message;
+        event_count = g_event_recorders.GetTotalEventCount();
 
-        message << "event_activity_monitor loop: GetTotalEventCount() = " << g_event_recorders.GetTotalEventCount();
-        debug_log(message.str());
+        {
+            std::stringstream message;
 
+            message << "event_activity_monitor loop: event_count = " << event_count;
+            debug_log(message.str());
+        }
+
+        if (event_count != event_count_prev) {
+            m_last_active_time = GetUnixEpochTime();
+        }
+
+        {
+            std::stringstream message;
+
+            message << "event_activity_monitor loop: m_last_active_time = " << m_last_active_time.load();
+            debug_log(message.str());
+        }
     }
 }
 
@@ -415,6 +435,13 @@ int main()
     }
 
     log("event_detect C++ program started");
+
+    {
+        std::stringstream message;
+        message << "main pid: " << main_thread_id;
+
+        debug_log(message.str());
+    }
 
     InitiateEventActivityMonitor();
 
