@@ -28,6 +28,8 @@
 
 namespace fs = std::filesystem;
 
+bool debug = 1;
+
 void log(const std::string& message)
 {
     std::stringstream out;
@@ -39,7 +41,9 @@ void log(const std::string& message)
 
 void debug_log(const std::string& message)
 {
-    log(message);
+    if (debug) {
+        log(message);
+    }
 }
 
 void error_log(const std::string& message)

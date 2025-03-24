@@ -4,12 +4,9 @@
  * This code is licensed under the MIT license
  */
 
-//#include <fstream>
 #include <fcntl.h>
 
 #include <event_detect.h>
-
-//std::string event_count_files_path = "/path/to/event_count_files";
 
 pthread_t main_thread_id = 0;
 
@@ -86,13 +83,14 @@ void EventMonitor::EventActivityMonitorThread()
 
         if (event_count != event_count_prev) {
             m_last_active_time = GetUnixEpochTime();
+            event_count_prev = event_count;
         }
 
         {
             std::stringstream message;
 
             message << "event_activity_monitor loop: m_last_active_time = " << m_last_active_time.load();
-            debug_log(message.str());
+            log(message.str());
         }
     }
 }
@@ -112,11 +110,13 @@ std::vector<fs::path> EventMonitor::EnumerateEventDevices()
 
     std::vector<fs::path> event_device_candidates = FindDirEntriesWithWildcard(event_device_path, "event.*");
 
-    std::stringstream message;
+    {
+        std::stringstream message;
 
-    message << "event_device_candidates size = " << event_device_candidates.size();
+        message << "event_device_candidates size = " << event_device_candidates.size();
 
-    debug_log(message.str());
+        debug_log(message.str());
+    }
 
     for (const auto& event_device : event_device_candidates) {
         std::stringstream message;
@@ -133,11 +133,13 @@ std::vector<fs::path> EventMonitor::EnumerateEventDevices()
         exit(1);
     }
 
-    std::stringstream message2;
+    {
+        std::stringstream message;
 
-    message2 << "event_devices size = " << event_devices.size();
+        message << "event_devices size = " << event_devices.size();
 
-    debug_log(message2.str());
+        debug_log(message.str());
+    }
 
     return event_devices;
 }
@@ -295,7 +297,7 @@ void EventRecorders::EventRecorder::EventActivityRecorderThread()
             message << "event_activity_recorder for "
                     << GetEventDevicePath();
 
-            log(message.str());
+            debug_log(message.str());
         }
 
         int libevdev_mode_flag = LIBEVDEV_READ_FLAG_NORMAL;
@@ -316,7 +318,7 @@ void EventRecorders::EventRecorder::EventActivityRecorderThread()
                 break;
             } else if (rc == -ENODEV) {
                 // Device disconnected
-                log("Device disconnected");
+                error_log("Device disconnected");
                 break;
             } else {
                 std::stringstream message;
