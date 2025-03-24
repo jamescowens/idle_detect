@@ -1,5 +1,7 @@
 /*
  * Copyright (C) 2025 James C. Owens
+ * Portions Copyright (c) 2019 The Bitcoin Core developers
+ * Portions Copyright (c) 2025 The Gridcoin developers
  *
  * This code is licensed under the MIT license
  */
