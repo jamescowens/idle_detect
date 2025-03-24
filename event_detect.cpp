@@ -405,8 +405,27 @@ void CleanUpEventDatFiles()
     // Currently nothing to do.
 }
 
-int main()
+int main(int argc, char* argv[])
 {
+    if (argc != 2) {
+        error_log("%s: One argument must be specified for the location of the config file.",
+                  __func__);
+        exit_code = 1;
+
+        return exit_code;
+    }
+
+    fs::path config_file_path(argv[1]);
+
+    if (fs::exists(config_file_path) && fs::is_regular_file(config_file_path)) {
+        log("INFO: %s: Using config from %s",
+            __func__,
+            config_file_path);
+    } else {
+        log("WARNING: %s: Argument invalid for config file. Using defaults.",
+            __func__);
+    }
+
     int sig = 0;
 
     // Need the main thread id to be able to send signal from monitor thread back to main.

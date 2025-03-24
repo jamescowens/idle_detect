@@ -119,7 +119,10 @@ template <typename... Args>
 //!
 void error_log(const char* fmt, const Args&... args)
 {
-    std::cerr << "ERROR: " << LogPrintStr(fmt, args...);
+    std::string error_fmt = "ERROR: ";
+    error_fmt += fmt;
+
+    std::cerr << LogPrintStr(error_fmt.c_str(), args...);
 }
 
 //!
