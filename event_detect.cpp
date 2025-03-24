@@ -382,8 +382,6 @@ void InitiateEventActivityRecorders()
                   recorder->GetEventDevicePath(),
                   recorder->m_event_recorder_thread.get_id());
     }
-
-    std::cout << std::endl;
 }
 
 void InitiateEventActivityMonitor()
