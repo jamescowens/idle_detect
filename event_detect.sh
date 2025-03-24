@@ -8,6 +8,21 @@ source "$(dirname "$0")/idle_detect_resources.sh"
 
 source_config
 
+if [[ "$use_cpp_version" = "1" ]] || [[ "$use_cpp_version" = "true" ]]; then
+  if [[ -f "$(dirname "$0")/event_detect" ]]; then
+    exec "$(dirname "$0")/event_detect" "$config_file"
+    result="$?"
+    exit "$result"
+
+  elif [[ -f "./event_detect" ]]; then
+    exec "./event_detect" "$config_file"
+    result="$?"
+    exit "$result"
+  fi
+
+  # Fallback  to script version if C++ version cannot be found, even if use_cpp_version is true.
+fi
+
 log "$(version)"
 
 sleep "$startup_delay"
