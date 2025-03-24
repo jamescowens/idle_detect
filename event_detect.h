@@ -15,11 +15,14 @@
 #include <cstring>
 #include <iostream>
 #include <mutex>
+#include <map>
 #include <sstream>
 #include <string>
 #include <thread>
 #include <vector>
 #include <filesystem>
+#include <fstream>
+#include <iostream>
 #include <regex>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -29,7 +32,34 @@
 
 namespace fs = std::filesystem;
 
-bool debug = 1;
+bool g_debug = 0;
+
+[[nodiscard]] inline std::vector<std::string> split(const std::string& s, const std::string& delim)
+{
+    size_t pos = 0;
+    size_t end = 0;
+    std::vector<std::string> elems;
+
+    while((end = s.find(delim, pos)) != std::string::npos)
+    {
+        elems.push_back(s.substr(pos, end - pos));
+        pos = end + delim.size();
+    }
+
+    // Append final value
+    elems.push_back(s.substr(pos, end - pos));
+    return elems;
+}
+
+[[nodiscard]] inline std::string TrimString(const std::string& str, const std::string& pattern = " \f\n\r\t\v")
+{
+    std::string::size_type front = str.find_first_not_of(pattern);
+    if (front == std::string::npos) {
+        return std::string();
+    }
+    std::string::size_type end = str.find_last_not_of(pattern);
+    return str.substr(front, end - front + 1);
+}
 
 //!
 //! \brief Returns number of seconds since the beginning of the Unix Epoch.
@@ -106,7 +136,7 @@ template <typename... Args>
 //!
 void debug_log(const char* fmt, const Args&... args)
 {
-    if (debug) {
+    if (g_debug) {
         log(fmt, args...);
     }
 }
@@ -123,6 +153,37 @@ void error_log(const char* fmt, const Args&... args)
     error_fmt += fmt;
 
     std::cerr << LogPrintStr(error_fmt.c_str(), args...);
+}
+
+std::multimap<std::string, std::string> ReadConfig(const std::string& filename) {
+    std::multimap<std::string, std::string> config;
+    std::ifstream file(filename);
+
+    if (!file.is_open()) {
+        error_log("%s: Could not open the config file: %s",
+                  __func__,
+                  filename);
+        return config;
+    }
+
+    std::string line;
+    while (std::getline(file, line)) {
+        // Skip empty lines and lines starting with '#'
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+
+        std::vector line_elements = split(line, "=");
+
+        if (line_elements.size() != 2) {
+            continue;
+        }
+
+        config.insert(std::make_pair(TrimString(line_elements[0]), TrimString(line_elements[1])));
+    }
+
+    file.close();
+    return config;
 }
 
 //!

@@ -8,10 +8,15 @@
 
 #include <event_detect.h>
 
-pthread_t main_thread_id = 0;
-int exit_code = 0;
+pthread_t g_main_thread_id = 0;
+int g_exit_code = 0;
 
-std::atomic<int64_t> event_count = 0;
+//std::atomic<int64_t> event_count = 0;
+
+std::multimap<std::string, std::string> g_config;
+
+fs::path g_event_data_path;
+std::string g_last_active_time_cpp_filename;
 
 // Global event monitor singleton
 EventMonitor g_event_monitor;
@@ -68,7 +73,7 @@ void EventMonitor::EventActivityMonitorThread()
             log("INFO: %s: Input event device count changed. Restarting recorder threads.",
                 __func__);
 
-            pthread_kill(main_thread_id, SIGHUP);
+            pthread_kill(g_main_thread_id, SIGHUP);
             m_initialized = false;
         } else {
             m_initialized = true;
@@ -88,6 +93,32 @@ void EventMonitor::EventActivityMonitorThread()
         debug_log("INFO: %s: loop: m_last_active_time = %lld",
                   __func__,
                   m_last_active_time.load());
+
+        fs::path last_active_time_filepath = g_event_data_path / g_last_active_time_cpp_filename;
+
+        // Open the file for writing (overwrites)
+        std::ofstream output_file(last_active_time_filepath);
+
+        if (!output_file.is_open()) {
+            error_log("%s: Could not open file %s for writing.",
+                      __func__,
+                      last_active_time_filepath);
+
+            g_exit_code = 1;
+            pthread_kill(g_main_thread_id, SIGTERM);; //TODO: Error handling
+        }
+
+        output_file << m_last_active_time << std::endl;
+
+        if (!output_file.good()) {
+            error_log("%s: Error writing to file %s.",
+                      __func__,
+                      last_active_time_filepath);
+            output_file.close();
+
+            g_exit_code = 1;
+            pthread_kill(g_main_thread_id, SIGTERM);;
+        }
     }
 }
 
@@ -130,8 +161,8 @@ std::vector<fs::path> EventMonitor::EnumerateEventDevices()
         error_log("%s: No pointing devices identified to monitor. Exiting.",
                   __func__);
 
-        exit_code = 1;
-        pthread_kill(main_thread_id, SIGTERM);
+        g_exit_code = 1;
+        pthread_kill(g_main_thread_id, SIGTERM);
     }
 
     debug_log("INFO: %s: event_devices.size() = %u",
@@ -405,14 +436,38 @@ void CleanUpEventDatFiles()
     // Currently nothing to do.
 }
 
+std::string GetArg(std::string arg, std::string default_value)
+{
+    auto iter = g_config.find(arg);
+
+    if (iter != g_config.end()) {
+        return iter->second;
+    } else {
+        return default_value;
+    }
+}
+
+void ProcessArgs()
+{
+    std::string debug_arg = GetArg("debug", "true");
+
+    if (debug_arg == "1" || debug_arg == "true") {
+        g_debug = 1;
+    }
+
+    g_event_data_path = GetArg("event_count_files_path", "/run/event_detect");
+
+    g_last_active_time_cpp_filename = GetArg("last_active_time_cpp_filename", "last_active_time.dat");
+}
+
 int main(int argc, char* argv[])
 {
     if (argc != 2) {
         error_log("%s: One argument must be specified for the location of the config file.",
                   __func__);
-        exit_code = 1;
+        g_exit_code = 1;
 
-        return exit_code;
+        return g_exit_code;
     }
 
     fs::path config_file_path(argv[1]);
@@ -421,15 +476,19 @@ int main(int argc, char* argv[])
         log("INFO: %s: Using config from %s",
             __func__,
             config_file_path);
+
+        g_config = ReadConfig(config_file_path);
     } else {
         log("WARNING: %s: Argument invalid for config file. Using defaults.",
             __func__);
     }
 
+    ProcessArgs();
+
     int sig = 0;
 
     // Need the main thread id to be able to send signal from monitor thread back to main.
-    main_thread_id = pthread_self();
+    g_main_thread_id = pthread_self();
 
     // To avoid signal races, block signals in the main thread
     sigset_t mask;
@@ -458,7 +517,7 @@ int main(int argc, char* argv[])
 
     debug_log("INFO: %s: main_thread_id = %lld",
               __func__,
-              main_thread_id);
+              g_main_thread_id);
 
     InitiateEventActivityMonitor();
 
@@ -507,5 +566,5 @@ int main(int argc, char* argv[])
         }
     }
 
-    return exit_code;
+    return g_exit_code;
 }
