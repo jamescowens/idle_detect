@@ -11,9 +11,6 @@
 pthread_t main_thread_id = 0;
 int exit_code = 0;
 
-//std::atomic<bool> interrupt_recorders = 0;
-//std::atomic<bool> interrupt_monitor = 0;
-
 std::atomic<int64_t> event_count = 0;
 
 // Global event monitor singleton
@@ -88,7 +85,7 @@ void EventMonitor::EventActivityMonitorThread()
             event_count_prev = event_count;
         }
 
-         debug_log("INFO: %s: loop: m_last_active_time = %lld",
+        debug_log("INFO: %s: loop: m_last_active_time = %lld",
                   __func__,
                   m_last_active_time.load());
     }
@@ -97,6 +94,11 @@ void EventMonitor::EventActivityMonitorThread()
 bool EventMonitor::IsInitialized()
 {
     return m_initialized;
+}
+
+int64_t EventMonitor::GetLastActiveTime()
+{
+    return m_last_active_time.load();
 }
 
 std::vector<fs::path> EventMonitor::EnumerateEventDevices()

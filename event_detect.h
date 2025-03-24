@@ -31,6 +31,10 @@ namespace fs = std::filesystem;
 
 bool debug = 1;
 
+//!
+//! \brief Returns number of seconds since the beginning of the Unix Epoch.
+//! \return int64_t seconds.
+//!
 int64_t GetUnixEpochTime()
 {
     // Get the current time point
@@ -45,6 +49,11 @@ int64_t GetUnixEpochTime()
     return seconds;
 }
 
+//!
+//! \brief Formats input unix epoch time in human readable format.
+//! \param int64_t seconds.
+//! \return ISO8601 conformant datetime string.
+//!
 std::string FormatISO8601DateTime(int64_t time) {
     struct tm ts;
     time_t time_val = time;
@@ -56,6 +65,12 @@ std::string FormatISO8601DateTime(int64_t time) {
 }
 
 template <typename... Args>
+//!
+//! \brief Creates a string with fmt specifier and variadic args.
+//! \param fmt specifier
+//! \param args... variadic
+//! \return formatted std::string
+//!
 static inline std::string LogPrintStr(const char* fmt, const Args&... args)
 {
     std::string log_msg = FormatISO8601DateTime(GetUnixEpochTime()) + " ";
@@ -73,13 +88,22 @@ static inline std::string LogPrintStr(const char* fmt, const Args&... args)
 }
 
 template <typename... Args>
+//!
+//! \brief LogPrintStr directed to cout.
+//! \param fmt
+//! \param args
+//!
 void log(const char* fmt, const Args&... args)
 {
     std::cout << LogPrintStr(fmt, args...);
 }
 
-
 template <typename... Args>
+//!
+//! \brief LogPrintStr directed to cout, conditioned on the debug setting.
+//! \param fmt
+//! \param args
+//!
 void debug_log(const char* fmt, const Args&... args)
 {
     if (debug) {
@@ -87,13 +111,23 @@ void debug_log(const char* fmt, const Args&... args)
     }
 }
 
-
 template <typename... Args>
+//!
+//! \brief LogPrintStr directed to cerr
+//! \param fmt
+//! \param args
+//!
 void error_log(const char* fmt, const Args&... args)
 {
     std::cerr << "ERROR: " << LogPrintStr(fmt, args...);
 }
 
+//!
+//! \brief Finds directory entries in the provided path that match the provided wildcard string.
+//! \param directory
+//! \param wildcard
+//! \return std::vector of fs::paths that match.
+//!
 std::vector<fs::path> FindDirEntriesWithWildcard(const fs::path& directory, const std::string& wildcard)
 {
     std::vector<fs::path> matching_entries;
@@ -118,6 +152,13 @@ std::vector<fs::path> FindDirEntriesWithWildcard(const fs::path& directory, cons
     return matching_entries;
 }
 
+//!
+//! \brief The EventMonitor class provides the framework for monitoring event activity recorded by the EventRecorders
+//! class EventRecorder threads. It also monitors changes in the input event devices and resets the EventRecorder threads
+//! if they change. It also updates the m_last_active_time. The class is a singleton and has one instantiated thread.
+//! It uses locks to protect the event_monitor device paths and the thread. The m_last_active_time is an atomic and requires
+//! no explicit locking.
+//!
 class EventMonitor
 {
 public:
@@ -137,6 +178,8 @@ public:
 
     bool IsInitialized();
 
+    int64_t GetLastActiveTime();
+
 private:
     static std::vector<fs::path> EnumerateEventDevices();
 
@@ -150,6 +193,11 @@ private:
     bool m_initialized;
 };
 
+//!
+//! \brief The EventRecorders class provides the framework for recording event activity from each of the input event devices that
+//! are classified as a pointing device (mouse). It is a singleton, but has multiple subordinate threads running, 1 thread for each
+//! identified device to monitor.
+//!
 class EventRecorders
 {
     friend EventMonitor;
@@ -189,16 +237,11 @@ public:
 
     void ResetEventRecorders();
 
-
 private:
     mutable std::mutex mtx_event_recorders;
     mutable std::mutex mtx_event_recorder_threads;
 
     std::vector<std::shared_ptr<EventRecorder>> m_event_recorder_ptrs;
-
 };
-
-
-
 
 #endif // EVENT_DETECT_H
