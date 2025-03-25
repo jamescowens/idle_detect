@@ -30,8 +30,12 @@
 
 namespace fs = std::filesystem;
 
-//bool g_debug = 0;
-
+//!
+//! \brief Utility function to split string by the provided delimiter. Note that no trimming is done to remove white space.
+//! \param s: the string to split
+//! \param delim: the delimiter string
+//! \return std::vector of string parts
+//!
 [[nodiscard]] std::vector<std::string> StringSplit(const std::string& s, const std::string& delim)
 {
     size_t pos = 0;
@@ -49,6 +53,12 @@ namespace fs = std::filesystem;
     return elems;
 }
 
+//!
+//! \brief Utility function to trim whitespace from the beginning and end of a string.
+//! \param str: the string to trim
+//! \param pattern: the pattern to trim, defaulting to " \f\n\r\t\v"
+//! \return trimmed string
+//!
 [[nodiscard]] std::string TrimString(const std::string& str, const std::string& pattern = " \f\n\r\t\v")
 {
     std::string::size_type front = str.find_first_not_of(pattern);
@@ -59,6 +69,12 @@ namespace fs = std::filesystem;
     return str.substr(front, end - front + 1);
 }
 
+//!
+//! \brief Utility function to remove enclosing single or double quotes from a string. This is especially useful when
+//! dealing with quoted values in a config file.
+//! \param str: the input string with potential quotes to remove
+//! \return the string with any enclosing quotes removed
+//!
 [[nodiscard]] std::string StripQuotes(const std::string& str) {
     if (str.empty()) {
         return str; // No quotes to strip from an empty string.
@@ -187,7 +203,6 @@ template <typename... Args>
 //! \param args
 //!
 void error_log(const char* fmt, const Args&... args);
-
 
 [[nodiscard]] int ParseStringToInt(const std::string& str){
     try{
@@ -331,6 +346,10 @@ private:
 
 typedef std::variant<bool, int, std::string, fs::path> config_variant;
 
+//!
+//! \brief The Config class is a singleton that stores program config read from the config file, with applied defaults if the
+//! config file cannot be read, or a config parameter is not in the config file.
+//!
 class Config
 {
 public:

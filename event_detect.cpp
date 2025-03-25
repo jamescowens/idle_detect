@@ -11,8 +11,9 @@
 #include <fstream>
 #include <iostream>
 
-
 #include <event_detect.h>
+
+std::string g_version = "Post Pre-release 0.1 Development: 20250325";
 
 pthread_t g_main_thread_id = 0;
 std::atomic<int> g_exit_code = 0;
@@ -713,8 +714,9 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    log("INFO: %s: event_detect C++ program started",
-        __func__);
+    log("INFO: %s: event_detect C++ program, %s, started",
+        __func__,
+        g_version);
 
     debug_log("INFO: %s: main_thread_id = %lld",
               __func__,
