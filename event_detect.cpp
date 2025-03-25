@@ -444,14 +444,26 @@ void InitiateEventActivityMonitor()
 
 }
 
-void CleanUpEventDatFiles()
+void CleanUpEventDatFiles(int sig)
 {
     debug_log("INFO: %s: started",
               __func__);
 
+    std::vector<fs::path> files_to_clean_up = FindDirEntriesWithWildcard(g_event_data_path, "^event.*\.dat$");
+
+    for (const auto& file : files_to_clean_up) {
+        try {
+            fs::remove(file);
+        } catch (std::exception& e) {
+            log("WARNING: %s: event data file %s could not be removed",
+                __func__,
+                file);
+        }
+    }
+
     fs::path last_active_time_path = g_event_data_path / g_last_active_time_cpp_filename;
 
-    if (fs::exists(last_active_time_path)) {
+    if ((sig == SIGINT || sig == SIGTERM) && fs::exists(last_active_time_path)) {
         try {
             fs::remove(last_active_time_path);
         } catch (std::exception& e) {
@@ -596,7 +608,7 @@ int main(int argc, char* argv[])
         }
 
         if (sig == SIGHUP) {
-            CleanUpEventDatFiles();
+            CleanUpEventDatFiles(sig);
         }
 
         if (sig == SIGINT || sig == SIGTERM) {
@@ -610,7 +622,7 @@ int main(int argc, char* argv[])
                 g_event_monitor.m_event_monitor_thread.join();
             }
 
-            CleanUpEventDatFiles();
+            CleanUpEventDatFiles(sig);
 
             break;
         }
