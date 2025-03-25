@@ -8,6 +8,9 @@
 
 #include <cstring>
 #include <fcntl.h>
+#include <fstream>
+#include <iostream>
+
 
 #include <event_detect.h>
 
@@ -15,14 +18,14 @@ pthread_t g_main_thread_id = 0;
 std::atomic<int> g_exit_code = 0;
 
 //!
-//! \brief global that holds config parameter name-value pairs that were read from config file.
+//! \brief This is populated by main from an early GetArg so that the debug_log doesn't use the heavyweight GetArg call constantly.
 //!
-std::multimap<std::string, std::string> g_config;
+std::atomic<bool> g_debug = false;
 
-int g_startup_delay = 0;
-fs::path g_event_data_path;
-bool g_write_last_active_time_to_file = false;
-std::string g_last_active_time_cpp_filename;
+//!
+//! \brief Global config singleton.
+//!
+Config g_config;
 
 //!
 //! \brief Global event monitor singleton
@@ -33,6 +36,7 @@ EventMonitor g_event_monitor;
 //! \brief Global event recorders singleton
 //!
 EventRecorders g_event_recorders;
+
 
 // Class EventMonitor
 
@@ -104,8 +108,12 @@ void EventMonitor::EventActivityMonitorThread()
                   __func__,
                   m_last_active_time.load());
 
-        if (g_write_last_active_time_to_file) {
-            fs::path last_active_time_filepath = g_event_data_path / g_last_active_time_cpp_filename;
+        bool write_last_active_time_to_file = std::get<bool>(g_config.GetArg("write_last_active_time_to_file"));
+        fs::path event_data_path = std::get<fs::path>(g_config.GetArg("event_count_files_path"));
+        std::string last_active_time_cpp_filename = std::get<std::string>(g_config.GetArg("last_active_time_cpp_filename"));
+
+        if (write_last_active_time_to_file) {
+            fs::path last_active_time_filepath = event_data_path / last_active_time_cpp_filename;
 
             // Open the file for writing (overwrites)
             std::ofstream output_file(last_active_time_filepath);
@@ -201,6 +209,7 @@ void EventMonitor::UpdateEventDevices()
     m_event_device_paths = EnumerateEventDevices();
 }
 
+
 // Class EventRecorders
 
 EventRecorders::EventRecorders()
@@ -250,6 +259,7 @@ int64_t EventRecorders::GetTotalEventCount()
 
     return tally;
 }
+
 
 // Class EventRecorders::EventRecorder
 
@@ -378,6 +388,126 @@ void EventRecorders::EventRecorder::EventActivityRecorderThread()
     close(fd);
 }
 
+
+// Class Config
+
+Config::Config()
+{}
+
+void Config::ReadAndUpdateConfig(const fs::path& config_file) {
+    std::unique_lock<std::mutex> lock(mtx_config);
+
+    std::multimap<std::string, std::string> config;
+    std::ifstream file(config_file);
+
+    if (!file.is_open()) {
+        error_log("%s: Could not open the config file: %s",
+                  __func__,
+                  config_file);
+        return;
+    }
+
+    std::string line;
+    while (std::getline(file, line)) {
+        // Skip empty lines and lines starting with '#'
+        if (line.empty() || line[0] == '#') {
+            continue;
+        }
+
+        std::vector line_elements = StringSplit(line, "=");
+
+        if (line_elements.size() != 2) {
+            continue;
+        }
+
+        config.insert(std::make_pair(StripQuotes(TrimString(line_elements[0])),
+                                     StripQuotes(TrimString(line_elements[1]))));
+    }
+
+    file.close();
+
+    // Do this all at once so the result of the config read is essentially "atomic".
+    m_config_in.swap(config);
+
+    ProcessArgs();
+}
+
+config_variant Config::GetArg(const std::string& arg)
+{
+    std::unique_lock<std::mutex> lock(mtx_config);
+
+    auto iter = m_config.find(arg);
+
+    if (iter != m_config.end()) {
+        return iter->second;
+    } else {
+        return std::string {};
+    }
+}
+
+std::string Config::GetArgString(const std::string& arg, const std::string& default_value)
+{
+    auto iter = m_config_in.find(arg);
+
+    if (iter != m_config_in.end()) {
+        return iter->second;
+    } else {
+        return default_value;
+    }
+}
+
+void Config::ProcessArgs()
+{
+    std::string debug_arg = GetArgString("debug", "true");
+
+    if (debug_arg == "1" || ToLower(debug_arg) == "true") {
+        m_config.insert(std::make_pair("debug", true));
+    }
+
+    int startup_delay = 0;
+
+    try {
+        startup_delay = ParseStringToInt(GetArgString("startup_delay", "0"));
+    } catch (std::exception& e) {
+        error_log("%s: startup_delay parameter in config file has invalid value: %s",
+                  __func__,
+                  e.what());
+    }
+
+    m_config.insert(std::make_pair("startup_delay", startup_delay));
+
+    fs::path event_data_path;
+
+    try {
+        event_data_path = fs::path(GetArgString("event_count_files_path", "/run/event_detect"));
+    } catch (std::exception& e){
+        error_log("%s: event_count_files_path parameter in config file has invalid value: %s",
+                  __func__,
+                  e.what());
+    }
+
+    m_config.insert(std::make_pair("event_count_files_path", event_data_path));
+
+    bool last_active_time_to_file = false;
+
+    try {
+        last_active_time_to_file = ParseStringToInt(GetArgString("write_last_active_time_to_file", "0"));
+    } catch (std::exception& e) {
+        error_log("%s: write_last_active_time_to_file in config file has invalid value: %s",
+                  __func__,
+                  e.what());
+    }
+
+    m_config.insert(std::make_pair("write_last_active_time_to_file", last_active_time_to_file));
+
+    std::string last_active_time_cpp_filename = GetArgString("last_active_time_cpp_filename", "last_active_time.dat");
+
+    m_config.insert(std::make_pair("last_active_time_cpp_filename", last_active_time_cpp_filename));
+}
+
+
+// Global scope functions
+
 void HandleSignals(int signum)
 {
     debug_log("INFO: %s: started",
@@ -449,7 +579,9 @@ void CleanUpEventDatFiles(int sig)
     debug_log("INFO: %s: started",
               __func__);
 
-    std::vector<fs::path> files_to_clean_up = FindDirEntriesWithWildcard(g_event_data_path, "^event.*\.dat$");
+    fs::path event_data_path = std::get<fs::path>(g_config.GetArg("event_count_files_path"));
+
+    std::vector<fs::path> files_to_clean_up = FindDirEntriesWithWildcard(event_data_path, "^event.*\.dat$");
 
     for (const auto& file : files_to_clean_up) {
         try {
@@ -461,7 +593,9 @@ void CleanUpEventDatFiles(int sig)
         }
     }
 
-    fs::path last_active_time_path = g_event_data_path / g_last_active_time_cpp_filename;
+    std::string last_active_time_cpp_filename = std::get<std::string>(g_config.GetArg("last_active_time_cpp_filename"));
+
+    fs::path last_active_time_path = event_data_path / last_active_time_cpp_filename;
 
     if ((sig == SIGINT || sig == SIGTERM) && fs::exists(last_active_time_path)) {
         try {
@@ -474,46 +608,46 @@ void CleanUpEventDatFiles(int sig)
     }
 }
 
-std::string GetArg(std::string arg, std::string default_value)
+template <typename... Args>
+//!
+//! \brief LogPrintStr directed to cout.
+//! \param fmt
+//! \param args
+//!
+void log(const char* fmt, const Args&... args)
 {
-    auto iter = g_config.find(arg);
+    std::cout << LogPrintStr(fmt, args...);
+}
 
-    if (iter != g_config.end()) {
-        return iter->second;
-    } else {
-        return default_value;
+template <typename... Args>
+void debug_log(const char* fmt, const Args&... args)
+{
+    if (g_debug.load()) {
+        log(fmt, args...);
     }
 }
 
-void ProcessArgs()
+template <typename... Args>
+//!
+//! \brief LogPrintStr directed to cerr
+//! \param fmt
+//! \param args
+//!
+void error_log(const char* fmt, const Args&... args)
 {
-    std::string debug_arg = GetArg("debug", "true");
+    std::string error_fmt = "ERROR: ";
+    error_fmt += fmt;
 
-    if (debug_arg == "1" || ToLower(debug_arg) == "true") {
-        g_debug = 1;
-    }
-
-    try {
-        g_startup_delay = ParseStringToInt(GetArg("startup_delay", "0"));
-    } catch (std::exception& e) {
-        error_log("%s: startup_delay parameter in config file has invalid value: %s",
-                  __func__,
-                  e.what());
-    }
-
-    g_event_data_path = GetArg("event_count_files_path", "/run/event_detect");
-
-    try {
-        g_write_last_active_time_to_file = ParseStringToInt(GetArg("write_last_active_time_to_file", "0"));
-    } catch (std::exception& e) {
-        error_log("%s: write_last_active_time_to_file in config file has invalid value: %s",
-                  __func__,
-                  e.what());
-    }
-
-    g_last_active_time_cpp_filename = GetArg("last_active_time_cpp_filename", "last_active_time.dat");
+    std::cerr << LogPrintStr(error_fmt.c_str(), args...);
 }
 
+
+//!
+//! \brief This is the main function for event_detect
+//! \param argc
+//! \param argv
+//! \return exit code
+//!
 int main(int argc, char* argv[])
 {
     if (argc != 2) {
@@ -530,21 +664,26 @@ int main(int argc, char* argv[])
         log("INFO: %s: Using config from %s",
             __func__,
             config_file_path);
-
-        g_config = ReadConfig(config_file_path);
     } else {
         log("WARNING: %s: Argument invalid for config file. Using defaults.",
             __func__);
+
+        config_file_path = "";
     }
 
-    ProcessArgs();
+    // Read the config file for config.
+    g_config.ReadAndUpdateConfig(config_file_path);
 
-    if (g_startup_delay > 0) {
+    g_debug = std::get<bool>(g_config.GetArg("debug"));
+
+    int startup_delay = std::get<int>(g_config.GetArg("startup_delay"));
+
+    if (startup_delay > 0) {
         log("INFO: %s: Waiting for %u seconds to start.",
             __func__,
-            g_startup_delay);
+            startup_delay);
 
-        std::this_thread::sleep_for(std::chrono::seconds(g_startup_delay));
+        std::this_thread::sleep_for(std::chrono::seconds(startup_delay));
     }
 
     int sig = 0;

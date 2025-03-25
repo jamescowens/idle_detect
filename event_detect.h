@@ -14,15 +14,13 @@
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
-#include <iostream>
 #include <mutex>
 #include <map>
 #include <string>
 #include <thread>
+#include <variant>
 #include <vector>
 #include <filesystem>
-#include <fstream>
-#include <iostream>
 #include <regex>
 #include <unistd.h>
 #include <sys/wait.h>
@@ -32,7 +30,7 @@
 
 namespace fs = std::filesystem;
 
-bool g_debug = 0;
+//bool g_debug = 0;
 
 [[nodiscard]] std::vector<std::string> StringSplit(const std::string& s, const std::string& delim)
 {
@@ -172,10 +170,7 @@ template <typename... Args>
 //! \param fmt
 //! \param args
 //!
-void log(const char* fmt, const Args&... args)
-{
-    std::cout << LogPrintStr(fmt, args...);
-}
+void log(const char* fmt, const Args&... args);
 
 template <typename... Args>
 //!
@@ -183,12 +178,7 @@ template <typename... Args>
 //! \param fmt
 //! \param args
 //!
-void debug_log(const char* fmt, const Args&... args)
-{
-    if (g_debug) {
-        log(fmt, args...);
-    }
-}
+void debug_log(const char* fmt, const Args&... args);
 
 template <typename... Args>
 //!
@@ -196,13 +186,8 @@ template <typename... Args>
 //! \param fmt
 //! \param args
 //!
-void error_log(const char* fmt, const Args&... args)
-{
-    std::string error_fmt = "ERROR: ";
-    error_fmt += fmt;
+void error_log(const char* fmt, const Args&... args);
 
-    std::cerr << LogPrintStr(error_fmt.c_str(), args...);
-}
 
 [[nodiscard]] int ParseStringToInt(const std::string& str){
     try{
@@ -220,38 +205,6 @@ void error_log(const char* fmt, const Args&... args)
                   e.what());
         throw;
     }
-}
-
-std::multimap<std::string, std::string> ReadConfig(const std::string& filename) {
-    std::multimap<std::string, std::string> config;
-    std::ifstream file(filename);
-
-    if (!file.is_open()) {
-        error_log("%s: Could not open the config file: %s",
-                  __func__,
-                  filename);
-        return config;
-    }
-
-    std::string line;
-    while (std::getline(file, line)) {
-        // Skip empty lines and lines starting with '#'
-        if (line.empty() || line[0] == '#') {
-            continue;
-        }
-
-        std::vector line_elements = StringSplit(line, "=");
-
-        if (line_elements.size() != 2) {
-            continue;
-        }
-
-        config.insert(std::make_pair(StripQuotes(TrimString(line_elements[0])),
-                                     StripQuotes(TrimString(line_elements[1]))));
-    }
-
-    file.close();
-    return config;
 }
 
 //!
@@ -374,6 +327,29 @@ private:
     mutable std::mutex mtx_event_recorder_threads;
 
     std::vector<std::shared_ptr<EventRecorder>> m_event_recorder_ptrs;
+};
+
+typedef std::variant<bool, int, std::string, fs::path> config_variant;
+
+class Config
+{
+public:
+    Config();
+
+    void ReadAndUpdateConfig(const fs::path& config_file);
+
+    config_variant GetArg(const std::string& arg);
+
+private:
+    void ProcessArgs();
+
+    std::string GetArgString(const std::string& arg, const std::string& default_value);
+
+
+    mutable std::mutex mtx_config;
+
+    std::multimap<std::string, std::string> m_config_in;
+    std::multimap<std::string, config_variant> m_config;
 };
 
 #endif // EVENT_DETECT_H
