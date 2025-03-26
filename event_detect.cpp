@@ -7,9 +7,16 @@
  */
 
 #include <cstring>
+#include <csignal>
+#include <cstdio>
+#include <cstdlib>
 #include <fcntl.h>
 #include <fstream>
 #include <iostream>
+#include <unistd.h>
+#include <sys/wait.h>
+#include <libevdev/libevdev.h>
+#include <libevdev/libevdev-uinput.h>
 
 #include <event_detect.h>
 
@@ -613,40 +620,6 @@ void CleanUpEventDatFiles(int sig)
         }
     }
 }
-
-template <typename... Args>
-//!
-//! \brief LogPrintStr directed to cout.
-//! \param fmt
-//! \param args
-//!
-void log(const char* fmt, const Args&... args)
-{
-    std::cout << LogPrintStr(fmt, args...);
-}
-
-template <typename... Args>
-void debug_log(const char* fmt, const Args&... args)
-{
-    if (g_debug.load()) {
-        log(fmt, args...);
-    }
-}
-
-template <typename... Args>
-//!
-//! \brief LogPrintStr directed to cerr
-//! \param fmt
-//! \param args
-//!
-void error_log(const char* fmt, const Args&... args)
-{
-    std::string error_fmt = "ERROR: ";
-    error_fmt += fmt;
-
-    std::cerr << LogPrintStr(error_fmt.c_str(), args...);
-}
-
 
 //!
 //! \brief This is the main function for event_detect

@@ -12,10 +12,12 @@ QT = core gui widgets
 
 HEADERS = \
     event_detect.h \
-    tinyformat.h
+    tinyformat.h \
+    util.h
 
 SOURCES = \
-   event_detect.cpp
+   event_detect.cpp \
+   util.cpp
 
 INCLUDEPATH = /usr/include/libevdev-1.0
 
