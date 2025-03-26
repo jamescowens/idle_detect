@@ -3,8 +3,8 @@
 
 TARGET = event_detect
 
-QMAKE_CC = /usr/bin/gcc-14
-QMAKE_CXX = /usr/bin/g++-14
+# QMAKE_CC = /usr/bin/gcc-14
+# QMAKE_CXX = /usr/bin/g++-14
 
 QMAKE_CXXFLAGS += -std=c++17
 

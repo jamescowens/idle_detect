@@ -145,7 +145,7 @@ void EventMonitor::EventActivityMonitorThread()
 
 bool EventMonitor::IsInitialized()
 {
-    return m_initialized;
+    return m_initialized.load();
 }
 
 int64_t EventMonitor::GetLastActiveTime()
@@ -582,7 +582,7 @@ void CleanUpEventDatFiles(int sig)
 
     fs::path event_data_path = std::get<fs::path>(g_config.GetArg("event_count_files_path"));
 
-    std::vector<fs::path> files_to_clean_up = FindDirEntriesWithWildcard(event_data_path, "^event.*\.dat$");
+    std::vector<fs::path> files_to_clean_up = FindDirEntriesWithWildcard(event_data_path, "^event.*\\.dat$");
 
     for (const auto& file : files_to_clean_up) {
         try {

@@ -290,7 +290,7 @@ private:
 
     std::atomic<int64_t> m_last_active_time;
 
-    bool m_initialized;
+    std::atomic<bool> m_initialized;
 };
 
 //!
