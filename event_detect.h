@@ -283,6 +283,8 @@ public:
 private:
     static std::vector<fs::path> EnumerateEventDevices();
 
+    void WriteLastActiveTimeToFile(const fs::path& filepath);
+
     mutable std::mutex mtx_event_monitor;
     mutable std::mutex mtx_event_monitor_thread;
 

@@ -116,29 +116,7 @@ void EventMonitor::EventActivityMonitorThread()
         if (write_last_active_time_to_file) {
             fs::path last_active_time_filepath = event_data_path / last_active_time_cpp_filename;
 
-            // Open the file for writing (overwrites)
-            std::ofstream output_file(last_active_time_filepath);
-
-            if (!output_file.is_open()) {
-                error_log("%s: Could not open file %s for writing.",
-                          __func__,
-                          last_active_time_filepath);
-
-                g_exit_code = 1;
-                pthread_kill(g_main_thread_id, SIGTERM);;
-            }
-
-            output_file << m_last_active_time << std::endl;
-
-            if (!output_file.good()) {
-                error_log("%s: Error writing to file %s.",
-                          __func__,
-                          last_active_time_filepath);
-                output_file.close();
-
-                g_exit_code = 1;
-                pthread_kill(g_main_thread_id, SIGTERM);;
-            }
+            WriteLastActiveTimeToFile(last_active_time_filepath);
         }
     }
 }
@@ -191,6 +169,33 @@ std::vector<fs::path> EventMonitor::EnumerateEventDevices()
               event_devices.size());
 
     return event_devices;
+}
+
+void EventMonitor::WriteLastActiveTimeToFile(const fs::path& last_active_time_filepath)
+{
+    // Open the file for writing (overwrites)
+    std::ofstream output_file(last_active_time_filepath);
+
+    if (!output_file.is_open()) {
+        error_log("%s: Could not open file %s for writing.",
+                  __func__,
+                  last_active_time_filepath);
+
+        g_exit_code = 1;
+        pthread_kill(g_main_thread_id, SIGTERM);;
+    }
+
+    output_file << m_last_active_time << std::endl;
+
+    if (!output_file.good()) {
+        error_log("%s: Error writing to file %s.",
+                  __func__,
+                  last_active_time_filepath);
+        output_file.close();
+
+        g_exit_code = 1;
+        pthread_kill(g_main_thread_id, SIGTERM);;
+    }
 }
 
 std::vector<fs::path> EventMonitor::GetEventDevices()
