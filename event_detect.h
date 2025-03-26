@@ -14,8 +14,48 @@
 #include <string>
 #include <thread>
 #include <variant>
+#include <exception>
+#include <string>
+#include <filesystem>
 
 #include <util.h>
+
+namespace EventDetect {
+
+class EventDetectException : public std::exception
+{
+public:
+    EventDetectException(const std::string& message) : m_message(message) {}
+    EventDetectException(const char* message) : m_message(message) {}
+
+    const char* what() const noexcept override {
+        return m_message.c_str();
+    }
+
+protected:
+    std::string m_message;
+};
+
+// File system related exceptions
+class FileSystemException : public EventDetectException
+{
+public:
+    FileSystemException(const std::string& message, const std::filesystem::path& path)
+        : EventDetectException(message + " Path: " + path.string()), m_path(path) {}
+
+    const std::filesystem::path& path() const { return m_path; }
+
+private:
+    std::filesystem::path m_path;
+};
+
+// Threading Related Exceptions
+class ThreadException : public EventDetectException
+{
+public:
+    ThreadException(const std::string& message) : EventDetectException(message) {}
+};
+
 
 //!
 //! \brief The EventMonitor class provides the framework for monitoring event activity recorded by the EventRecorders
@@ -137,5 +177,9 @@ private:
     std::multimap<std::string, std::string> m_config_in;
     std::multimap<std::string, config_variant> m_config;
 };
+
+void Shutdown();
+
+} // namespace event_detect
 
 #endif // EVENT_DETECT_H

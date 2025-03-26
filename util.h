@@ -18,7 +18,6 @@ namespace fs = std::filesystem;
 
 extern std::atomic<bool> g_debug;
 
-
 //!
 //! \brief Utility function to split string by the provided delimiter. Note that no trimming is done to remove white space.
 //! \param s: the string to split
@@ -26,7 +25,6 @@ extern std::atomic<bool> g_debug;
 //! \return std::vector of string parts
 //!
 [[nodiscard]] std::vector<std::string> StringSplit(const std::string& s, const std::string& delim);
-
 
 //!
 //! \brief Utility function to trim whitespace from the beginning and end of a string.

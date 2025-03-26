@@ -11,7 +11,6 @@
 #include <cstddef>
 #include <regex>
 
-
 [[nodiscard]] std::vector<std::string> StringSplit(const std::string& s, const std::string& delim)
 {
     size_t pos = 0;
@@ -92,21 +91,20 @@ std::string FormatISO8601DateTime(int64_t time)
         return {};
     }
 
-    return strprintf("%04i-%02i-%02iT%02i:%02i:%02iZ", ts.tm_year + 1900, ts.tm_mon + 1, ts.tm_mday, ts.tm_hour, ts.tm_min, ts.tm_sec);
+    return strprintf("%04i-%02i-%02iT%02i:%02i:%02iZ",
+                     ts.tm_year + 1900, ts.tm_mon + 1, ts.tm_mday, ts.tm_hour, ts.tm_min, ts.tm_sec);
 }
 
 [[nodiscard]] int ParseStringToInt(const std::string& str)
 {
-    try{
+    try {
         return std::stoi(str);
-    }
-    catch (const std::invalid_argument& e){
+    } catch (const std::invalid_argument& e){
         error_log("%s: Invalid argument: %s",
                   __func__,
                   e.what());
         throw;
-    }
-    catch (const std::out_of_range& e){
+    } catch (const std::out_of_range& e){
         error_log("%s: Out of range: %s",
                   __func__,
                   e.what());

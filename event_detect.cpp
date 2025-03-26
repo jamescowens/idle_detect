@@ -20,10 +20,12 @@
 
 #include <event_detect.h>
 
-std::string g_version = "Post Pre-release 0.1 Development: 20250325";
+std::string g_version = "Post Pre-release 0.1 Development: 20250326";
 
 pthread_t g_main_thread_id = 0;
 std::atomic<int> g_exit_code = 0;
+
+using namespace EventDetect;
 
 //!
 //! \brief This is populated by main from an early GetArg so that the debug_log doesn't use the heavyweight GetArg call constantly.
@@ -168,7 +170,7 @@ std::vector<fs::path> EventMonitor::EnumerateEventDevices()
                   __func__);
 
         g_exit_code = 1;
-        pthread_kill(g_main_thread_id, SIGTERM);
+        Shutdown();
     }
 
     debug_log("INFO: %s: event_devices.size() = %u",
@@ -189,7 +191,7 @@ void EventMonitor::WriteLastActiveTimeToFile(const fs::path& last_active_time_fi
                   last_active_time_filepath);
 
         g_exit_code = 1;
-        pthread_kill(g_main_thread_id, SIGTERM);;
+        Shutdown();;
     }
 
     output_file << m_last_active_time << std::endl;
@@ -201,7 +203,7 @@ void EventMonitor::WriteLastActiveTimeToFile(const fs::path& last_active_time_fi
         output_file.close();
 
         g_exit_code = 1;
-        pthread_kill(g_main_thread_id, SIGTERM);;
+        Shutdown();;
     }
 }
 
@@ -411,37 +413,45 @@ void Config::ReadAndUpdateConfig(const fs::path& config_file) {
     std::unique_lock<std::mutex> lock(mtx_config);
 
     std::multimap<std::string, std::string> config;
-    std::ifstream file(config_file);
 
-    if (!file.is_open()) {
-        error_log("%s: Could not open the config file: %s",
+    try {
+        std::ifstream file(config_file);
+
+        if (!file.is_open()) {
+            error_log("%s: Could not open the config file: %s",
+                      __func__,
+                      config_file);
+            return;
+        }
+
+        std::string line;
+        while (std::getline(file, line)) {
+            // Skip empty lines and lines starting with '#'
+            if (line.empty() || line[0] == '#') {
+                continue;
+            }
+
+            std::vector line_elements = StringSplit(line, "=");
+
+            if (line_elements.size() != 2) {
+                continue;
+            }
+
+            config.insert(std::make_pair(StripQuotes(TrimString(line_elements[0])),
+                                         StripQuotes(TrimString(line_elements[1]))));
+        }
+
+        file.close();
+
+        // Do this all at once so the result of the config read is essentially "atomic".
+        m_config_in.swap(config);
+    } catch (FileSystemException& e) {
+        error_log("%s: Reading config file failed, so defaults will be used: %s",
                   __func__,
-                  config_file);
-        return;
+                  e.what());
     }
 
-    std::string line;
-    while (std::getline(file, line)) {
-        // Skip empty lines and lines starting with '#'
-        if (line.empty() || line[0] == '#') {
-            continue;
-        }
-
-        std::vector line_elements = StringSplit(line, "=");
-
-        if (line_elements.size() != 2) {
-            continue;
-        }
-
-        config.insert(std::make_pair(StripQuotes(TrimString(line_elements[0])),
-                                     StripQuotes(TrimString(line_elements[1]))));
-    }
-
-    file.close();
-
-    // Do this all at once so the result of the config read is essentially "atomic".
-    m_config_in.swap(config);
-
+    // If the config file read failed, we will process args anyway, which will result in defaults being chosen.
     ProcessArgs();
 }
 
@@ -551,6 +561,15 @@ void HandleSignals(int signum)
     }
 }
 
+//!
+//! \brief Sends the SIGTERM signal to the main thread id initiating a shutdown of all worker threads and the main thread
+//! via the HandleSignals function.
+//!
+void EventDetect::Shutdown()
+{
+        pthread_kill(g_main_thread_id, SIGTERM);;
+}
+
 void InitiateEventActivityRecorders()
 {
     debug_log("INFO: %s: started",
@@ -561,8 +580,8 @@ void InitiateEventActivityRecorders()
     g_event_recorders.ResetEventRecorders();
 
     for (auto& recorder : g_event_recorders.GetEventRecorders()) {
-        recorder->m_event_recorder_thread = std::thread(&EventRecorders::EventRecorder::EventActivityRecorderThread,
-                                                        recorder);
+            recorder->m_event_recorder_thread = std::thread(&EventRecorders::EventRecorder::EventActivityRecorderThread,
+                                                            recorder);
 
         // Spread the thread start out a little bit.
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -584,7 +603,6 @@ void InitiateEventActivityMonitor()
     g_event_monitor.m_interrupt_monitor = false;
 
     g_event_monitor.m_event_monitor_thread = std::thread(&EventMonitor::EventActivityMonitorThread, std::ref(g_event_monitor));
-
 }
 
 void CleanUpEventDatFiles(int sig)
@@ -599,10 +617,10 @@ void CleanUpEventDatFiles(int sig)
     for (const auto& file : files_to_clean_up) {
         try {
             fs::remove(file);
-        } catch (std::exception& e) {
-            log("WARNING: %s: event data file %s could not be removed",
+        } catch (FileSystemException& e) {
+            log("WARNING: %s: event data file could not be removed: %s",
                 __func__,
-                file);
+                e.what());
         }
     }
 
@@ -613,10 +631,10 @@ void CleanUpEventDatFiles(int sig)
     if ((sig == SIGINT || sig == SIGTERM) && fs::exists(last_active_time_path)) {
         try {
             fs::remove(last_active_time_path);
-        } catch (std::exception& e) {
-            log("WARNING: %s: last_active_time file %s could not be removed",
+        } catch (FileSystemException& e) {
+            log("WARNING: %s: last_active_time file could not be removed: %s",
                 __func__,
-                last_active_time_path);
+                e.what());
         }
     }
 }
@@ -650,9 +668,10 @@ int main(int argc, char* argv[])
         config_file_path = "";
     }
 
-    // Read the config file for config.
+    // Read the config file for config. If an error is encountered reading the config file, then defaults will be used.
     g_config.ReadAndUpdateConfig(config_file_path);
 
+    // Populate g_debug from the config to avoid having to call the heavyweight GetArg in each log function call.
     g_debug = std::get<bool>(g_config.GetArg("debug"));
 
     int startup_delay = std::get<int>(g_config.GetArg("startup_delay"));
@@ -700,18 +719,49 @@ int main(int argc, char* argv[])
               __func__,
               g_main_thread_id);
 
-    InitiateEventActivityMonitor();
+    try {
+        InitiateEventActivityMonitor();
+    } catch (ThreadException& e) {
+        error_log("%s: Error creating event monitor thread: %s",
+                  __func__,
+                  e.what());
+
+        g_exit_code = 1;
+        Shutdown();
+    }
 
     while (true) {
-        // wait for InitiateEventActivityMonitor() thread to finish initializing:
-        while(!g_event_monitor.IsInitialized()) {
+        // wait for up to 10 seconds for InitiateEventActivityMonitor() thread to finish initializing:
+        debug_log("INFO: %s: Waiting for monitor thread to finish initializing.",
+                  __func__);
+
+        for (int i = 0; g_exit_code == 0 && !g_event_monitor.IsInitialized() && i < 10; ++i) {
             std::this_thread::sleep_for(std::chrono::seconds(1));
         }
 
-        // Includes the reset of EventActivityRecorders
-        InitiateEventActivityRecorders();
+        if (!g_event_monitor.IsInitialized()) {
+            error_log("%s: Unable to initialize event monitor thread. Exiting.",
+                      __func__);
 
-        // Wait for signal
+            g_exit_code = 1;
+            Shutdown();
+        }
+
+        // Includes the reset of EventActivityRecorders
+        if (g_exit_code == 0) {
+            try {
+                InitiateEventActivityRecorders();
+            } catch (ThreadException& e) {
+                error_log("%s: Error creating event monitor thread: %s",
+                          __func__,
+                          e.what());
+
+                g_exit_code = 1;
+                Shutdown();
+            }
+        }
+
+         // Wait for signal. This will also cause a shutdown at this point if Shutdown() was/is called.
         if (sigwait(&mask, &sig) == 0) {
             HandleSignals(sig);
         }
