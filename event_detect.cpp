@@ -461,21 +461,30 @@ std::vector<fs::path> TtyMonitor::EnumerateTtyDevices()
     debug_log("INFO: %s: started",
               __func__);
 
-    std::filesystem::path tty_path("/dev/pts");
+    std::vector<fs::path> ptss = FindDirEntriesWithWildcard(fs::path {"/dev/pts"}, ".[0-9]");
 
-    std::vector<fs::path> ttys = FindDirEntriesWithWildcard(tty_path, ".[0-9]");
+    debug_log("INFO: %s: ptss.size() = %u",
+              __func__,
+              ptss.size());
+
+    std::vector<fs::path> ttys = FindDirEntriesWithWildcard(fs::path {"/dev"}, "tty.*");
 
     debug_log("INFO: %s: ttys.size() = %u",
               __func__,
               ttys.size());
 
+    ptss.insert(ptss.end(), ttys.begin(), ttys.end());
 
-    if (ttys.empty()) {
-        error_log("%s: No ttys identified to monitor.",
+    debug_log("INFO: %s: total terminal sessions to monitor = %u",
+              __func__,
+              ptss.size());
+
+    if (ptss.empty()) {
+        error_log("%s: No ptys/ttys identified to monitor.",
                   __func__);
     }
 
-    return ttys;
+    return ptss;
 }
 
 void TtyMonitor::TtyMonitorThread()
