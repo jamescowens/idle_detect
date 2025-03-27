@@ -1,5 +1,8 @@
-# Created by and for Qt Creator This file was created for editing the project sources only.
-# You may attempt to use it for building too, by modifying this file here.
+#
+# Copyright (C) 2025 James C. Owens
+#
+# This code is licensed under the MIT license. See LICENSE.md in the repository.
+#
 
 TARGET = event_detect
 
@@ -23,7 +26,7 @@ INCLUDEPATH = /usr/include/libevdev-1.0
 
 LIBS += -levdev
 
-#DEFINES = 
+#DEFINES =
 
 DISTFILES += \
   README.md \

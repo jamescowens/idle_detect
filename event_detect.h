@@ -1,7 +1,7 @@
 /*
  * Copyright (C) 2025 James C. Owens
  *
- * This code is licensed under the MIT license
+ * This code is licensed under the MIT license. See LICENSE.md in the repository.
  */
 
 #ifndef EVENT_DETECT_H
@@ -77,30 +77,81 @@ public:
     std::condition_variable cv_monitor_thread;
     std::atomic<bool> m_interrupt_monitor;
 
+    //!
+    //! \brief Constructor.
+    //!
     Monitor();
 
+    //!
+    //! \brief Provides a copy of the m_event_device_paths private member. The copy is provided instead of a reference to
+    //! minimize the lock time held on mtx_event_monitor.
+    //! \return std::vector<fs::path> of the input event device paths.
+    //!
     std::vector<fs::path> GetEventDevices() const;
 
+    //!
+    //! \brief This calls the private method EnumerateEventDevices() and updates the m_event_device_paths private member.
+    //!
     void UpdateEventDevices();
 
+    //!
+    //! \brief This is the function that is the entry point for the event activity monitor worker thread.
+    //!
     void EventActivityMonitorThread();
 
+    //!
+    //! \brief Provides a flag to indicate whether the monitor has been initialized. This is used in main in the application
+    //! control paths.
+    //! \return
+    //!
     bool IsInitialized() const;
 
+    //!
+    //! \brief Provides the last active time on this machine globally based on the activated monitors/recorders.
+    //! \return
+    //!
     int64_t GetLastActiveTime() const;
 
 private:
+    //!
+    //! \brief This is a private method to determine the input event devices to monitor. In particular we only want to monitor
+    //! pointing devices (mice).
+    //! \return
+    //!
     static std::vector<fs::path> EnumerateEventDevices();
 
+    //!
+    //! \brief This is the whole point of the application. This writes out the last active time determined by the monitor
+    //! \param filepath
+    //!
     void WriteLastActiveTimeToFile(const fs::path& filepath);
 
+    //!
+    //! \brief This is the mutex member that provides lock control for the event monitor object. This is used to ensure the
+    //! event monitor is thread-safe.
+    //!
     mutable std::mutex mtx_event_monitor;
+
+    //!
+    //! \brief This provides lock control for the monitor worker thread itself.
+    //!
     mutable std::mutex mtx_event_monitor_thread;
 
+    //!
+    //! \brief Holds the paths of the input event devices to monitor.
+    //!
     std::vector<fs::path> m_event_device_paths;
 
+    //!
+    //! \brief holds the last active time determined by the monitor. This is an atomic, which means it can be written to/read from
+    //! without holding the mtx_event_monitor lock.
+    //!
     std::atomic<int64_t> m_last_active_time;
 
+    //!
+    //! \brief This holds the flag as to whether the monitor has been initialized and is provided by the IsInitialized() public
+    //! method.
+    //!
     std::atomic<bool> m_initialized;
 };
 

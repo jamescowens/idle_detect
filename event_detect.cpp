@@ -3,7 +3,7 @@
  * Portions Copyright (c) 2019 The Bitcoin Core developers
  * Portions Copyright (c) 2025 The Gridcoin developers
  *
- * This code is licensed under the MIT license
+ * This code is licensed under the MIT license. See LICENSE.md in the repository.
  */
 
 #include <cstring>
@@ -15,7 +15,6 @@
 #include <iostream>
 #include <unistd.h>
 #include <sys/wait.h>
-//#include <termios.h>
 #include <sys/stat.h>
 #include <libevdev/libevdev.h>
 #include <libevdev/libevdev-uinput.h>
@@ -515,26 +514,11 @@ void TtyMonitor::TtyMonitorThread()
 
             if (stat(entry.m_tty_device_path.c_str(), &sbuf) == 0){
                 entry.m_tty_last_active_time = sbuf.st_atime;
-
-                /*
-                debug_log("INFO: %s: %s entry.m_last_tty_active_time: %lld: %s",
-                          __func__,
-                          entry.m_tty_device_path,
-                          entry.m_tty_last_active_time,
-                          FormatISO8601DateTime(entry.m_tty_last_active_time));
-                */
             }
 
             // last_tty_active_time MUST be monotonic. It cannot go backwards. This is important, because terminals sometimes
             // disappear.
             last_ttys_active_time = std::max(entry.m_tty_last_active_time, last_ttys_active_time);
-
-            /*
-            debug_log("INFO: %s: last_ttys_active_time: %lld: %s",
-                      __func__,
-                      last_ttys_active_time,
-                      FormatISO8601DateTime(last_ttys_active_time));
-            */
         }
 
         m_last_ttys_active_time = last_ttys_active_time;
@@ -728,7 +712,7 @@ void HandleSignals(int signum)
 //!
 void EventDetect::Shutdown()
 {
-        pthread_kill(g_main_thread_id, SIGTERM);;
+        pthread_kill(g_main_thread_id, SIGTERM);
 }
 
 void InitiateEventActivityRecorders()

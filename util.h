@@ -3,7 +3,7 @@
  * Portions Copyright (c) 2019 The Bitcoin Core developers
  * Portions Copyright (c) 2025 The Gridcoin developers
  *
- * This code is licensed under the MIT license
+ * This code is licensed under the MIT license. See LICENSE.md in the repository.
  */
 
 #ifndef UTIL_H
