@@ -15,6 +15,8 @@
 #include <iostream>
 #include <unistd.h>
 #include <sys/wait.h>
+//#include <termios.h>
+#include <sys/stat.h>
 #include <libevdev/libevdev.h>
 #include <libevdev/libevdev-uinput.h>
 
@@ -40,29 +42,29 @@ Config g_config;
 //!
 //! \brief Global event monitor singleton
 //!
-EventMonitor g_event_monitor;
+Monitor g_event_monitor;
+
+//!
+//! \brief Global tty monitor singleton
+//!
+TtyMonitor g_tty_monitor;
 
 //!
 //! \brief Global event recorders singleton
 //!
-EventRecorders g_event_recorders;
+InputEventRecorders g_event_recorders;
 
 
-// Class EventMonitor
+// Class Monitor
 
-EventMonitor::EventMonitor()
+Monitor::Monitor()
     : m_interrupt_monitor(false)
     , m_event_device_paths()
+    , m_last_active_time(0)
     , m_initialized(false)
 {}
 
-EventMonitor::EventMonitor(std::vector<fs::path> event_device_paths)
-    : m_interrupt_monitor(false)
-    , m_event_device_paths(event_device_paths)
-    , m_initialized(false)
-{}
-
-void EventMonitor::EventActivityMonitorThread()
+void Monitor::EventActivityMonitorThread()
 {
     debug_log("INFO: %s: started",
               __func__);
@@ -114,9 +116,26 @@ void EventMonitor::EventActivityMonitorThread()
             event_count_prev = event_count;
         }
 
-        debug_log("INFO: %s: loop: m_last_active_time = %lld",
+        debug_log("INFO: %s: loop: input devices last_active_time = %lld: %s",
                   __func__,
-                  m_last_active_time.load());
+                  m_last_active_time.load(),
+                  FormatISO8601DateTime(m_last_active_time.load()));
+
+        // This will be zero if tty monitoring is not active, but that is ok, because the max
+        // of the tty monitoring last active and the event monitoring last active is used.
+        int64_t tty_last_active_time = g_tty_monitor.GetLastTtyActiveTime();
+
+        debug_log("INFO: %s: loop: ttys last_active_time = %lld: %s",
+                  __func__,
+                  tty_last_active_time,
+                  FormatISO8601DateTime(tty_last_active_time));
+
+        m_last_active_time = std::max(m_last_active_time.load(), tty_last_active_time);
+
+        debug_log("INFO: %s: loop: overall last_active time = %lld: %s",
+                  __func__,
+                  m_last_active_time.load(),
+                  FormatISO8601DateTime(m_last_active_time.load()));
 
         bool write_last_active_time_to_file = std::get<bool>(g_config.GetArg("write_last_active_time_to_file"));
         fs::path event_data_path = std::get<fs::path>(g_config.GetArg("event_count_files_path"));
@@ -130,17 +149,17 @@ void EventMonitor::EventActivityMonitorThread()
     }
 }
 
-bool EventMonitor::IsInitialized()
+bool Monitor::IsInitialized() const
 {
     return m_initialized.load();
 }
 
-int64_t EventMonitor::GetLastActiveTime()
+int64_t Monitor::GetLastActiveTime() const
 {
     return m_last_active_time.load();
 }
 
-std::vector<fs::path> EventMonitor::EnumerateEventDevices()
+std::vector<fs::path> Monitor::EnumerateEventDevices()
 {
     debug_log("INFO: %s: started",
               __func__);
@@ -180,7 +199,7 @@ std::vector<fs::path> EventMonitor::EnumerateEventDevices()
     return event_devices;
 }
 
-void EventMonitor::WriteLastActiveTimeToFile(const fs::path& last_active_time_filepath)
+void Monitor::WriteLastActiveTimeToFile(const fs::path& last_active_time_filepath)
 {
     // Open the file for writing (overwrites)
     std::ofstream output_file(last_active_time_filepath);
@@ -207,14 +226,14 @@ void EventMonitor::WriteLastActiveTimeToFile(const fs::path& last_active_time_fi
     }
 }
 
-std::vector<fs::path> EventMonitor::GetEventDevices()
+std::vector<fs::path> Monitor::GetEventDevices() const
 {
     std::unique_lock<std::mutex> lock(mtx_event_monitor);
 
     return m_event_device_paths;
 }
 
-void EventMonitor::UpdateEventDevices()
+void Monitor::UpdateEventDevices()
 {
     debug_log("INFO: %s: started",
               __func__);
@@ -225,31 +244,21 @@ void EventMonitor::UpdateEventDevices()
 }
 
 
-// Class EventRecorders
+// Class InputEventRecorders
 
-EventRecorders::EventRecorders()
+InputEventRecorders::InputEventRecorders()
     : m_interrupt_recorders(false)
     , m_event_recorder_ptrs()
 {}
 
-EventRecorders::EventRecorders(std::vector<fs::path> event_device_paths)
-    : m_interrupt_recorders(false)
-{
-    std::unique_lock<std::mutex> lock(mtx_event_recorders);
-
-    for (const auto& event_device_path : event_device_paths) {
-        m_event_recorder_ptrs.emplace_back(std::make_shared<EventRecorder>(event_device_path));
-    }
-}
-
-std::vector<std::shared_ptr<EventRecorders::EventRecorder>>& EventRecorders::GetEventRecorders()
+std::vector<std::shared_ptr<InputEventRecorders::EventRecorder>>& InputEventRecorders::GetEventRecorders()
 {
     std::unique_lock<std::mutex> lock(mtx_event_recorders);
 
     return m_event_recorder_ptrs;
 }
 
-void EventRecorders::ResetEventRecorders()
+void InputEventRecorders::ResetEventRecorders()
 {
     std::unique_lock<std::mutex> lock(mtx_event_recorders);
 
@@ -264,7 +273,7 @@ void EventRecorders::ResetEventRecorders()
 //! \brief Returns total event count across all recorders.
 //! \return
 //!
-int64_t EventRecorders::GetTotalEventCount()
+int64_t InputEventRecorders::GetTotalEventCount() const
 {
     int64_t tally = 0;
 
@@ -276,9 +285,9 @@ int64_t EventRecorders::GetTotalEventCount()
 }
 
 
-// Class EventRecorders::EventRecorder
+// Class InputEventRecorders::EventRecorder
 
-EventRecorders::EventRecorder::EventRecorder(fs::path event_device_path)
+InputEventRecorders::EventRecorder::EventRecorder(fs::path event_device_path)
     : m_event_device_path(event_device_path)
     , m_event_count(0)
 {}
@@ -289,19 +298,19 @@ EventRecorders::EventRecorder::EventRecorder(fs::path event_device_path)
 //!
 //! \return fs::path
 //!
-fs::path EventRecorders::EventRecorder::GetEventDevicePath()
+fs::path InputEventRecorders::EventRecorder::GetEventDevicePath() const
 {
     return m_event_device_path;
 }
 
-int64_t EventRecorders::EventRecorder::GetEventCount()
+int64_t InputEventRecorders::EventRecorder::GetEventCount() const
 {
     // No explicit lock needed.
 
     return m_event_count.load();
 }
 
-void EventRecorders::EventRecorder::EventActivityRecorderThread()
+void InputEventRecorders::EventRecorder::EventActivityRecorderThread()
 {
     debug_log("INFO: %s: started",
               __func__);
@@ -404,6 +413,140 @@ void EventRecorders::EventRecorder::EventActivityRecorderThread()
 }
 
 
+// Class TtyMonitor
+
+TtyMonitor::TtyMonitor()
+    : m_interrupt_tty_monitor(false)
+    , m_tty_device_paths()
+    , m_ttys()
+    , m_last_ttys_active_time(0)
+    , m_initialized(false)
+{}
+
+std::vector<fs::path> TtyMonitor::GetTtyDevices() const
+{
+    std::unique_lock<std::mutex> lock(mtx_tty_monitor);
+
+    return m_tty_device_paths;
+}
+
+void TtyMonitor::UpdateTtyDevices()
+{
+    debug_log("INFO: %s: started",
+              __func__);
+
+    std::vector<fs::path> tty_device_paths = EnumerateTtyDevices();
+
+    if (tty_device_paths != m_tty_device_paths) {
+        m_initialized = false;
+        m_tty_device_paths = tty_device_paths;
+    } else {
+        m_initialized = true;
+    }
+
+}
+
+bool TtyMonitor::IsInitialized() const
+{
+    return m_initialized.load();
+}
+
+int64_t TtyMonitor::GetLastTtyActiveTime() const
+{
+    return m_last_ttys_active_time.load();
+}
+
+
+std::vector<fs::path> TtyMonitor::EnumerateTtyDevices()
+{
+    debug_log("INFO: %s: started",
+              __func__);
+
+    std::filesystem::path tty_path("/dev/pts");
+
+    std::vector<fs::path> ttys = FindDirEntriesWithWildcard(tty_path, ".[0-9]");
+
+    debug_log("INFO: %s: ttys.size() = %u",
+              __func__,
+              ttys.size());
+
+
+    if (ttys.empty()) {
+        error_log("%s: No ttys identified to monitor.",
+                  __func__);
+    }
+
+    return ttys;
+}
+
+void TtyMonitor::TtyMonitorThread()
+{
+    std::unique_lock<std::mutex> lock(mtx_tty_monitor);
+
+    std::vector<fs::path> tty_device_paths_prev = m_tty_device_paths;
+
+    int64_t last_ttys_active_time = 0;
+
+    while (true) {
+        debug_log("INFO: %s: tty monitor thread loop at top of iteration",
+                  __func__);
+
+        std::unique_lock<std::mutex> lock(mtx_tty_monitor_thread);
+        cv_tty_monitor_thread.wait_for(lock, std::chrono::seconds(1), []{ return g_tty_monitor.m_interrupt_tty_monitor.load(); });
+
+        if (g_tty_monitor.m_interrupt_tty_monitor) {
+            break;
+        }
+
+        UpdateTtyDevices();
+
+        if (!IsInitialized()) {
+            m_ttys.clear();
+
+            for (const auto& entry : m_tty_device_paths) {
+                Tty tty(entry);
+
+                m_ttys.push_back(tty);
+            }
+        }
+
+        for (auto& entry : m_ttys) {
+            struct stat sbuf;
+
+            if (stat(entry.m_tty_device_path.c_str(), &sbuf) == 0){
+                entry.m_tty_last_active_time = sbuf.st_atime;
+
+                /*
+                debug_log("INFO: %s: %s entry.m_last_tty_active_time: %lld: %s",
+                          __func__,
+                          entry.m_tty_device_path,
+                          entry.m_tty_last_active_time,
+                          FormatISO8601DateTime(entry.m_tty_last_active_time));
+                */
+            }
+
+            // last_tty_active_time MUST be monotonic. It cannot go backwards. This is important, because terminals sometimes
+            // disappear.
+            last_ttys_active_time = std::max(entry.m_tty_last_active_time, last_ttys_active_time);
+
+            /*
+            debug_log("INFO: %s: last_ttys_active_time: %lld: %s",
+                      __func__,
+                      last_ttys_active_time,
+                      FormatISO8601DateTime(last_ttys_active_time));
+            */
+        }
+
+        m_last_ttys_active_time = last_ttys_active_time;
+    }
+}
+
+TtyMonitor::Tty::Tty(const fs::path& tty_device_path)
+    : m_tty_device_path(tty_device_path)
+    , m_tty_last_active_time(0)
+{}
+
+
 // Class Config
 
 Config::Config()
@@ -468,7 +611,7 @@ config_variant Config::GetArg(const std::string& arg)
     }
 }
 
-std::string Config::GetArgString(const std::string& arg, const std::string& default_value)
+std::string Config::GetArgString(const std::string& arg, const std::string& default_value) const
 {
     auto iter = m_config_in.find(arg);
 
@@ -485,6 +628,12 @@ void Config::ProcessArgs()
 
     if (debug_arg == "1" || ToLower(debug_arg) == "true") {
         m_config.insert(std::make_pair("debug", true));
+    } else if (debug_arg == "0" || ToLower(debug_arg) == "false") {
+        m_config.insert(std::make_pair("debug", false));
+    } else {
+        error_log("%s: debug parameter in config file has invalid value: %s",
+                  __func__,
+                  debug_arg);
     }
 
     int startup_delay = 0;
@@ -526,6 +675,18 @@ void Config::ProcessArgs()
     std::string last_active_time_cpp_filename = GetArgString("last_active_time_cpp_filename", "last_active_time.dat");
 
     m_config.insert(std::make_pair("last_active_time_cpp_filename", last_active_time_cpp_filename));
+
+    std::string monitor_ttys_arg = GetArgString("monitor_ttys", "false");
+
+    if (monitor_ttys_arg == "1" || ToLower(monitor_ttys_arg) == "true") {
+        m_config.insert(std::make_pair("monitor_ttys", true));
+    } else if (monitor_ttys_arg == "0" || ToLower(monitor_ttys_arg) == "false"){
+        m_config.insert(std::make_pair("monitor_ttys", false));
+    } else {
+        error_log("%s: monitor_ttys parameter in config file has invalid value: %s",
+                  __func__,
+                  debug_arg);
+    }
 }
 
 
@@ -580,7 +741,7 @@ void InitiateEventActivityRecorders()
     g_event_recorders.ResetEventRecorders();
 
     for (auto& recorder : g_event_recorders.GetEventRecorders()) {
-            recorder->m_event_recorder_thread = std::thread(&EventRecorders::EventRecorder::EventActivityRecorderThread,
+            recorder->m_event_recorder_thread = std::thread(&InputEventRecorders::EventRecorder::EventActivityRecorderThread,
                                                             recorder);
 
         // Spread the thread start out a little bit.
@@ -602,7 +763,17 @@ void InitiateEventActivityMonitor()
 
     g_event_monitor.m_interrupt_monitor = false;
 
-    g_event_monitor.m_event_monitor_thread = std::thread(&EventMonitor::EventActivityMonitorThread, std::ref(g_event_monitor));
+    g_event_monitor.m_monitor_thread = std::thread(&Monitor::EventActivityMonitorThread, std::ref(g_event_monitor));
+}
+
+void InitiateTtyMonitor()
+{
+    debug_log("INFO: %s: started",
+              __func__);
+
+    g_tty_monitor.m_interrupt_tty_monitor = false;
+
+    g_tty_monitor.m_tty_monitor_thread = std::thread(&TtyMonitor::TtyMonitorThread, std::ref(g_tty_monitor));
 }
 
 void CleanUpEventDatFiles(int sig)
@@ -761,6 +932,20 @@ int main(int argc, char* argv[])
             }
         }
 
+        // Includes the reset of EventActivityRecorders
+        if (g_exit_code == 0 && std::get<bool>(g_config.GetArg("monitor_ttys")) == true) {
+            try {
+                InitiateTtyMonitor();
+            } catch (ThreadException& e) {
+                error_log("%s: Error creating event monitor thread: %s",
+                          __func__,
+                          e.what());
+
+                g_exit_code = 1;
+                Shutdown();
+            }
+        }
+
          // Wait for signal. This will also cause a shutdown at this point if Shutdown() was/is called.
         if (sigwait(&mask, &sig) == 0) {
             HandleSignals(sig);
@@ -784,11 +969,18 @@ int main(int argc, char* argv[])
             log("INFO: %s: joining event id monitor thread",
                 __func__);
 
+            g_tty_monitor.m_interrupt_tty_monitor = true;
+            g_tty_monitor.cv_tty_monitor_thread.notify_all();
+
+            if (g_tty_monitor.m_tty_monitor_thread.joinable()) {
+                g_tty_monitor.m_tty_monitor_thread.join();
+            }
+
             g_event_monitor.m_interrupt_monitor = true;
             g_event_monitor.cv_monitor_thread.notify_all();
 
-            if (g_event_monitor.m_event_monitor_thread.joinable()) {
-                g_event_monitor.m_event_monitor_thread.join();
+            if (g_event_monitor.m_monitor_thread.joinable()) {
+                g_event_monitor.m_monitor_thread.join();
             }
 
             CleanUpEventDatFiles(sig);

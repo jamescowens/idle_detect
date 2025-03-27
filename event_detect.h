@@ -20,8 +20,14 @@
 
 #include <util.h>
 
+//!
+//! The EventDetect namespace contains EventDetect specific code for the event_detect executable.
+//!
 namespace EventDetect {
 
+//!
+//! \brief The EventDetectException class is a customized exception handling class for the event_detect application.
+//!
 class EventDetectException : public std::exception
 {
 public:
@@ -36,7 +42,7 @@ protected:
     std::string m_message;
 };
 
-// File system related exceptions
+//! File system related exceptions
 class FileSystemException : public EventDetectException
 {
 public:
@@ -49,7 +55,7 @@ private:
     std::filesystem::path m_path;
 };
 
-// Threading Related Exceptions
+//! Threading Related Exceptions
 class ThreadException : public EventDetectException
 {
 public:
@@ -58,32 +64,30 @@ public:
 
 
 //!
-//! \brief The EventMonitor class provides the framework for monitoring event activity recorded by the EventRecorders
+//! \brief The Monitor class provides the framework for monitoring event activity recorded by the EventRecorders
 //! class EventRecorder threads. It also monitors changes in the input event devices and resets the EventRecorder threads
 //! if they change. It also updates the m_last_active_time. The class is a singleton and has one instantiated thread.
 //! It uses locks to protect the event_monitor device paths and the thread. The m_last_active_time is an atomic and requires
 //! no explicit locking.
 //!
-class EventMonitor
+class Monitor
 {
 public:
-    std::thread m_event_monitor_thread;
+    std::thread m_monitor_thread;
     std::condition_variable cv_monitor_thread;
     std::atomic<bool> m_interrupt_monitor;
 
-    EventMonitor();
+    Monitor();
 
-    EventMonitor(std::vector<fs::path> event_device_paths);
-
-    std::vector<fs::path> GetEventDevices();
+    std::vector<fs::path> GetEventDevices() const;
 
     void UpdateEventDevices();
 
     void EventActivityMonitorThread();
 
-    bool IsInitialized();
+    bool IsInitialized() const;
 
-    int64_t GetLastActiveTime();
+    int64_t GetLastActiveTime() const;
 
 private:
     static std::vector<fs::path> EnumerateEventDevices();
@@ -101,21 +105,17 @@ private:
 };
 
 //!
-//! \brief The EventRecorders class provides the framework for recording event activity from each of the input event devices that
+//! \brief The InputEventRecorders class provides the framework for recording event activity from each of the input event devices that
 //! are classified as a pointing device (mouse). It is a singleton, but has multiple subordinate threads running, 1 thread for each
 //! identified device to monitor.
 //!
-class EventRecorders
+class InputEventRecorders
 {
-    friend EventMonitor;
-
 public:
     std::condition_variable cv_recorder_threads;
     std::atomic<bool> m_interrupt_recorders;
 
-    EventRecorders();
-
-    EventRecorders(std::vector<fs::path> event_device_paths);
+    InputEventRecorders();
 
     class EventRecorder
     {
@@ -124,9 +124,9 @@ public:
 
         EventRecorder(fs::path event_device_path);
 
-        fs::path GetEventDevicePath();
+        fs::path GetEventDevicePath() const;
 
-        int64_t GetEventCount();
+        int64_t GetEventCount() const;
 
         void EventActivityRecorderThread();
 
@@ -138,7 +138,7 @@ public:
         std::atomic<int64_t> m_event_count;
     };
 
-    int64_t GetTotalEventCount();
+    int64_t GetTotalEventCount() const;
 
     std::vector<std::shared_ptr<EventRecorder>>& GetEventRecorders();
 
@@ -149,6 +149,48 @@ private:
     mutable std::mutex mtx_event_recorder_threads;
 
     std::vector<std::shared_ptr<EventRecorder>> m_event_recorder_ptrs;
+};
+
+class TtyMonitor
+{
+public:
+    std::thread m_tty_monitor_thread;
+    std::condition_variable cv_tty_monitor_thread;
+    std::atomic<bool> m_interrupt_tty_monitor;
+
+    TtyMonitor();
+
+    std::vector<fs::path> GetTtyDevices() const;
+
+    void UpdateTtyDevices();
+
+    void TtyMonitorThread();
+
+    bool IsInitialized() const;
+
+    int64_t GetLastTtyActiveTime() const;
+
+    class Tty
+    {
+    public:
+        Tty(const fs::path& tty_device_path);
+
+        fs::path m_tty_device_path;
+        int64_t m_tty_last_active_time;
+    };
+
+private:
+    static std::vector<fs::path> EnumerateTtyDevices();
+
+    mutable std::mutex mtx_tty_monitor;
+    mutable std::mutex mtx_tty_monitor_thread;
+
+    std::vector<fs::path> m_tty_device_paths;
+    std::vector<Tty> m_ttys;
+
+    std::atomic<int64_t> m_last_ttys_active_time;
+
+    std::atomic<bool> m_initialized;
 };
 
 typedef std::variant<bool, int, std::string, fs::path> config_variant;
@@ -169,8 +211,7 @@ public:
 private:
     void ProcessArgs();
 
-    std::string GetArgString(const std::string& arg, const std::string& default_value);
-
+    std::string GetArgString(const std::string& arg, const std::string& default_value) const;
 
     mutable std::mutex mtx_config;
 
