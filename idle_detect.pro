@@ -11,7 +11,7 @@ TARGET = event_detect
 
 QMAKE_CXXFLAGS += -std=c++17
 
-QT = core gui widgets
+# QT = core gui widgets
 
 HEADERS = \
     event_detect.h \
