@@ -1,8 +1,20 @@
 # idle_detect
 
-This is an effort to provide a compact script/C++ library to detect user activity on a workstation for the purpose of running commands when the idle/active state changes. Currently only the script form is implemented. It is motivated primarily to solve the idle detection issues with BOINC and other Linux based DC programs. It is not intended to be as sophisticated in control or logging as https://github.com/Drag-NDrop/IdleRunner for example.
+This is an effort to provide a compact C++/script library to detect user activity on a workstation for the purpose of running commands when the idle/active state changes. It is motivated primarily to solve the idle detection issues with BOINC and other Linux based DC programs. There are two major components:
 
-This should be considered an early alpha.
+1. A systems-wide C++ application, event_detect, to be run as a systemd service that detects pointer activity and tty/pty activity and reports the last active time of the user. This application currently writes the last active time to a file /run/event_detect/last_active_time.dat, but it is envisioned an option
+to use a shared memory segment will also be offered. (The script version of event_detect is now deprecated.)
+
+2. A user level application, idle_detect, currently in script form, to be run as an automatically started application, or systemd user level service, to use the last active time reported by event_detect in conjunction with other GUI session tools available, such as xprintidle, etc. This will be replaced by a
+C++ application in the near future.
+
+The detection of "idle time" on a Linux workstation is not straightforward. The Linux kernel has a well-developed and standardized mechanism for monitoring activity at the device input level via the /dev/input/event* devices, and a reliable way of determining which of those are pointing devices. The tty/pty monitoring is not as clean, but can be done fairly reliably by monitoring the atime for the /dev/pty/\* and dev/tty* devices. The gap is at the GUI session (window manager or compositor level). Monitoring the user activity at the lower level of the input devices and pty/tty devices is generic and works across every GUI session type and also if there is no GUI session at all. The problem is that there are some activities in the GUI where the user is not apparently active via the lower level activity measurement, but they are *considered* active by the GUI session. The most common example is watching a movie. the XSS module in X allows an application to essentially inhibit the idle detection while it is running. This was originally to prevent the lock screen or screensaver to activate during a movie. This is only implemented at the GUI session level.
+
+To make matters worse, to be able to use this capability means that you have to use the interfaces from X either via xprintidle (if via script) or what xprintidle uses (if using C++), which are calls to the XSS module, or in Wayland, the compositor equivalent. X is standardized, which makes this fairly easy. Wayland is not. There is NO standardized idle detection capability at the window manager level in Wayland. Each compositor implements its own interface for this, and unfortunately, each currently available compositor for the different windowing environments, such as KDE or Gnome does it differently. This is unfortunate. This is where the remaining gap is:
+
+The combination of event_detect and idle_detect currently reliably detects idle time for user activity, *including* idle inhibit, for X sessions and pty/tty sessions. It currently reliably detects idle time for Wayland sessions, but NOT idle inhibit. This means that if one is watching a movie in Wayland, after the idle time trigger is reached, the system will be considered idle. The lift to close this remaining gap is considerable in terms of both programming effort and the maintenance required afterwards to keep up with all of the GUI window managers, since this is still evolving.
+
+This should be considered alpha code.
 
 Development work is occurring on the development branch, and releases will be on master.
 
@@ -26,7 +38,7 @@ At this stage there are no automated installation scripts. Here are the basic st
 2. Make sure you have installed packages for xprintidle, w, or evemu-record. (The last one is if you want
 to do low level direct monitoring of the /dev/input/eventX devices, which works across all GUI's.)
 
-3. sudo cp event_detect.sh /usr/local/bin
+3. sudo cp event_detect.sh /usr/local/bin and sudo cp event_detect /usr/local/bin. (The former is the script and the latter is the C++ application.)
 
 4. sudo cp idle_detect.sh /usr/local/bin
 
