@@ -21,7 +21,9 @@
 
 #include <event_detect.h>
 
-std::string g_version = "Post Pre-release 0.1 Development: 20250326";
+std::string g_version = "Post Pre-release 0.2 Development: 20250327";
+
+const fs::path g_lockfile_path = "/run/event_detect/event_detect.pid";
 
 pthread_t g_main_thread_id = 0;
 std::atomic<int> g_exit_code = 0;
@@ -769,7 +771,7 @@ void InitiateTtyMonitor()
     g_tty_monitor.m_tty_monitor_thread = std::thread(&TtyMonitor::TtyMonitorThread, std::ref(g_tty_monitor));
 }
 
-void CleanUpEventDatFiles(int sig)
+void CleanUpFiles(int sig)
 {
     debug_log("INFO: %s: started",
               __func__);
@@ -800,6 +802,14 @@ void CleanUpEventDatFiles(int sig)
                 __func__,
                 e.what());
         }
+    }
+
+    try {
+        fs::remove(g_lockfile_path);
+    } catch (FileSystemException& e) {
+        error_log("%s: application lockfile unable to be removed at application termination or interrupt.");
+
+        g_exit_code = 1;
     }
 }
 
@@ -838,6 +848,33 @@ int main(int argc, char* argv[])
     // Populate g_debug from the config to avoid having to call the heavyweight GetArg in each log function call.
     g_debug = std::get<bool>(g_config.GetArg("debug"));
 
+    pid_t current_pid = getpid();
+
+    // Lockfile management. There should only be one instance of this application running.
+    // Check if the lockfile exists. If it cannot be removed indicate event_detect is already running and exit with failure.
+    if (fs::exists(g_lockfile_path)) {
+        std::ifstream lockfile(g_lockfile_path);
+        pid_t old_pid;
+        lockfile >> old_pid;
+
+        if (kill(old_pid, 0) == 0) {
+            error_log("%s: event_detect is already running with PID: %s",
+                      __func__,
+                      old_pid);
+
+            g_exit_code = 1;
+
+            return g_exit_code;
+        }
+    }
+
+    // Scope to close the lockfile after writing pid.
+    {
+        // Create or overwrite the lockfile
+        std::ofstream lockfile(g_lockfile_path);
+        lockfile << current_pid;
+    }
+
     int startup_delay = std::get<int>(g_config.GetArg("startup_delay"));
 
     if (startup_delay > 0) {
@@ -875,9 +912,10 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    log("INFO: %s: event_detect C++ program, %s, started",
+    log("INFO: %s: event_detect C++ program, %s, started, pid %i",
         __func__,
-        g_version);
+        g_version,
+        current_pid);
 
     debug_log("INFO: %s: main_thread_id = %lld",
               __func__,
@@ -955,7 +993,7 @@ int main(int argc, char* argv[])
         }
 
         if (sig == SIGHUP) {
-            CleanUpEventDatFiles(sig);
+            CleanUpFiles(sig);
         }
 
         if (sig == SIGINT || sig == SIGTERM) {
@@ -976,7 +1014,7 @@ int main(int argc, char* argv[])
                 g_event_monitor.m_monitor_thread.join();
             }
 
-            CleanUpEventDatFiles(sig);
+            CleanUpFiles(sig);
 
             break;
         }

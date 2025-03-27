@@ -3,8 +3,13 @@ Description=DC Event Detection Service
 
 [Service]
 Type=simple
-ProtectHome=false
+ProtectHome=true
 ExecStart=/usr/local/bin/event_detect /etc/event_detect.conf
+PIDFile=/run/event_detect/event_detect.pid
+Restart=on-failure
+PermissionsStartOnly=true
+RuntimeDirectory=event_detect
+RuntimeDirectoryMode=0755
 
 [Install]
-WantedBy=default.target
+WantedBy=multi-user.target
