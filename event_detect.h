@@ -73,8 +73,19 @@ public:
 class Monitor
 {
 public:
+    //!
+    //! \brief Holds the actual monitor thread.
+    //!
     std::thread m_monitor_thread;
+
+    //!
+    //! \brief Condition variable for control/synchronization of the monitor thread.
+    //!
     std::condition_variable cv_monitor_thread;
+
+    //!
+    //! \brief Atomic boolean that interrupts the monitor thread.
+    //!
     std::atomic<bool> m_interrupt_monitor;
 
     //!
@@ -102,7 +113,7 @@ public:
     //!
     //! \brief Provides a flag to indicate whether the monitor has been initialized. This is used in main in the application
     //! control paths.
-    //! \return
+    //! \return boolean flag
     //!
     bool IsInitialized() const;
 
@@ -163,84 +174,221 @@ private:
 class InputEventRecorders
 {
 public:
+    //!
+    //! \brief Condition variable for control/synchronization of the recorder threads.
+    //!
     std::condition_variable cv_recorder_threads;
+
+    //!
+    //! \brief Atomic boolean that interrupts the recorder threads.
+    //!
     std::atomic<bool> m_interrupt_recorders;
 
+    //!
+    //! \brief Constructor.
+    //!
     InputEventRecorders();
 
+    //!
+    //! \brief The EventRecorder class formalizes the event recorder instance and is instantiated for each
+    //! event recorder thread. These instantiations are wrapped by shared_ptr objects and the shared_ptrs stored
+    //! in the m_event_recorder_ptrs vector. This is essentially a very specialized thread pool.
+    //!
     class EventRecorder
     {
     public:
+        //!
+        //! \brief Holds the actual event recorder thread.
+        //!
         std::thread m_event_recorder_thread;
 
-        EventRecorder(fs::path event_device_path);
+        //!
+        //! \brief Parameterized constructor.
+        //! \param Required parameter for construction: event_device_path
+        //!
+        explicit EventRecorder(fs::path event_device_path);
 
+        //!
+        //! \brief Gets the event device path.
+        //! \return A copy of the m_event_device_path. A copy is returned to avoid holding the mtx_event_recorder lock
+        //! for an extended period.
+        //!
         fs::path GetEventDevicePath() const;
 
+        //!
+        //! \brief Returns the current event count tallied by the recorder.
+        //! \return
+        //!
         int64_t GetEventCount() const;
 
+        //!
+        //! \brief Method to run in the instantiated recorder thread.
+        //!
         void EventActivityRecorderThread();
 
     private:
+        //!
+        //! \brief This is the mutex member that provides lock control for the individual event recorder.
+        //!
         mutable std::mutex mtx_event_recorder;
 
+        //!
+        //! \brief Holds the event device path of the monitored device.
+        //!
         fs::path m_event_device_path;
 
+        //!
+        //! \brief Atomic that holds the current event tally for the monitored device.
+        //!
         std::atomic<int64_t> m_event_count;
     };
 
+    //!
+    //! \brief Provides the total count (tally) of events across all monitored devices.
+    //! \return int64_t of total event count
+    //!
     int64_t GetTotalEventCount() const;
 
+    //!
+    //! \brief Returns a reference to the event recorder objects thread pool.
+    //! \return vector of smart shared pointers to the event recorders
+    //!
     std::vector<std::shared_ptr<EventRecorder>>& GetEventRecorders();
 
     void ResetEventRecorders();
 
 private:
+    //!
+    //! \brief This is the mutex member that provides lock control for the input event recorders object. This is used to
+    //! ensure the input event recorders is thread-safe. Note that the subordinate individual event recorders are covered
+    //! by their own individual locks.
+    //!
     mutable std::mutex mtx_event_recorders;
+
+    //!
+    //! \brief This provides lock control for the recorder worker threads themselves.
+    //!
     mutable std::mutex mtx_event_recorder_threads;
 
+    //!
+    //! \brief Holds smart shared pointers to the event recorder threads. This is a specialized thread pool with associated metadata.
+    //!
     std::vector<std::shared_ptr<EventRecorder>> m_event_recorder_ptrs;
 };
 
 class TtyMonitor
 {
 public:
+    //!
+    //! \brief Holds the actual tty monitor thread.
+    //!
     std::thread m_tty_monitor_thread;
+
+    //!
+    //! \brief Condition variable for control/synchronization of the tty monitor threads.
+    //!
     std::condition_variable cv_tty_monitor_thread;
+
+    //!
+    //! \brief Atomic boolean that interrupts the tty monitor thread.
+    //!
     std::atomic<bool> m_interrupt_tty_monitor;
 
+    //! Constructor.
     TtyMonitor();
 
+    //!
+    //! \brief Returns a copy of the vector of pts/tty paths. A copy is returned to avoid holding the lock on mtx_tty_monitor
+    //! for an extended period.
+    //! \return std::vector<fs::path> of the pts/tty paths
+    //!
     std::vector<fs::path> GetTtyDevices() const;
 
+    //!
+    //! \brief Initializes/Updates the pts/tty device paths to monitor.
+    //!
     void UpdateTtyDevices();
 
+    //!
+    //! \brief Method to instantiate the tty monitor thread.
+    //!
     void TtyMonitorThread();
 
+    //!
+    //! \brief Provides a flag to indicate whether the monitor has been initialized. This is used in main in the application
+    //! control paths.
+    //! \return boolean flag
+    //!
     bool IsInitialized() const;
 
+    //!
+    //! \brief Returns the overall last active time of all of the monitored pts/ttys.
+    //! \return Unix Epoch time in seconds
+    //!
     int64_t GetLastTtyActiveTime() const;
 
+    //!
+    //! \brief The Tty class is a small class to hold pts/tty information. It is essentially a struct with a parameterized
+    //! constructor.
+    //!
     class Tty
     {
     public:
-        Tty(const fs::path& tty_device_path);
+        //!
+        //! \brief Parameterized constructor.
+        //! \param tty_device_path
+        //!
+        explicit Tty(const fs::path& tty_device_path);
 
+        //!
+        //! \brief Holds the pts/tty device path.
+        //!
         fs::path m_tty_device_path;
+
+        //!
+        //! \brief Holds the last active time of the pts/tty.
+        //!
         int64_t m_tty_last_active_time;
     };
 
 private:
+    //!
+    //! \brief Provides the enumerated pts/tty devices.
+    //! \return std::vector<fs::path> of enumerated pts/tty devices.
+    //!
     static std::vector<fs::path> EnumerateTtyDevices();
 
+    //!
+    //! \brief This is the mutex member that provides lock control for the tty monitor object. This is used to ensure the
+    //! tty monitor is thread-safe.
+    //!
     mutable std::mutex mtx_tty_monitor;
+
+    //!
+    //! \brief This provides lock control for the tty monitor worker thread itself.
+    //!
     mutable std::mutex mtx_tty_monitor_thread;
 
+    //!
+    //! \brief Holds the device paths of the monitored pts/ttys. Note that this is duplicative of information in the individual
+    //! tty objects, but it allows efficient comparison of the inventory of ttys.
+    //!
     std::vector<fs::path> m_tty_device_paths;
+
+    //!
+    //! \brief std::vector holding the tty objects.
+    //!
     std::vector<Tty> m_ttys;
 
+    //!
+    //! \brief Atomic that holds the overall last active time across all of the monitored pts/ttys.
+    //!
     std::atomic<int64_t> m_last_ttys_active_time;
 
+    //!
+    //! \brief This holds the flag as to whether the tty monitor has been initialized and is provided by the IsInitialized() public
+    //! method.
+    //!
     std::atomic<bool> m_initialized;
 };
 
@@ -253,23 +401,62 @@ typedef std::variant<bool, int, std::string, fs::path> config_variant;
 class Config
 {
 public:
+    //!
+    //! \brief Constructor.
+    //!
     Config();
 
+    //!
+    //! \brief Reads and parses the config file provided by the argument and populates m_config_in, then calls private
+    //! method ProcessArgs() to populate m_config.
+    //! \param config_file
+    //!
     void ReadAndUpdateConfig(const fs::path& config_file);
 
+    //!
+    //! \brief Provides the config_variant type value of the config parameter (argument).
+    //! \param arg (key) to look up value.
+    //! \return config_variant type value of the value of the config parameter (argument).
+    //!
     config_variant GetArg(const std::string& arg);
 
 private:
+    //!
+    //! \brief Private helper method used by ReadAndUpdateConfig
+    //!
     void ProcessArgs();
 
+    //!
+    //! \brief Private version of GetArg that operates on m_config_in and also selects the provided default value
+    //! if the arg is not found. This is how default values for parameters are established.
+    //! \param arg (key) to look up value as string.
+    //! \param default_value if arg is not found.
+    //! \return string value found in lookup, default value if not found.
+    //!
     std::string GetArgString(const std::string& arg, const std::string& default_value) const;
 
+    //!
+    //! \brief This is the mutex member that provides lock control for the config object. This is used to ensure the
+    //! config object is thread-safe.
+    //!
     mutable std::mutex mtx_config;
 
+    //!
+    //! \brief Holds the raw parsed parameter-values from the config file.
+    //!
     std::multimap<std::string, std::string> m_config_in;
+
+    //!
+    //! \brief Holds the processed parameter-values, which are strongly typed and in a config_variant union, and where
+    //! default values are populated if not found in the config file (m_config_in).
+    //!
     std::multimap<std::string, config_variant> m_config;
 };
 
+//!
+//! \brief Sends the SIGTERM signal to the main thread id initiating a shutdown of all worker threads and the main thread
+//! via the HandleSignals function.
+//!
 void Shutdown();
 
 } // namespace event_detect

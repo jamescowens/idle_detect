@@ -684,9 +684,18 @@ void Config::ProcessArgs()
     }
 }
 
+void EventDetect::Shutdown()
+{
+    pthread_kill(g_main_thread_id, SIGTERM);
+}
 
-// Global scope functions
 
+// Global scope functions. Note these do not have declarations in the event_detect.h file.
+
+//!
+//! \brief Signal handler for threads.
+//! \param signum
+//!
 void HandleSignals(int signum)
 {
     debug_log("INFO: %s: started",
@@ -718,14 +727,8 @@ void HandleSignals(int signum)
 }
 
 //!
-//! \brief Sends the SIGTERM signal to the main thread id initiating a shutdown of all worker threads and the main thread
-//! via the HandleSignals function.
+//! \brief Initiates the event activity recorder threads.
 //!
-void EventDetect::Shutdown()
-{
-        pthread_kill(g_main_thread_id, SIGTERM);
-}
-
 void InitiateEventActivityRecorders()
 {
     debug_log("INFO: %s: started",
@@ -751,6 +754,10 @@ void InitiateEventActivityRecorders()
     }
 }
 
+//!
+//! \brief Initiates the event activity monitor thread. Note this also checks the output of the tty monitor, so it is really
+//! the overall monitor.
+//!
 void InitiateEventActivityMonitor()
 {
     debug_log("INFO: %s: started",
@@ -761,6 +768,9 @@ void InitiateEventActivityMonitor()
     g_event_monitor.m_monitor_thread = std::thread(&Monitor::EventActivityMonitorThread, std::ref(g_event_monitor));
 }
 
+//!
+//! \brief Initiates the tty monitor thread.
+//!
 void InitiateTtyMonitor()
 {
     debug_log("INFO: %s: started",
@@ -771,6 +781,10 @@ void InitiateTtyMonitor()
     g_tty_monitor.m_tty_monitor_thread = std::thread(&TtyMonitor::TtyMonitorThread, std::ref(g_tty_monitor));
 }
 
+//!
+//! \brief Cleans up data files in the event_count_files_path, including the application lockfile, during a graceful shutdown.
+//! \param sig
+//!
 void CleanUpFiles(int sig)
 {
     debug_log("INFO: %s: started",
