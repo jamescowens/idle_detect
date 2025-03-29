@@ -21,7 +21,7 @@
 
 #include <event_detect.h>
 
-std::string g_version = "Post Pre-release 0.2 Development: 20250327";
+std::string g_version = "Post Pre-release 0.3 Development: 20250329";
 
 const fs::path g_lockfile = "event_detect.pid";
 
