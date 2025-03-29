@@ -19,6 +19,7 @@ Development work is occurring on the development branch, and releases will be on
 This code is licensed under the MIT license.
 
 ### Current dependencies:
+ - libevdev library and development (header) files
  - xprintidle for X session idle inhibit detection
 
 ### Installation procedure
@@ -29,11 +30,14 @@ At this stage there are no automated installation scripts. Here are the basic st
 
 2. Make sure you have installed the package for xprintidle if you intend to detect idle inhibit in X.
 
-3. Compile the event_detect C++ application. Currently there is a idle_detect.pro project file to do this with qmake via QtCreator. Autotools or cmake will be implemented later.
+3. Compile the event_detect C++ application with cmake:
+    - cd ./build/cmake
+    - cmake ../../ (note you may need the -DCMAKE_CXX_COMPILER=\<c++ compiler path\> option to point to a C++-17 compliant compiler)
+    - cmake build .
 
 4. sudo cp event_detect /usr/local/bin.
 
-5. sudo cp idle_detect.sh /usr/local/bin
+5. cd  ../../ then sudo cp idle_detect.sh /usr/local/bin
 
 6. sudo cp idle_detect_resources.sh /usr/local/bin
 

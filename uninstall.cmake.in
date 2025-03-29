@@ -1,0 +1,20 @@
+# Uninstall script for idle_detect
+
+execute_process(COMMAND ${CMAKE_COMMAND} -E remove "@{INSTALL_BIN_DIR}/event_detect")
+execute_process(COMMAND ${CMAKE_COMMAND} -E remove "@{INSTALL_BIN_DIR}/idle_detect.sh")
+execute_process(COMMAND ${CMAKE_COMMAND} -E remove "@{INSTALL_BIN_DIR}/idle_detect_resources.sh")
+execute_process(COMMAND ${CMAKE_COMMAND} -E remove "@{INSTALL_CONFIG_DIR}/idle_detect.conf")
+
+# System uninstall
+add_custom_target(uninstall_system
+    COMMAND ${CMAKE_COMMAND} -E remove "@{INSTALL_SYSTEM_SERVICE_DIR}/dc_event_detection.service"
+    COMMAND systemctl disable dc_event_detection.service
+    COMMENT "Uninstalling system-level service"
+)
+
+# User uninstall
+add_custom_target(uninstall_user
+    COMMAND ${CMAKE_COMMAND} -E remove "$ENV{HOME}/.config/systemd/user/dc_idle_detection.service"
+    COMMAND systemctl --user disable dc_idle_detection.service
+    COMMENT "Uninstalling user-level service"
+)
