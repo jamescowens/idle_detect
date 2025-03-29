@@ -781,6 +781,10 @@ void InitiateTtyMonitor()
     g_tty_monitor.m_tty_monitor_thread = std::thread(&TtyMonitor::TtyMonitorThread, std::ref(g_tty_monitor));
 }
 
+//!
+//! \brief Create event data directory if needed and set proper permissions.
+//! \param data_dir_path
+//!
 void SetupDataDir(const fs::path& data_dir_path)
 {
     try {
