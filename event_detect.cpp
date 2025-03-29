@@ -463,7 +463,7 @@ std::vector<fs::path> TtyMonitor::EnumerateTtyDevices()
     debug_log("INFO: %s: started",
               __func__);
 
-    std::vector<fs::path> ptss = FindDirEntriesWithWildcard(fs::path {"/dev/pts"}, ".[0-9]");
+    std::vector<fs::path> ptss = FindDirEntriesWithWildcard(fs::path {"/dev/pts"}, ".*");
 
     debug_log("INFO: %s: ptss.size() = %u",
               __func__,
