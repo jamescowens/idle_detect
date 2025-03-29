@@ -1,0 +1,22 @@
+# Uninstall script for idle_detect
+
+if(NOT EXISTS "${CMAKE_INSTALL_PREFIX}")
+  message(FATAL_ERROR "CMAKE_INSTALL_PREFIX not set. Run cmake with -DCMAKE_INSTALL_PREFIX=<install_prefix>")
+endif()
+
+# System uninstall
+add_custom_target(uninstall_system
+    COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_BIN_DIR}/event_detect"
+    COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_BIN_DIR}/idle_detect.sh"
+    COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_BIN_DIR}/idle_detect_resources.sh"
+    COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_CONFIG_DIR}/event_detect.conf"
+    COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_SYSTEM_SERVICE_DIR}/dc_event_detection.service"
+    COMMENT "Uninstalling system-level service"
+)
+
+# User uninstall
+add_custom_target(uninstall_user
+    COMMAND ${CMAKE_COMMAND} -E remove "$ENV{HOME}/.config/systemd/user/dc_idle_detection.service"
+    COMMAND ${CMAKE_COMMAND} -E remove "$ENV{HOME}/.config/idle_detect.conf"
+    COMMENT "Uninstalling user-level service"
+)
