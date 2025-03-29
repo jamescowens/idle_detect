@@ -23,7 +23,7 @@
 
 std::string g_version = "Post Pre-release 0.2 Development: 20250327";
 
-const fs::path g_lockfile_path = "/run/event_detect/event_detect.pid";
+const fs::path g_lockfile = "event_detect.pid";
 
 pthread_t g_main_thread_id = 0;
 std::atomic<int> g_exit_code = 0;
@@ -781,6 +781,27 @@ void InitiateTtyMonitor()
     g_tty_monitor.m_tty_monitor_thread = std::thread(&TtyMonitor::TtyMonitorThread, std::ref(g_tty_monitor));
 }
 
+void SetupDataDir(const fs::path& data_dir_path)
+{
+    try {
+        if (!fs::exists(data_dir_path)) {
+            fs::create_directory(data_dir_path);
+        }
+
+        fs::permissions(data_dir_path,
+                        fs::perms::owner_read | fs::perms::owner_write | fs::perms::owner_exec |
+                            fs::perms::group_read | fs::perms::group_exec |
+                            fs::perms::others_read | fs::perms::others_exec,
+                        fs::perm_options::replace);
+    } catch (FileSystemException& e) {
+        error_log("%: Unable to create and/or set permissions on event_detect data directory at path: %s",
+                  __func__,
+                  data_dir_path);
+        g_exit_code = 1;
+        Shutdown();
+    }
+}
+
 //!
 //! \brief Cleans up data files in the event_count_files_path, including the application lockfile, during a graceful shutdown.
 //! \param sig
@@ -819,7 +840,7 @@ void CleanUpFiles(int sig)
     }
 
     try {
-        fs::remove(g_lockfile_path);
+        fs::remove(event_data_path / g_lockfile);
     } catch (FileSystemException& e) {
         error_log("%s: application lockfile unable to be removed at application termination or interrupt.");
 
@@ -864,10 +885,14 @@ int main(int argc, char* argv[])
 
     pid_t current_pid = getpid();
 
+    fs::path data_dir_path = std::get<fs::path>(g_config.GetArg("event_count_files_path"));
+
+    SetupDataDir(data_dir_path);
+
     // Lockfile management. There should only be one instance of this application running.
     // Check if the lockfile exists. If it cannot be removed indicate event_detect is already running and exit with failure.
-    if (fs::exists(g_lockfile_path)) {
-        std::ifstream lockfile(g_lockfile_path);
+    if (g_exit_code == 0 && fs::exists(data_dir_path / g_lockfile)) {
+        std::ifstream lockfile(data_dir_path / g_lockfile);
         pid_t old_pid;
         lockfile >> old_pid;
 
@@ -885,7 +910,7 @@ int main(int argc, char* argv[])
     // Scope to close the lockfile after writing pid.
     {
         // Create or overwrite the lockfile
-        std::ofstream lockfile(g_lockfile_path);
+        std::ofstream lockfile(data_dir_path / g_lockfile);
         lockfile << current_pid;
     }
 
