@@ -24,49 +24,39 @@ This code is licensed under the MIT license.
 
 ### Installation procedure
 
-At this stage there are no automated installation scripts. Here are the basic steps to get it working.
-
 1. git clone https://github.com/jamescowens/idle_detect.git and change into the idle_detect directory.
 
-2. Make sure you have installed the package for xprintidle if you intend to detect idle inhibit in X.
+2. Make sure you have installed the package for libevdev and for xprintidle (if you intend to detect idle inhibit in X).
 
 3. Compile the event_detect C++ application with cmake:
     - cd ./build/cmake
     - cmake ../../ (note you may need the -DCMAKE_CXX_COMPILER=\<c++ compiler path\> option to point to a C++-17 compliant compiler)
     - cmake build .
 
-4. sudo cp event_detect /usr/local/bin.
+4. Install executables and system-wide service with sudo cmake --install .
 
-5. cd  ../../ then sudo cp idle_detect.sh /usr/local/bin
+5. Load the new service into systemd with sudo systemctl daemon-reload.
 
-6. sudo cp idle_detect_resources.sh /usr/local/bin
+6. Modify event_detect.conf to your liking with sudo nano /etc/event_detect.conf.
 
-7. sudo cp dc_event_detection.service /etc/systemd/system and then sudo systemctl daemon-reload
+7. Install user level script and user level service with cmake --build . --target install_user_service.
 
-8. sudo cp event_detect.conf /etc
+8. Modify idle_detect.conf to your liking with nano ~/.config/idle_detect.conf
 
-9. Modify event_detect.conf to your liking with sudo nano /etc/event_detect.conf.
+9. Load the new user level service into systemd with systemctl --user daemon-reload
 
-10. cp idle_detect.conf ~/.config/idle_detect.conf
+10. sudo systemctl enable --now dc_event_detection. This enables and starts the pointing device and pts/tty event detection service.
 
-11. Modify idle_detect.conf to your liking with nano ~/.config/idle_detect.conf
+11. systemctl --user enable --now dc_idle_detection. This enables and starts the user mode component as a user level service.
 
-12. cp dc_idle_detection.service ~/.config/systemd/user
+12. Check the status of both the services: sudo systemctl status dc_event_detection, and systemctl --user status dc_idle_detection, and make sure they are successfully running.
 
-13. systemctl --user daemon-reload
+13. Copy the dc_pause and dc_unpause scripts to /usr/local/bin and modify to your liking (they are currently set up to control BOINC in its default installation). This will be put in the cmake install shortly:
+    - sudo cp dc_pause /usr/local/bin
+    - sudo cp dc_unpause /usr/local/bin
+    - sudo nano /usr/local/bin/dc_pause
+    - sudo nano /usr/local/bin/dc_unpause
 
-14. sudo systemctl enable --now dc_event_detection. This enables and starts the pointing device and pty/tty event detection service.
-
-15. systemctl --user enable --now dc_idle_detection. This enables and starts the user mode component as a user level service.
-
-16. Check the status of both the services: sudo systemctl status dc_event_detection, and systemctl --user status dc_idle_detection and make sure they are successfully running.
-
-17. Copy the dc_pause and dc_unpause scripts to /usr/local/bin and modify to your liking (they are currently set up to control BOINC in its default installation):
-sudo cp dc_pause /usr/local/bin
-sudo cp dc_unpause /usr/local/bin
-sudo nano /usr/local/bin/dc_pause
-sudo nano /usr/local/bin/dc_unpause
-
-18. The user level idle_detection script detects changes to the idle_detect.conf file and automatically applies the changes; however if you change the event_detect.conf file for the system event detection service, then you currently need to restart the system level dc_event_detection service via sudo systemctl restart dc_event_detection.
+14. The user level idle_detection script detects changes to the idle_detect.conf file and automatically applies the changes; however if you change the event_detect.conf file for the system event detection service, then you currently need to restart the system level dc_event_detection service via sudo systemctl restart dc_event_detection.
 
 ### This is alpha level code and is currently subject to rapid change.
