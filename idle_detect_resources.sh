@@ -1,7 +1,11 @@
 #!/bin/bash
 
+# (c) Copyright 2025 James C. Owens
+
+# This code is licensed under the MIT license. See LICENSE.md in the repository.
+
 version() {
-  echo "idle_detect/event_detect alpha version 11 - 20250322."
+  echo "idle_detect/event_detect alpha development post version 0.3 - 20250325."
 }
 
 timestamp() {

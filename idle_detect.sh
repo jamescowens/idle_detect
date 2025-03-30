@@ -62,8 +62,6 @@ check_idle() {
 
       idle_seconds_event_detect=$((current_time - last_active_time))
 
-      debug_log "INFO: idle_seconds_event_detect = $idle_seconds_event_detect"
-
      else
       log "ERROR: use_event_detect specified but last_active_time.dat is not found. Is the dc_event_detection service running?"
       using_event_detect=0
@@ -72,14 +70,13 @@ check_idle() {
   fi
 
   # Use xprintidle if it is present and use_xprintidle=1 is specified to allow detection of idle inhibit.
-  if ((use_xprintidle == 1)); then
+  if ((use_xprintidle == 1)) && ([[ "$display_type" = "X11" ]] || [[ "$display_type" = "X11_XAUTHORITY" ]] || [[ "$display_type" = "X11_LIKELY" ]]); then
     if check_executable "xprintidle" 0; then
       using_xprintidle=1
       idle_milliseconds=$(xprintidle)
 
       idle_seconds_xprintidle=$(echo "scale=0; $idle_milliseconds / 1000" | bc)
 
-      debug_log "INFO: idle_seconds_xprintidle = $idle_seconds_xprintidle"
     else
       log "ERROR: use_xprintidle specified but xprintidle cannot be found. Is the package for xprintidle installed?"
       using_xprintidle=0
@@ -93,11 +90,11 @@ check_idle() {
   fi
 
   if ((using_event_detect)); then
-    debug_log "idle_seconds_event_detect = $idle_seconds_event_detect"
+    debug_log "INFO: idle_seconds_event_detect = $idle_seconds_event_detect"
   fi
 
   if ((using_xprintidle)); then
-    debug_log "idle_seconds_xprintidle = $idle_seconds_xprintidle"
+    debug_log "INFO idle_seconds_xprintidle = $idle_seconds_xprintidle"
   fi
 
   if ((using_event_detect == 0)); then
@@ -136,6 +133,7 @@ sleep "$initial_sleep"
 active_state=0
 last_active_state=0
 process_source_config=0
+display_type=""
 
 while true; do
   # Skip the source config on the first pass, since it was just done before entering the loop.
@@ -144,6 +142,10 @@ while true; do
   else
     process_source_config=1
   fi
+
+  display_type="$(check_gui_session_type)"
+
+  debug_log "INFO: display_type = $display_type"
 
   check_idle
 
