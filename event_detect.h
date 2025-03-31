@@ -10,58 +10,12 @@
 #include <atomic>
 #include <condition_variable>
 #include <mutex>
-#include <map>
-#include <string>
 #include <thread>
-#include <variant>
-#include <exception>
-#include <string>
 #include <filesystem>
 
 #include <util.h>
 
-//!
-//! The EventDetect namespace contains EventDetect specific code for the event_detect executable.
-//!
 namespace EventDetect {
-
-//!
-//! \brief The EventDetectException class is a customized exception handling class for the event_detect application.
-//!
-class EventDetectException : public std::exception
-{
-public:
-    EventDetectException(const std::string& message) : m_message(message) {}
-    EventDetectException(const char* message) : m_message(message) {}
-
-    const char* what() const noexcept override {
-        return m_message.c_str();
-    }
-
-protected:
-    std::string m_message;
-};
-
-//! File system related exceptions
-class FileSystemException : public EventDetectException
-{
-public:
-    FileSystemException(const std::string& message, const std::filesystem::path& path)
-        : EventDetectException(message + " Path: " + path.string()), m_path(path) {}
-
-    const std::filesystem::path& path() const { return m_path; }
-
-private:
-    std::filesystem::path m_path;
-};
-
-//! Threading Related Exceptions
-class ThreadException : public EventDetectException
-{
-public:
-    ThreadException(const std::string& message) : EventDetectException(message) {}
-};
-
 
 //!
 //! \brief The Monitor class provides the framework for monitoring event activity recorded by the EventRecorders
@@ -392,67 +346,6 @@ private:
     std::atomic<bool> m_initialized;
 };
 
-typedef std::variant<bool, int, std::string, fs::path> config_variant;
-
-//!
-//! \brief The Config class is a singleton that stores program config read from the config file, with applied defaults if the
-//! config file cannot be read, or a config parameter is not in the config file.
-//!
-class Config
-{
-public:
-    //!
-    //! \brief Constructor.
-    //!
-    Config();
-
-    //!
-    //! \brief Reads and parses the config file provided by the argument and populates m_config_in, then calls private
-    //! method ProcessArgs() to populate m_config.
-    //! \param config_file
-    //!
-    void ReadAndUpdateConfig(const fs::path& config_file);
-
-    //!
-    //! \brief Provides the config_variant type value of the config parameter (argument).
-    //! \param arg (key) to look up value.
-    //! \return config_variant type value of the value of the config parameter (argument).
-    //!
-    config_variant GetArg(const std::string& arg);
-
-private:
-    //!
-    //! \brief Private helper method used by ReadAndUpdateConfig
-    //!
-    void ProcessArgs();
-
-    //!
-    //! \brief Private version of GetArg that operates on m_config_in and also selects the provided default value
-    //! if the arg is not found. This is how default values for parameters are established.
-    //! \param arg (key) to look up value as string.
-    //! \param default_value if arg is not found.
-    //! \return string value found in lookup, default value if not found.
-    //!
-    std::string GetArgString(const std::string& arg, const std::string& default_value) const;
-
-    //!
-    //! \brief This is the mutex member that provides lock control for the config object. This is used to ensure the
-    //! config object is thread-safe.
-    //!
-    mutable std::mutex mtx_config;
-
-    //!
-    //! \brief Holds the raw parsed parameter-values from the config file.
-    //!
-    std::multimap<std::string, std::string> m_config_in;
-
-    //!
-    //! \brief Holds the processed parameter-values, which are strongly typed and in a config_variant union, and where
-    //! default values are populated if not found in the config file (m_config_in).
-    //!
-    std::multimap<std::string, config_variant> m_config;
-};
-
 //!
 //! \brief Sends the SIGTERM signal to the main thread id initiating a shutdown of all worker threads and the main thread
 //! via the HandleSignals function.
@@ -460,5 +353,10 @@ private:
 void Shutdown();
 
 } // namespace event_detect
+
+class EventDetectConfig : public Config
+{
+    void ProcessArgs() override;
+};
 
 #endif // EVENT_DETECT_H

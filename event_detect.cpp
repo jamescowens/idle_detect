@@ -36,7 +36,7 @@ std::atomic<bool> g_debug = false;
 //!
 //! \brief Global config singleton.
 //!
-Config g_config;
+EventDetectConfig g_config;
 
 //!
 //! \brief Global event monitor singleton
@@ -540,82 +540,7 @@ TtyMonitor::Tty::Tty(const fs::path& tty_device_path)
 {}
 
 
-// Class Config
-
-Config::Config()
-{}
-
-void Config::ReadAndUpdateConfig(const fs::path& config_file) {
-    std::unique_lock<std::mutex> lock(mtx_config);
-
-    std::multimap<std::string, std::string> config;
-
-    try {
-        std::ifstream file(config_file);
-
-        if (!file.is_open()) {
-            error_log("%s: Could not open the config file: %s",
-                      __func__,
-                      config_file);
-            return;
-        }
-
-        std::string line;
-        while (std::getline(file, line)) {
-            // Skip empty lines and lines starting with '#'
-            if (line.empty() || line[0] == '#') {
-                continue;
-            }
-
-            std::vector line_elements = StringSplit(line, "=");
-
-            if (line_elements.size() != 2) {
-                continue;
-            }
-
-            config.insert(std::make_pair(StripQuotes(TrimString(line_elements[0])),
-                                         StripQuotes(TrimString(line_elements[1]))));
-        }
-
-        file.close();
-
-        // Do this all at once so the result of the config read is essentially "atomic".
-        m_config_in.swap(config);
-    } catch (FileSystemException& e) {
-        error_log("%s: Reading config file failed, so defaults will be used: %s",
-                  __func__,
-                  e.what());
-    }
-
-    // If the config file read failed, we will process args anyway, which will result in defaults being chosen.
-    ProcessArgs();
-}
-
-config_variant Config::GetArg(const std::string& arg)
-{
-    std::unique_lock<std::mutex> lock(mtx_config);
-
-    auto iter = m_config.find(arg);
-
-    if (iter != m_config.end()) {
-        return iter->second;
-    } else {
-        return std::string {};
-    }
-}
-
-std::string Config::GetArgString(const std::string& arg, const std::string& default_value) const
-{
-    auto iter = m_config_in.find(arg);
-
-    if (iter != m_config_in.end()) {
-        return iter->second;
-    } else {
-        return default_value;
-    }
-}
-
-void Config::ProcessArgs()
+void EventDetectConfig::ProcessArgs()
 {
     std::string debug_arg = GetArgString("debug", "true");
 
