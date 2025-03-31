@@ -701,28 +701,30 @@ void HandleSignals(int signum)
     debug_log("INFO: %s: started",
               __func__);
 
+    bool interrupt = true;
+
     switch (signum) {
     case SIGINT:
         debug_log("INFO: %s: SIGINT received",
                   __func__);
-        g_event_recorders.m_interrupt_recorders = true;
-        g_event_recorders.cv_recorder_threads.notify_all();
         break;
     case SIGTERM:
         debug_log("INFO: %s: SIGTERM received",
                   __func__);
-        g_event_recorders.m_interrupt_recorders = true;
-        g_event_recorders.cv_recorder_threads.notify_all();
         break;
     case SIGHUP:
         debug_log("INFO: %s: SIGHUP received",
                   __func__);
-        g_event_recorders.m_interrupt_recorders = true;
-        g_event_recorders.cv_recorder_threads.notify_all();
         break;
     default:
         log("WARNING: Unknown signal received.");
+        interrupt = false;
         break;
+    }
+
+    if (interrupt) {
+        g_event_recorders.m_interrupt_recorders = true;
+        g_event_recorders.cv_recorder_threads.notify_all();
     }
 }
 
