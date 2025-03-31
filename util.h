@@ -81,6 +81,13 @@ int64_t GetUnixEpochTime();
 //!
 std::string FormatISO8601DateTime(int64_t time);
 
+//!
+//! \brief Validate timestamp for purposes of idle_detect and event_detect.
+//! \param timestamp
+//! \return boolean flag of whether the timestamp is valid.
+//!
+bool IsValidTimestamp(const int64_t& timestamp);
+
 template <typename... Args>
 //!
 //! \brief Creates a string with fmt specifier and variadic args.
@@ -144,6 +151,8 @@ void error_log(const char* fmt, const Args&... args)
 
 [[nodiscard]] int ParseStringToInt(const std::string& str);
 
+[[nodiscard]] int64_t ParseStringtoInt64(const std::string& str);
+
 //!
 //! \brief Finds directory entries in the provided path that match the provided wildcard string.
 //! \param directory
@@ -153,18 +162,13 @@ void error_log(const char* fmt, const Args&... args)
 std::vector<fs::path> FindDirEntriesWithWildcard(const fs::path& directory, const std::string& wildcard);
 
 //!
-//! The EventDetect namespace contains EventDetect specific code for the event_detect executable.
-//!
-namespace EventDetect {
-
-//!
 //! \brief The EventDetectException class is a customized exception handling class for the event_detect application.
 //!
-class EventDetectException : public std::exception
+class EventIdleDetectException : public std::exception
 {
 public:
-    EventDetectException(const std::string& message) : m_message(message) {}
-    EventDetectException(const char* message) : m_message(message) {}
+    EventIdleDetectException(const std::string& message) : m_message(message) {}
+    EventIdleDetectException(const char* message) : m_message(message) {}
 
     const char* what() const noexcept override {
         return m_message.c_str();
@@ -175,11 +179,11 @@ protected:
 };
 
 //! File system related exceptions
-class FileSystemException : public EventDetectException
+class FileSystemException : public EventIdleDetectException
 {
 public:
     FileSystemException(const std::string& message, const std::filesystem::path& path)
-        : EventDetectException(message + " Path: " + path.string()), m_path(path) {}
+        : EventIdleDetectException(message + " Path: " + path.string()), m_path(path) {}
 
     const std::filesystem::path& path() const { return m_path; }
 
@@ -188,13 +192,11 @@ private:
 };
 
 //! Threading Related Exceptions
-class ThreadException : public EventDetectException
+class ThreadException : public EventIdleDetectException
 {
 public:
-    ThreadException(const std::string& message) : EventDetectException(message) {}
+    ThreadException(const std::string& message) : EventIdleDetectException(message) {}
 };
-
-} // namespace EventDetect
 
 typedef std::variant<bool, int, std::string, fs::path> config_variant;
 
@@ -261,6 +263,26 @@ private:
 
 };
 
+class EventMessage
+{
+public:
+    enum EventType {
+        UNKNOWN,
+        USER_ACTIVE
+    };
+
+    EventMessage();
+
+    EventMessage(std::string timestamp_str, std::string event_type_str);
+
+    bool IsValid();
+
+    int64_t m_timestamp;
+    EventType m_event_type;
+
+private:
+    EventType EventTypeStringToEnum(const std::string& event_type_str);
+};
 
 
 #endif // UTIL_H

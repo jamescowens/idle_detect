@@ -90,14 +90,14 @@ add_custom_target(install_executables_only
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/idle_detect" "${INSTALL_BIN_DIR}/idle_detect"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/idle_detect.sh" "${INSTALL_BIN_DIR}/idle_detect.sh"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/idle_detect_resources.sh" "${INSTALL_BIN_DIR}/idle_detect_resources.sh"
+
+    COMMENT "installing executables only"
+)
+
+# Install dc control scripts only
+add_custom_target(dc_control_scripts_only
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_pause" "${INSTALL_BIN_DIR}/dc_pause"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_unpause" "${INSTALL_BIN_DIR}/dc_unpause"
-    COMMAND ${CMAKE_COMMAND} -E chmod 755 "${INSTALL_BIN_DIR}/event_detect"
-    COMMAND ${CMAKE_COMMAND} -E chmod 755 "${INSTALL_BIN_DIR}/idle_detect"
-    COMMAND ${CMAKE_COMMAND} -E chmod 755 "${INSTALL_BIN_DIR}/idle_detect.sh"
-    COMMAND ${CMAKE_COMMAND} -E chmod 755 "${INSTALL_BIN_DIR}/idle_detect_resources.sh"
-    COMMAND ${CMAKE_COMMAND} -E chmod 755 "${INSTALL_BIN_DIR}/dc_pause"
-    COMMAND ${CMAKE_COMMAND} -E chmod 755 "${INSTALL_BIN_DIR}/dc_unpause"
 
     COMMENT "installing executables only"
 )

@@ -346,14 +346,81 @@ private:
     std::atomic<bool> m_initialized;
 };
 
+class IdleDetectMonitor
+{
+public:
+    //!
+    //! \brief Holds the actual idle_detect monitor thread.
+    //!
+    std::thread m_idle_detect_monitor_thread;
+
+    //!
+    //! \brief Condition variable for control/synchronization of the idle_detect monitor threads.
+    //!
+    std::condition_variable cv_idle_detect_monitor_thread;
+
+    //!
+    //! \brief Atomic boolean that interrupts the idle_detect monitor thread.
+    //!
+    std::atomic<bool> m_interrupt_idle_detect_monitor;
+
+    //! Constructor.
+    IdleDetectMonitor();
+
+    //!
+    //! \brief Method to instantiate the tty monitor thread.
+    //!
+    void IdleDetectMonitorThread();
+
+    //!
+    //! \brief Provides a flag to indicate whether the monitor has been initialized. This is used in main in the application
+    //! control paths.
+    //! \return boolean flag
+    //!
+    bool IsInitialized() const;
+
+    //!
+    //! \brief Returns the overall last active time of all of the message receipts from idle_detect instances.
+    //! \return Unix Epoch time in seconds
+    //!
+    int64_t GetLastIdleDetectActiveTime() const;
+
+private:
+    //!
+    //! \brief This is the mutex member that provides lock control for the tty monitor object. This is used to ensure the
+    //! tty monitor is thread-safe.
+    //!
+    mutable std::mutex mtx_idle_detect_monitor;
+
+    //!
+    //! \brief This provides lock control for the tty monitor worker thread itself.
+    //!
+    mutable std::mutex mtx_idle_detect_monitor_thread;
+
+    //!
+    //! \brief Atomic that holds the overall last active time across all of the monitored pts/ttys.
+    //!
+    std::atomic<int64_t> m_last_idle_detect_active_time;
+
+    //!
+    //! \brief This holds the flag as to whether the tty monitor has been initialized and is provided by the IsInitialized() public
+    //! method.
+    //!
+    std::atomic<bool> m_initialized;
+};
+
 //!
 //! \brief Sends the SIGTERM signal to the main thread id initiating a shutdown of all worker threads and the main thread
 //! via the HandleSignals function.
 //!
-void Shutdown();
+void Shutdown(const int &exit_code = 0);
 
 } // namespace event_detect
 
+//!
+//! \brief The EventDetectConfig class. This specializes the Config class and implements the virtual method ProcessArgs()
+//! for event_detect.
+//!
 class EventDetectConfig : public Config
 {
     void ProcessArgs() override;

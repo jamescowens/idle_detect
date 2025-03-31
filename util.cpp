@@ -96,10 +96,37 @@ std::string FormatISO8601DateTime(int64_t time)
                      ts.tm_year + 1900, ts.tm_mon + 1, ts.tm_mday, ts.tm_hour, ts.tm_min, ts.tm_sec);
 }
 
+bool IsValidTimestamp(const int64_t& timestamp)
+{
+    int64_t now = GetUnixEpochTime();
+
+    int64_t future_limit = now + 60; // No more than 60 seconds in the future.
+    int64_t past_limit = now - 10 * 86400 * 365; // No more than ten years in the past.
+
+    return timestamp >= past_limit && timestamp <= future_limit;
+}
+
 [[nodiscard]] int ParseStringToInt(const std::string& str)
 {
     try {
         return std::stoi(str);
+    } catch (const std::invalid_argument& e){
+        error_log("%s: Invalid argument: %s",
+                  __func__,
+                  e.what());
+        throw;
+    } catch (const std::out_of_range& e){
+        error_log("%s: Out of range: %s",
+                  __func__,
+                  e.what());
+        throw;
+    }
+}
+
+[[nodiscard]] int64_t ParseStringtoInt64(const std::string& str)
+{
+    try {
+        return static_cast<int64_t>(std::stoll(str));
     } catch (const std::invalid_argument& e){
         error_log("%s: Invalid argument: %s",
                   __func__,
@@ -178,7 +205,7 @@ void Config::ReadAndUpdateConfig(const fs::path& config_file) {
 
         // Do this all at once so the result of the config read is essentially "atomic".
         m_config_in.swap(config);
-    } catch (EventDetect::FileSystemException& e) {
+    } catch (FileSystemException& e) {
         error_log("%s: Reading config file failed, so defaults will be used: %s",
                   __func__,
                   e.what());
@@ -210,4 +237,30 @@ std::string Config::GetArgString(const std::string& arg, const std::string& defa
     } else {
         return default_value;
     }
+}
+
+EventMessage::EventMessage()
+    : m_timestamp(0)
+    , m_event_type(UNKNOWN)
+{}
+
+EventMessage::EventType EventMessage::EventTypeStringToEnum(const std::string& event_type_str)
+{
+    if (event_type_str == std::string {"USER_ACTIVE"}) {
+        return USER_ACTIVE;
+    }
+
+    return UNKNOWN;
+}
+
+EventMessage::EventMessage(std::string timestamp_str, std::string event_type_str)
+{
+    m_timestamp = ParseStringtoInt64(timestamp_str);
+
+    m_event_type = EventTypeStringToEnum(event_type_str);
+}
+
+bool EventMessage::IsValid()
+{
+    return m_event_type != UNKNOWN && IsValidTimestamp(m_timestamp);
 }

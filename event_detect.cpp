@@ -14,6 +14,7 @@
 #include <unistd.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
+#include <poll.h>
 #include <libevdev/libevdev.h>
 #include <libevdev/libevdev-uinput.h>
 
@@ -47,6 +48,11 @@ Monitor g_event_monitor;
 //! \brief Global tty monitor singleton
 //!
 TtyMonitor g_tty_monitor;
+
+//!
+//! \brief Global idle detect monitor singleton
+//!
+IdleDetectMonitor g_idle_detect_monitor;
 
 //!
 //! \brief Global event recorders singleton
@@ -130,6 +136,15 @@ void Monitor::EventActivityMonitorThread()
                   FormatISO8601DateTime(tty_last_active_time));
 
         m_last_active_time = std::max(m_last_active_time.load(), tty_last_active_time);
+
+        int64_t last_idle_detect_active_time = g_idle_detect_monitor.GetLastIdleDetectActiveTime();
+
+        debug_log("INFO: %s: loop: idle detect last_active_time = %lld: %s",
+                  __func__,
+                  last_idle_detect_active_time,
+                  FormatISO8601DateTime(last_idle_detect_active_time));
+
+        m_last_active_time = std::max(m_last_active_time.load(), last_idle_detect_active_time);
 
         debug_log("INFO: %s: loop: overall last_active time = %lld: %s",
                   __func__,
@@ -335,32 +350,35 @@ void InputEventRecorders::EventRecorder::EventActivityRecorderThread()
                   device_access_path,
                   strerror(errno));
         g_exit_code = 1;
-        return;
     }
+
+    int rc;
 
     // Initialize libevdev
-    int rc = libevdev_new_from_fd(fd, &dev);
-    if (rc < 0) {
-         error_log("%s: Failed to init libevdev for device %s: %s",
+    if (g_exit_code == 0)
+    {
+        rc = libevdev_new_from_fd(fd, &dev);
+        if (rc < 0) {
+            error_log("%s: Failed to init libevdev for device %s: %s",
+                      __func__,
+                      device_access_path,
+                      strerror(-rc));
+
+            close(fd);
+            g_exit_code = 1;
+        }
+
+        debug_log("INFO: %s: Device: %s, Path: %s, Physical Path: %s, Unique: %s",
                   __func__,
+                  libevdev_get_name(dev),
                   device_access_path,
-                  strerror(-rc));
-
-        close(fd);
-        g_exit_code = 1;
-        return;
+                  libevdev_get_phys(dev),
+                  libevdev_get_uniq(dev));
     }
-
-    debug_log("INFO: %s: Device: %s, Path: %s, Physical Path: %s, Unique: %s",
-              __func__,
-              libevdev_get_name(dev),
-              device_access_path,
-              libevdev_get_phys(dev),
-              libevdev_get_uniq(dev));
 
     struct input_event ev;
 
-    while (true) {
+    while (g_exit_code == 0) {
         std::unique_lock<std::mutex> lock(g_event_recorders.mtx_event_recorder_threads);
         g_event_recorders.cv_recorder_threads.wait_for(lock, std::chrono::seconds(1),
                                                        []{ return g_event_recorders.m_interrupt_recorders.load(); });
@@ -489,9 +507,14 @@ std::vector<fs::path> TtyMonitor::EnumerateTtyDevices()
 
 void TtyMonitor::TtyMonitorThread()
 {
-    std::unique_lock<std::mutex> lock(mtx_tty_monitor);
+    std::vector<fs::path> tty_device_paths_prev;
 
-    std::vector<fs::path> tty_device_paths_prev = m_tty_device_paths;
+    // Critical section block
+    {
+        std::unique_lock<std::mutex> lock(mtx_tty_monitor);
+
+        tty_device_paths_prev = m_tty_device_paths;
+    }
 
     int64_t last_ttys_active_time = 0;
 
@@ -506,28 +529,35 @@ void TtyMonitor::TtyMonitorThread()
             break;
         }
 
-        UpdateTtyDevices();
+        // Critical section block
+        {
+            std::unique_lock<std::mutex> lock(mtx_tty_monitor);
 
-        if (!IsInitialized()) {
-            m_ttys.clear();
+            UpdateTtyDevices();
 
-            for (const auto& entry : m_tty_device_paths) {
-                Tty tty(entry);
+            if (!IsInitialized()) {
+                m_ttys.clear();
 
-                m_ttys.push_back(tty);
+                for (const auto& entry : m_tty_device_paths) {
+                    Tty tty(entry);
+
+                    m_ttys.push_back(tty);
+                }
+
+                m_initialized = true;
             }
-        }
 
-        for (auto& entry : m_ttys) {
-            struct stat sbuf;
+            for (auto& entry : m_ttys) {
+                struct stat sbuf;
 
-            if (stat(entry.m_tty_device_path.c_str(), &sbuf) == 0){
-                entry.m_tty_last_active_time = sbuf.st_atime;
+                if (stat(entry.m_tty_device_path.c_str(), &sbuf) == 0){
+                    entry.m_tty_last_active_time = sbuf.st_atime;
+                }
+
+                // last_tty_active_time MUST be monotonic. It cannot go backwards. This is important, because terminals sometimes
+                // disappear.
+                last_ttys_active_time = std::max(entry.m_tty_last_active_time, last_ttys_active_time);
             }
-
-            // last_tty_active_time MUST be monotonic. It cannot go backwards. This is important, because terminals sometimes
-            // disappear.
-            last_ttys_active_time = std::max(entry.m_tty_last_active_time, last_ttys_active_time);
         }
 
         m_last_ttys_active_time = last_ttys_active_time;
@@ -540,8 +570,192 @@ TtyMonitor::Tty::Tty(const fs::path& tty_device_path)
 {}
 
 
+// IdleDetectMonitor class
+
+IdleDetectMonitor::IdleDetectMonitor()
+    : m_interrupt_idle_detect_monitor(false)
+    , m_last_idle_detect_active_time(0)
+{}
+
+void IdleDetectMonitor::IdleDetectMonitorThread()
+{
+    debug_log("INFO: %s: started.",
+              __func__);
+
+    fs::path event_data_path = std::get<fs::path>(g_config.GetArg("event_count_files_path"));
+    fs::path pipe_path = event_data_path / "event_registration_pipe";
+
+    // Create the named pipe if it doesn't exist (idempotent)
+    if (mkfifo(pipe_path.c_str(), 0666) == -1) {
+        if (errno != EEXIST) {
+            error_log("%s: Error creating named pipe: %s",
+                      __func__,
+                      strerror(errno));
+            g_exit_code = 1;
+            return;
+        }
+    }
+
+    int fd = -1;
+    char buffer[256];
+    ssize_t bytes_read;
+    const int poll_timeout_ms = 100;
+
+    m_initialized = true;
+
+    int64_t last_idle_detect_active_time = 0;
+
+    while (true) {
+        debug_log("INFO: %s: idle_detect monitor thread loop at top of iteration",
+                  __func__);
+
+        std::unique_lock<std::mutex> lock(mtx_idle_detect_monitor_thread);
+        cv_idle_detect_monitor_thread.wait_for(lock, std::chrono::milliseconds(100),
+                                               []{ return g_idle_detect_monitor.m_interrupt_idle_detect_monitor.load(); });
+
+        if (g_idle_detect_monitor.m_interrupt_idle_detect_monitor) {
+            break;
+        }
+
+        // Only execute this if the pipe isn't already open in non-blocking mode.
+        if (fd == -1) {
+            fd = open(pipe_path.c_str(), O_RDONLY | O_NONBLOCK);
+            if (fd == -1) {
+                if (errno != ENXIO) { // No process has the pipe open for writing
+                    error_log("%s: Error opening named pipe for reading (non-blocking): %s",
+                              __func__,
+                              strerror(errno));
+                    // Consider a longer sleep here to avoid rapid retries on other errors
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                }
+                continue; // Try to open again in the next iteration
+            } else {
+                debug_log("INFO: %s: Successfully opened pipe for reading (non-blocking).",
+                          __func__);
+            }
+        }
+
+        if (fd != -1) {
+            struct pollfd fds[1];
+            fds[0].fd = fd;
+            fds[0].events = POLLIN;
+            fds[0].revents = 0;
+
+            int ret = poll(fds, 1, poll_timeout_ms);
+
+            if (ret > 0) {
+                if (fds[0].revents & POLLIN) {
+                    bytes_read = read(fd, buffer, sizeof(buffer) - 1);
+
+                    if (bytes_read > 0) {
+                        buffer[bytes_read] = '\0';
+                        std::string event_data(buffer);
+                        debug_log("INFO: %s: Received data: %s", __func__,
+                                  event_data);
+
+                        std::stringstream ss(event_data);
+                        std::string segment;
+                        std::vector<std::string> parts;
+                        while (std::getline(ss, segment, ':')) {
+                            parts.push_back(segment);
+                        }
+
+                        if (parts.size() == 2) {
+                            try {
+                                EventMessage event(TrimString(parts[0]), TrimString(parts[1]));
+
+                                debug_log("INFO: %s: event.m_timestamp = %lld, event.m_event_type = %d",
+                                          __func__,
+                                          event.m_timestamp,
+                                          event.m_event_type);
+
+                                if (event.IsValid()) {
+                                    last_idle_detect_active_time = event.m_timestamp;
+
+                                    debug_log("INFO: %s: Valid activity event received with timestamp %lld",
+                                              __func__,
+                                              last_idle_detect_active_time);
+
+                                    // last_idle_detect_active_time MUST be monotonic. It cannot go backwards.
+                                    m_last_idle_detect_active_time = std::max(m_last_idle_detect_active_time.load(),
+                                                                            last_idle_detect_active_time);
+
+                                    debug_log("INFO: %s: Current idle detect monitor last active time %lld",
+                                              __func__,
+                                              m_last_idle_detect_active_time);
+                                } else {
+                                    error_log("%s: Invalid event data received: %s",
+                                              __func__,
+                                              event_data);
+                                }
+                            } catch (const std::invalid_argument& e) {
+                                error_log("%s: Error parsing timestamp: %s in data %s",
+                                          __func__,
+                                          e.what(),
+                                          event_data);
+                            } catch (const std::out_of_range& e) {
+                                error_log("%s: Timestamp out of range: %s in data %s",
+                                          __func__,
+                                          e.what(),
+                                          event_data);
+                            }
+                        } else if (bytes_read == 0) {
+                            // Pipe closed by writers, sleep a bit to avoid spinning
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        } else if (bytes_read < 0) {
+                            if (errno == EINTR) {
+                                // Interrupted by a signal, this is expected during shutdown
+                                debug_log("INFO: %s: Read interrupted by signal.",
+                                          __func__);
+                                break;
+                            } else {
+                                error_log("%s: Error reading from named pipe: %s",
+                                          __func__,
+                                          strerror(errno));
+                                break;
+                            }
+                        }
+                    }
+                } else if (ret < 0) {
+                    error_log("%s: Error in poll() for pipe read: %s",
+                              __func__,
+                              strerror(errno));
+
+                    g_exit_code = 1;
+                    break;
+                } // ret = 0 means poll timeed out. Allow while loop to iterate.
+            }
+        }
+    }
+
+    close(fd);
+
+    debug_log("INFO: %s: thread exiting.",
+              __func__);
+
+    // If g_exit_code was set to 1 above then the thread is in abnormal state at exit and the rest of the
+    // application needs to be shutdown.
+    if (g_exit_code == 1) {
+        Shutdown();
+    }
+}
+
+bool IdleDetectMonitor::IsInitialized() const
+{
+    return m_initialized.load();
+}
+
+int64_t IdleDetectMonitor::GetLastIdleDetectActiveTime() const
+{
+    return m_last_idle_detect_active_time.load();
+}
+
+// EventDetectConfig class
+
 void EventDetectConfig::ProcessArgs()
 {
+    // debug
+
     std::string debug_arg = GetArgString("debug", "true");
 
     if (debug_arg == "1" || ToLower(debug_arg) == "true") {
@@ -553,6 +767,8 @@ void EventDetectConfig::ProcessArgs()
                   __func__,
                   debug_arg);
     }
+
+    // startup_delay
 
     int startup_delay = 0;
 
@@ -566,6 +782,8 @@ void EventDetectConfig::ProcessArgs()
 
     m_config.insert(std::make_pair("startup_delay", startup_delay));
 
+    // event_count_files_path
+
     fs::path event_data_path;
 
     try {
@@ -577,6 +795,8 @@ void EventDetectConfig::ProcessArgs()
     }
 
     m_config.insert(std::make_pair("event_count_files_path", event_data_path));
+
+    // write_last_active_time_to_file
 
     bool last_active_time_to_file = false;
 
@@ -590,11 +810,16 @@ void EventDetectConfig::ProcessArgs()
 
     m_config.insert(std::make_pair("write_last_active_time_to_file", last_active_time_to_file));
 
+
+    // last_active_time_cpp_filename
+
     std::string last_active_time_cpp_filename = GetArgString("last_active_time_cpp_filename", "last_active_time.dat");
 
     m_config.insert(std::make_pair("last_active_time_cpp_filename", last_active_time_cpp_filename));
 
-    std::string monitor_ttys_arg = GetArgString("monitor_ttys", "false");
+    // monitor_ttys
+
+    std::string monitor_ttys_arg = GetArgString("monitor_ttys", "true");
 
     if (monitor_ttys_arg == "1" || ToLower(monitor_ttys_arg) == "true") {
         m_config.insert(std::make_pair("monitor_ttys", true));
@@ -605,10 +830,26 @@ void EventDetectConfig::ProcessArgs()
                   __func__,
                   debug_arg);
     }
+
+    // monitor_idle_detect_events
+
+    std::string monitor_idle_detect_events_arg = GetArgString("monitor_idle_detect_events", "false");
+
+    if (monitor_idle_detect_events_arg == "1" || ToLower(monitor_idle_detect_events_arg) == "true") {
+        m_config.insert(std::make_pair("monitor_idle_detect_events", true));
+    } else if (monitor_idle_detect_events_arg == "0" || ToLower(monitor_idle_detect_events_arg) == "false"){
+        m_config.insert(std::make_pair("monitor_idle_detect_events", false));
+    } else {
+        error_log("%s: monitor_idle_detect_events parameter in config file has invalid value: %s",
+                  __func__,
+                  debug_arg);
+    }
 }
 
-void EventDetect::Shutdown()
+void EventDetect::Shutdown(const int& exit_code)
 {
+    g_exit_code = exit_code;
+
     pthread_kill(g_main_thread_id, SIGTERM);
 }
 
@@ -623,8 +864,6 @@ void HandleSignals(int signum)
 {
     debug_log("INFO: %s: started",
               __func__);
-
-    bool interrupt = true;
 
     switch (signum) {
     case SIGINT:
@@ -641,13 +880,23 @@ void HandleSignals(int signum)
         break;
     default:
         log("WARNING: Unknown signal received.");
-        interrupt = false;
         break;
     }
 
-    if (interrupt) {
+    if (signum == SIGHUP || signum == SIGINT || signum == SIGTERM) {
         g_event_recorders.m_interrupt_recorders = true;
         g_event_recorders.cv_recorder_threads.notify_all();
+    }
+
+    if (signum == SIGINT || signum == SIGTERM) {
+        g_idle_detect_monitor.m_interrupt_idle_detect_monitor = true;
+        g_idle_detect_monitor.cv_idle_detect_monitor_thread.notify_all();
+
+        g_tty_monitor.m_interrupt_tty_monitor = true;
+        g_tty_monitor.cv_tty_monitor_thread.notify_all();
+
+        g_event_monitor.m_interrupt_monitor = true;
+        g_event_monitor.cv_monitor_thread.notify_all();
     }
 }
 
@@ -706,6 +955,17 @@ void InitiateTtyMonitor()
     g_tty_monitor.m_tty_monitor_thread = std::thread(&TtyMonitor::TtyMonitorThread, std::ref(g_tty_monitor));
 }
 
+void InitiateIdleDetectMonitor()
+{
+    debug_log("INFO: %s: started.",
+              __func__);
+
+    g_idle_detect_monitor.m_interrupt_idle_detect_monitor = false;
+
+    g_idle_detect_monitor.m_idle_detect_monitor_thread = std::thread(&IdleDetectMonitor::IdleDetectMonitorThread,
+                                                                     std::ref(g_idle_detect_monitor));
+}
+
 //!
 //! \brief Create event data directory if needed and set proper permissions.
 //! \param data_dir_path
@@ -761,6 +1021,18 @@ void CleanUpFiles(int sig)
     if ((sig == SIGINT || sig == SIGTERM) && fs::exists(last_active_time_path)) {
         try {
             fs::remove(last_active_time_path);
+        } catch (FileSystemException& e) {
+            log("WARNING: %s: last_active_time file could not be removed: %s",
+                __func__,
+                e.what());
+        }
+    }
+
+    fs::path pipe_path = event_data_path / "event_registration_pipe";
+
+    if ((sig == SIGINT || sig == SIGTERM) && fs::exists(pipe_path)) {
+        try {
+            fs::remove(pipe_path);
         } catch (FileSystemException& e) {
             log("WARNING: %s: last_active_time file could not be removed: %s",
                 __func__,
@@ -896,8 +1168,7 @@ int main(int argc, char* argv[])
                   __func__,
                   e.what());
 
-        g_exit_code = 1;
-        Shutdown();
+        Shutdown(1);
     }
 
     while (true) {
@@ -913,8 +1184,7 @@ int main(int argc, char* argv[])
             error_log("%s: Unable to initialize event monitor thread. Exiting.",
                       __func__);
 
-            g_exit_code = 1;
-            Shutdown();
+            Shutdown(1);
         }
 
         // Includes the reset of EventActivityRecorders
@@ -926,13 +1196,14 @@ int main(int argc, char* argv[])
                           __func__,
                           e.what());
 
-                g_exit_code = 1;
-                Shutdown();
+                Shutdown(1);
             }
         }
 
-        // Includes the reset of EventActivityRecorders
-        if (g_exit_code == 0 && std::get<bool>(g_config.GetArg("monitor_ttys")) == true) {
+        // If the tty_monitor is already initialized, then don't try to do this again.
+        if (g_exit_code == 0
+            && std::get<bool>(g_config.GetArg("monitor_ttys")) == true
+            && !g_tty_monitor.IsInitialized()) {
             try {
                 InitiateTtyMonitor();
             } catch (ThreadException& e) {
@@ -940,12 +1211,25 @@ int main(int argc, char* argv[])
                           __func__,
                           e.what());
 
-                g_exit_code = 1;
-                Shutdown();
+                Shutdown(1);
             }
         }
 
-         // Wait for signal. This will also cause a shutdown at this point if Shutdown() was/is called.
+        if (g_exit_code == 0
+            && std::get<bool>(g_config.GetArg("monitor_idle_detect_events")) == true
+            && !g_idle_detect_monitor.IsInitialized()) {
+            try {
+                InitiateIdleDetectMonitor();
+            } catch (ThreadException& e) {
+                error_log("%s: Error creating event monitor thread: %s",
+                          __func__,
+                          e.what());
+
+                Shutdown(1);
+            }
+        }
+
+        // Wait for signal. This will also cause a shutdown at this point if Shutdown() was/is called.
         if (sigwait(&mask, &sig) == 0) {
             HandleSignals(sig);
         }
@@ -953,7 +1237,7 @@ int main(int argc, char* argv[])
         log("INFO: %s: joining event activity worker threads",
             __func__);
 
-        // Wait for all threads to finish (this blocks)
+        // Wait for all recorder threads to finish (this blocks)
         for (auto& recorder : g_event_recorders.GetEventRecorders()) {
             if (recorder->m_event_recorder_thread.joinable()) {
                 recorder->m_event_recorder_thread.join();
@@ -965,18 +1249,16 @@ int main(int argc, char* argv[])
         }
 
         if (sig == SIGINT || sig == SIGTERM) {
-            log("INFO: %s: joining event id monitor thread",
+            log("INFO: %s: joining monitor threads",
                 __func__);
 
-            g_tty_monitor.m_interrupt_tty_monitor = true;
-            g_tty_monitor.cv_tty_monitor_thread.notify_all();
+            if (g_idle_detect_monitor.m_idle_detect_monitor_thread.joinable()) {
+                g_idle_detect_monitor.m_idle_detect_monitor_thread.join();
+            }
 
             if (g_tty_monitor.m_tty_monitor_thread.joinable()) {
                 g_tty_monitor.m_tty_monitor_thread.join();
             }
-
-            g_event_monitor.m_interrupt_monitor = true;
-            g_event_monitor.cv_monitor_thread.notify_all();
 
             if (g_event_monitor.m_monitor_thread.joinable()) {
                 g_event_monitor.m_monitor_thread.join();
