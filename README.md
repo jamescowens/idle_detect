@@ -20,7 +20,8 @@ This code is licensed under the MIT license.
 
 ### Current dependencies:
  - libevdev library and development (header) files
- - xprintidle for X session idle inhibit detection
+ - libXss-devel for idle inhibit detection (idle detect C++ version)
+ - xprintidle for X session idle inhibit detection (idle_detect.sh)
 
 ### Installation procedure
 
