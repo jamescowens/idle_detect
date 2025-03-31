@@ -69,7 +69,9 @@ set(INSTALL_USER_SERVICE_DIR "$ENV{HOME}/.config/systemd/user" CACHE PATH "Insta
 
 # Install the executable and scripts
 install(TARGETS event_detect idle_detect DESTINATION ${INSTALL_BIN_DIR})
-install(FILES "idle_detect.sh" "idle_detect_resources.sh" DESTINATION ${INSTALL_BIN_DIR})
+install(FILES "idle_detect.sh" "idle_detect_resources.sh" "dc_pause" "dc_unpause"
+        PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ GROUP_EXECUTE GROUP_READ WORLD_EXECUTE WORLD_READ
+        DESTINATION ${INSTALL_BIN_DIR} )
 
 # Install configuration file (system-wide)
 install(FILES "event_detect.conf" DESTINATION ${INSTALL_CONFIG_DIR})
@@ -90,6 +92,12 @@ add_custom_target(install_executables_only
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/idle_detect_resources.sh" "${INSTALL_BIN_DIR}/idle_detect_resources.sh"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_pause" "${INSTALL_BIN_DIR}/dc_pause"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_unpause" "${INSTALL_BIN_DIR}/dc_unpause"
+    COMMAND ${CMAKE_COMMAND} -E chmod 755 "${INSTALL_BIN_DIR}/event_detect"
+    COMMAND ${CMAKE_COMMAND} -E chmod 755 "${INSTALL_BIN_DIR}/idle_detect"
+    COMMAND ${CMAKE_COMMAND} -E chmod 755 "${INSTALL_BIN_DIR}/idle_detect.sh"
+    COMMAND ${CMAKE_COMMAND} -E chmod 755 "${INSTALL_BIN_DIR}/idle_detect_resources.sh"
+    COMMAND ${CMAKE_COMMAND} -E chmod 755 "${INSTALL_BIN_DIR}/dc_pause"
+    COMMAND ${CMAKE_COMMAND} -E chmod 755 "${INSTALL_BIN_DIR}/dc_unpause"
 
     COMMENT "installing executables only"
 )
