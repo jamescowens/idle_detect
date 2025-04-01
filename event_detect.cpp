@@ -591,9 +591,34 @@ void IdleDetectMonitor::IdleDetectMonitorThread()
             error_log("%s: Error creating named pipe: %s",
                       __func__,
                       strerror(errno));
-            g_exit_code = 1;
+            Shutdown(1);
             return;
         }
+    }
+
+    // Note the mode above combined with the umask does not result in the right permissions,
+    // so we override with the correct ones.
+
+    fs::perms desired_perms = fs::perms::owner_read | fs::perms::owner_write |
+                              fs::perms::group_read | fs::perms::group_write |
+                              fs::perms::others_read | fs::perms::others_write;
+
+    std::error_code ec; // To capture potential errors
+
+    // Set the permissions, replacing existing ones (default behavior)
+    fs::permissions(pipe_path, desired_perms, fs::perm_options::replace, ec);
+
+    if (ec) {
+        // Handle the error if permissions couldn't be set
+        error_log("%s: Error setting permissions (0666) on named pipe %s: %s",
+                  __func__,
+                  pipe_path.string().c_str(),
+                  ec.message().c_str()); // Use the error_code's message
+        Shutdown(1);
+        return;
+    } else {
+        debug_log("%s: Successfully set permissions on %s to 0666.",
+                  __func__, pipe_path.string().c_str());
     }
 
     int fd = -1;
@@ -605,7 +630,7 @@ void IdleDetectMonitor::IdleDetectMonitorThread()
 
     int64_t last_idle_detect_active_time = 0;
 
-    while (true) {
+    while (g_exit_code == 0) {
         debug_log("INFO: %s: idle_detect monitor thread loop at top of iteration",
                   __func__);
 
@@ -728,7 +753,9 @@ void IdleDetectMonitor::IdleDetectMonitorThread()
         }
     }
 
-    close(fd);
+    if (fd != -1) {
+        close(fd);
+    }
 
     debug_log("INFO: %s: thread exiting.",
               __func__);
@@ -736,7 +763,7 @@ void IdleDetectMonitor::IdleDetectMonitorThread()
     // If g_exit_code was set to 1 above then the thread is in abnormal state at exit and the rest of the
     // application needs to be shutdown.
     if (g_exit_code == 1) {
-        Shutdown();
+        Shutdown(1);
     }
 }
 
