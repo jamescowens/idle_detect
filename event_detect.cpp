@@ -1067,12 +1067,14 @@ void CleanUpFiles(int sig)
         }
     }
 
-    try {
-        fs::remove(event_data_path / g_lockfile);
-    } catch (FileSystemException& e) {
-        error_log("%s: application lockfile unable to be removed at application termination or interrupt.");
+    if ((sig == SIGINT || sig == SIGTERM) && fs::exists(event_data_path / g_lockfile)) {
+        try {
+            fs::remove(event_data_path / g_lockfile);
+        } catch (FileSystemException& e) {
+            error_log("%s: application lockfile unable to be removed at application termination or interrupt.");
 
-        g_exit_code = 1;
+            g_exit_code = 1;
+        }
     }
 }
 
