@@ -260,7 +260,30 @@ EventMessage::EventMessage(std::string timestamp_str, std::string event_type_str
     m_event_type = EventTypeStringToEnum(event_type_str);
 }
 
+std::string EventMessage::EventTypeToString(const EventType& event_type)
+{
+    std::string out;
+
+    switch (event_type) {
+    case UNKNOWN:
+        out = "UNKNOWN";
+        break;
+    case USER_ACTIVE:
+        out = "USER_ACTIVE";
+        break;
+    }
+
+    return out;
+}
+
 bool EventMessage::IsValid()
 {
     return m_event_type != UNKNOWN && IsValidTimestamp(m_timestamp);
+}
+
+std::string EventMessage::ToString()
+{
+    std::string out = ::ToString(m_timestamp) + ":" + EventTypeToString(m_event_type);
+
+    return out;
 }

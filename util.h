@@ -22,6 +22,18 @@ namespace fs = std::filesystem;
 extern std::atomic<bool> g_debug;
 
 //!
+//! /brief Locale-independent version of std::to_string
+//!
+template <typename T>
+std::string ToString(const T& t)
+{
+    std::ostringstream oss;
+    oss.imbue(std::locale::classic());
+    oss << t;
+    return oss.str();
+}
+
+//!
 //! \brief Utility function to split string by the provided delimiter. Note that no trimming is done to remove white space.
 //! \param s: the string to split
 //! \param delim: the delimiter string
@@ -266,7 +278,7 @@ private:
 class EventMessage
 {
 public:
-    enum EventType {
+    enum EventType { // Note that if this enum is expanded, EventTypeToString must also be updated.
         UNKNOWN,
         USER_ACTIVE
     };
@@ -275,7 +287,11 @@ public:
 
     EventMessage(std::string timestamp_str, std::string event_type_str);
 
+    std::string EventTypeToString(const EventType& event_type);
+
     bool IsValid();
+
+    std::string ToString();
 
     int64_t m_timestamp;
     EventType m_event_type;
