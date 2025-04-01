@@ -24,6 +24,116 @@
 //!
 std::atomic<bool> g_debug = false;
 
+void IdleDetectConfig::ProcessArgs()
+{
+    // debug
+
+    std::string debug_arg = GetArgString("debug", "true");
+
+    if (debug_arg == "1" || ToLower(debug_arg) == "true") {
+        m_config.insert(std::make_pair("debug", true));
+    } else if (debug_arg == "0" || ToLower(debug_arg) == "false") {
+        m_config.insert(std::make_pair("debug", false));
+    } else {
+        error_log("%s: debug parameter in config file has invalid value: %s",
+                  __func__,
+                  debug_arg);
+    }
+
+    // initial_sleep
+
+    int initial_sleep = 0;
+
+    try {
+        initial_sleep = ParseStringToInt(GetArgString("initial_sleep", "0"));
+    } catch (std::exception& e) {
+        error_log("%s: startup_delay parameter in config file has invalid value: %s",
+                  __func__,
+                  e.what());
+    }
+
+    m_config.insert(std::make_pair("initial_sleep", initial_sleep));
+
+    // event_count_files_path
+
+    fs::path event_data_path;
+
+    try {
+        event_data_path = fs::path(GetArgString("event_count_files_path", "/run/event_detect"));
+    } catch (std::exception& e){
+        error_log("%s: event_count_files_path parameter in config file has invalid value: %s",
+                  __func__,
+                  e.what());
+    }
+
+    m_config.insert(std::make_pair("event_count_files_path", event_data_path));
+
+    // use_event_detect
+
+    std::string use_event_detect_arg = GetArgString("use_event_detect", "true");
+
+    if (use_event_detect_arg == "1" || ToLower(use_event_detect_arg) == "true") {
+        m_config.insert(std::make_pair("use_event_detect", true));
+    } else if (use_event_detect_arg == "0" || ToLower(use_event_detect_arg) == "false") {
+        m_config.insert(std::make_pair("use_event_detect", false));
+    } else {
+        error_log("%s: debug parameter in config file has invalid value: %s",
+                  __func__,
+                  use_event_detect_arg);
+    }
+
+    // update_event_detect
+
+    std::string update_event_detect_arg = GetArgString("update_event_detect", "true");
+
+    if (update_event_detect_arg == "1" || ToLower(update_event_detect_arg) == "true") {
+        m_config.insert(std::make_pair("update_event_detect", true));
+    } else if (update_event_detect_arg == "0" || ToLower(update_event_detect_arg) == "false") {
+        m_config.insert(std::make_pair("update_event_detect", false));
+    } else {
+        error_log("%s: debug parameter in config file has invalid value: %s",
+                  __func__,
+                  update_event_detect_arg);
+    }
+
+    // execute_dc_control_scripts
+
+    std::string execute_dc_control_scripts_arg = GetArgString("execute_dc_control_scripts", "true");
+
+    if (execute_dc_control_scripts_arg == "1" || ToLower(execute_dc_control_scripts_arg) == "true") {
+        m_config.insert(std::make_pair("execute_dc_control_scripts", true));
+    } else if (execute_dc_control_scripts_arg == "0" || ToLower(execute_dc_control_scripts_arg) == "false") {
+        m_config.insert(std::make_pair("execute_dc_control_scripts", false));
+    } else {
+        error_log("%s: debug parameter in config file has invalid value: %s",
+                  __func__,
+                  execute_dc_control_scripts_arg);
+    }
+
+    // inactivity_time_trigger
+
+    int inactivity_time_trigger = 0;
+
+    try {
+        inactivity_time_trigger = ParseStringToInt(GetArgString("inactivity_time_trigger", "300"));
+    } catch (std::exception& e) {
+        error_log("%s: startup_delay parameter in config file has invalid value: %s",
+                  __func__,
+                  e.what());
+    }
+
+    m_config.insert(std::make_pair("inactivity_time_trigger", inactivity_time_trigger));
+
+    // active_command
+
+    m_config.insert(std::make_pair("active_command", GetArgString("active_command", "")));
+
+    // idle_command
+
+    m_config.insert(std::make_pair("idle_command", GetArgString("idle_command", "")));
+}
+
+
 namespace IdleDetect {
 
 static bool isWaylandSession() {
