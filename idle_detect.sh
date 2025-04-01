@@ -47,13 +47,41 @@ check_idle() {
   local idle_milliseconds=0
   local idle_seconds_event_detect=0
   local idle_seconds_xprintidle=0
+  local last_active_time_by_xprintidle=0
 
   local using_event_detect=0
   local using_xprintidle=0
+  local updating_event_detect=0
+
+  current_time="$(timestamp)"
+
+  # Use xprintidle if it is present and use_xprintidle=1 is specified to allow detection of idle inhibit.
+  if ((use_xprintidle == 1)) && ([[ "$display_type" = "X11" ]] || [[ "$display_type" = "X11_XAUTHORITY" ]] || [[ "$display_type" = "X11_LIKELY" ]]); then
+    if check_executable "xprintidle" 0; then
+      using_xprintidle=1
+      idle_milliseconds=$(xprintidle)
+
+      idle_seconds_xprintidle=$(echo "scale=0; $idle_milliseconds / 1000" | bc)
+
+      if ((update_event_detect=1)) && [[ -p "$event_count_files_path/event_registration_pipe" ]]; then
+        updating_event_detect=1
+
+        last_active_time_by_xprintidle=$((current_time - idle_seconds_xprintidle))
+
+        debug_log "INFO: sending $last_active_time_by_xprintidle:USER_ACTIVE to $event_count_files_path/event_registration_pipe"
+
+        echo "$last_active_time_by_xprintidle:USER_ACTIVE" > "$event_count_files_path/event_registration_pipe"
+      fi
+
+    else
+      log "ERROR: use_xprintidle specified but xprintidle cannot be found. Is the package for xprintidle installed?"
+      using_xprintidle=0
+      return 2
+    fi
+  fi
 
   # If use_event_detect then use event_detect service last_active_time.dat output.
   if ((use_event_detect == 1)) || [[ "$display_type" = "WAYLAND" ]] || [[ "$display_type" = "WAYLAND_XDG" ]]; then
-    current_time="$(timestamp)"
 
     if [[ -f "$event_count_files_path/last_active_time.dat" ]]; then
       using_event_detect=1
@@ -66,21 +94,6 @@ check_idle() {
       log "ERROR: use_event_detect specified but last_active_time.dat is not found. Is the dc_event_detection service running?"
       using_event_detect=0
       return 1
-    fi
-  fi
-
-  # Use xprintidle if it is present and use_xprintidle=1 is specified to allow detection of idle inhibit.
-  if ((use_xprintidle == 1)) && ([[ "$display_type" = "X11" ]] || [[ "$display_type" = "X11_XAUTHORITY" ]] || [[ "$display_type" = "X11_LIKELY" ]]); then
-    if check_executable "xprintidle" 0; then
-      using_xprintidle=1
-      idle_milliseconds=$(xprintidle)
-
-      idle_seconds_xprintidle=$(echo "scale=0; $idle_milliseconds / 1000" | bc)
-
-    else
-      log "ERROR: use_xprintidle specified but xprintidle cannot be found. Is the package for xprintidle installed?"
-      using_xprintidle=0
-      return 2
     fi
   fi
 
@@ -153,7 +166,7 @@ while true; do
     exit 1
   fi
 
-  if ((active_state != last_active_state)); then
+  if ((execute_dc_control_scripts=1)) && ((active_state != last_active_state)); then
     if ((active_state == 0)); then
       eval "$idle_command"
     else
