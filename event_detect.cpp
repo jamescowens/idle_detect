@@ -689,10 +689,10 @@ void IdleDetectMonitor::IdleDetectMonitorThread()
                             try {
                                 EventMessage event(TrimString(parts[0]), TrimString(parts[1]));
 
-                                debug_log("INFO: %s: event.m_timestamp = %lld, event.m_event_type = %d",
+                                debug_log("INFO: %s: event.m_timestamp = %lld, event.m_event_type = %s",
                                           __func__,
                                           event.m_timestamp,
-                                          event.m_event_type);
+                                          event.EventTypeToString());
 
                                 if (event.IsValid()) {
                                     last_idle_detect_active_time = event.m_timestamp;

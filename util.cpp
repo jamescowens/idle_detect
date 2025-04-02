@@ -260,6 +260,11 @@ EventMessage::EventMessage(std::string timestamp_str, std::string event_type_str
     m_event_type = EventTypeStringToEnum(event_type_str);
 }
 
+std::string EventMessage::EventTypeToString()
+{
+    return EventTypeToString(m_event_type);
+}
+
 std::string EventMessage::EventTypeToString(const EventType& event_type)
 {
     std::string out;

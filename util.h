@@ -287,7 +287,9 @@ public:
 
     EventMessage(std::string timestamp_str, std::string event_type_str);
 
-    std::string EventTypeToString(const EventType& event_type);
+    std::string EventTypeToString();
+
+    static std::string EventTypeToString(const EventType& event_type);
 
     bool IsValid();
 
