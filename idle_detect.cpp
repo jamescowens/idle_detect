@@ -996,6 +996,7 @@ int main(int argc, char* argv[]) {
         initial_sleep = std::get<int>(g_config.GetArg("initial_sleep"));
         active_command = std::get<std::string>(g_config.GetArg("active_command"));
         idle_command = std::get<std::string>(g_config.GetArg("idle_command"));
+        execute_dc_control_scripts = std::get<bool>(g_config.GetArg("execute_dc_control_scripts"));
     } catch (const std::bad_variant_access& e) {
         error_log("%s: Configuration value missing or has wrong type: %s. Using defaults where possible.",
                   __func__,
@@ -1035,7 +1036,7 @@ int main(int argc, char* argv[]) {
               __func__,
               should_update_event_detect ? "true" : "false",
               pipe_path.string());
-    debug_log("INFO: %s: Execute scripts: %s",
+    debug_log("INFO: %s: Execute dc control scripts: %s",
               __func__,
               execute_dc_control_scripts ? "true" : "false");
     debug_log("INFO: %s: Active command: '%s'",
@@ -1075,6 +1076,7 @@ int main(int argc, char* argv[]) {
 
     // --- Main Loop ---
     bool was_previously_idle = false; // Track state changes
+    bool first_iteration = true; // send active message on first iteration at startup.
 
     while (!g_shutdown_requested.load()) {
         int64_t idle_seconds = IdleDetect::GetIdleTimeSeconds();
@@ -1108,13 +1110,10 @@ int main(int argc, char* argv[]) {
             }
             was_previously_idle = false;
         } else if (!is_currently_idle && !was_previously_idle) {
-            // User remains active - should we continuously send pipe notifications?
-            // The script only sent on transition *from* idle, based on xprintidle.
-            // Let's only send on transition back to active for now.
-            // If continuous updates are needed, add:
-            // if (should_update_event_detect) {
-            //     IdleDetect::SendPipeNotification(pipe_path);
-            // }
+            if (first_iteration) {
+                IdleDetect::SendPipeNotification(pipe_path);
+                first_iteration = false;
+            }
         }
 
         // Sleep for the check interval, but check for shutdown periodically
@@ -1127,6 +1126,7 @@ int main(int argc, char* argv[]) {
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
+
         if (g_shutdown_requested.load()) {
             break; // Exit main loop
         }

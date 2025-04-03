@@ -601,7 +601,7 @@ void IdleDetectMonitor::IdleDetectMonitorThread()
 
     fs::perms desired_perms = fs::perms::owner_read | fs::perms::owner_write |
                               fs::perms::group_read | fs::perms::group_write |
-                              fs::perms::others_read | fs::perms::others_write;
+                              fs::perms::others_write;
 
     std::error_code ec; // To capture potential errors
 
