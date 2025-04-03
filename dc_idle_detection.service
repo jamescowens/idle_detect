@@ -11,7 +11,7 @@ PartOf=graphical-session.target
 [Service]
 Type=simple
 ProtectHome=read-only
-ExecStart=/usr/local/bin/idle_detect.sh /home/%u/.config/idle_detect.conf
+ExecStart=/usr/local/bin/idle_detect /home/%u/.config/idle_detect.conf
 Restart=on-failure
 RestartSec=5s
 #PrivateTmp=yes Can'd do this with xprintidle.

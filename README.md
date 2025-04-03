@@ -1,37 +1,53 @@
 # idle_detect
 
-This is an effort to provide a compact C++/script library to detect user activity on a workstation for the purpose of running commands when the idle/active state changes. It is motivated primarily to solve the idle detection issues with BOINC and other Linux based DC programs. There are two major components:
+This is an effort to provide a compact C++/script library to detect user activity on a workstation for the purpose of running commands when the idle/active state changes. It is motivated primarily to solve the idle detection issues with BOINC and other Linux based DC programs. I am implementing the following architecture, as a separate service any particular DC architecture. Note that I did a proof of concept in bash shell script, and am currently near completion on the C++ implementation. Event_detect is essentially finished and the idle_detect C++ version is operational and being tested.
 
-1. A system-wide C++ application, event_detect, to be run as a systemd service that detects pointer activity and tty/pty activity and reports the last active time of the user. This application currently writes the last active time to a file /run/event_detect/last_active_time.dat, but it is envisioned for there to be an option to use a shared memory segment will also be offered. (The script version of event_detect is now deprecated.)
+Note the C++ is implemented in modern C++-17 compliant code, in an object oriented manner. It also is multithreaded with appropriate locking/critical section control.
 
-2. A user level application, idle_detect, currently in script form, to be run as an automatically started application, or systemd user level service, to use the last active time reported by event_detect in conjunction with other GUI session tools available, such as xprintidle, etc. to be able to properly detect "idle inhibit" at the GUI session level. This will be replaced by a C++ application in the near future.
+1. There is a system level (run as root) service, event_detect, run in a tightly controlled systemd service, dc_event_detection.service, that checks three things for idle time:
+- the /dev/input/event devices that are pointing devices. (This catches all phyiscal mouse movement.)
+- the pts/tty devices for atime (which provides idle time for terminals/pseudo terminals, including ssh sessions.)
+- an input event via a named-pipe from user level detector (more on that below)
 
-The detection of "idle time" on a Linux workstation is not straightforward. The Linux kernel has a well-developed and standardized mechanism for monitoring activity at the device input level via the /dev/input/event* devices, and a reliable way of determining which of those are pointing devices. The tty/pty monitoring is not as clean, but can be done fairly reliably by monitoring the atime for the /dev/pty/\* and dev/tty* devices. The gap is at the GUI session (window manager or compositor level). Monitoring the user activity at the lower level of the input devices and pty/tty devices is generic and works across every GUI session type and also if there is no GUI session at all. The problem is that there are some activities in the GUI where the user is not apparently active via the lower level activity measurement, but they are *considered* active by the GUI session. The most common example is watching a movie. the XSS module in X allows an application to essentially inhibit the idle detection while it is running. This was originally to prevent the lock screen or screensaver to activate during a movie. This is only implemented at the GUI session level.
+The output of the event_detect is a file last_active_time.dat, which is in /run/event_detect. Note that on all reasonably recent Linux distributions, the /run directory is a tmpfs which is in memory only. Using an output file (and for the input events) a named pipe in the same directory is much simpler than using a shared memory (which would require complicated semaphore work to coordinate access), and presents less of a security risk. The ONLY thing written to the last_active_time.dat is an int64 in string format that represents unix epoch time in seconds UTC.
 
-To make matters worse, to be able to use this capability means that you have to use the X xprintidle (if via script) or the XSS module interface that xprintidle uses (if using C++), or in Wayland, the compositor equivalent. X is standardized, which makes this fairly easy. Wayland is not. While there is a standard way for an application to indicate in Wayland to inhibit "idle", there is NO standardized idle detection capability at the window manager level in Wayland. Each compositor implements its own interface for this, and unfortunately, each currently available compositor for the different windowing environments, such as KDE or Gnome does it differently. This is unfortunate. This is where the remaining gap is:
+2. There is a user level service, idle_detect, run as a user level systemd service (i.e. systemctl --user ...) that does the following things:
+- determines the session type, i.e. X, Wayland, or tty (non GUI)
+- for X, checks XSS for idle time. This properly catches idle inhibit on an X session with someone playing a movie if the movie app properly inhibits idle
+- for Wayland (this is still in progress) checks ext-idle-notify-v1 interface (for KDE Plasma-wayland and other compositors that use that interface), with a fallback to the dbus Gnome mutter interface for Gnome if necessary to get Wayland session based idle time. This will properly get idle inhibit on Wayland sessions if successful for the running compositor
+- for text based session, essentially a no-op
+- reports the combined last_active_time from all of the above by writing to the named pipe set up by event_detect a short message in the form of timestamp:USER_ACTIVE, which is received by an asynchronous, non-blocking read thread on the event_detect side, which does validation on the message to prevent a security risk.
+- optionally can run dc control scripts itself to control dc programs directly based on idle time.
 
-The combination of event_detect and idle_detect currently reliably detects idle time for user activity, *including* idle inhibit, for X sessions and pty/tty sessions. It currently reliably detects idle time for Wayland sessions, but NOT idle inhibit. This means that if one is watching a movie in Wayland, after the idle time trigger is reached, the system will be considered idle. The lift to close this remaining gap is considerable in terms of both programming effort and the maintenance required afterwards to keep up with all of the GUI window managers, since this is still evolving.
+Since event_detect receives update last_active_times from its own sources AND all user level idle_detect instances running on the machine, and provides an overall last_active_time in last_active_time.dat, the BOINC client or other DC architecture can simply poll the last_idle_time.dat file once a second to determine idleness.
 
-This should be considered alpha code.
+This pretty much will resolve 99% of the issues we have been having with idle detection.
 
-Development work is occurring on the development branch, and releases will be on master.
+This should be considered late alpha code. It should run stably, but not all corner cases have been tested.
+
+Development work is occurring on the development branch, and releases are on master. I am currently doing periodic pre-release tags (i.e. 0.x) at significant development points.
 
 This code is licensed under the MIT license.
 
-### Current dependencies:
- - libevdev library and development (header) files
- - libXss-devel for idle inhibit detection (idle detect C++ version)
- - xprintidle for X session idle inhibit detection (idle_detect.sh)
+### Current dependencies (both library and development files - for compilation):
+ - libevdev
+ - libXss
+ - dbus-1
+ - glib-2.0
+ - gobject-2.0
+ - gio-2.0
+ - wayland-client
+ - wayland-protocols
 
 ### Installation procedure
 
 1. git clone https://github.com/jamescowens/idle_detect.git and change into the idle_detect directory.
 
-2. Make sure you have installed the package for libevdev and for xprintidle (if you intend to detect idle inhibit in X).
+2. Make sure you have installed the package for libevdev.
 
 3. Compile the event_detect C++ application with cmake:
     - cd ./build/cmake
-    - cmake ../../ (note you may need the -DCMAKE_CXX_COMPILER=\<c++ compiler path\> option to point to a C++-17 compliant compiler)
+    - cmake ../../ (note you may need the -DCMAKE_CXX_COMPILER=\<c++ compiler path\> -DCMAKE_C_COMPILER=\<c compiler path\> options to point to a C++-17 compliant compiler)
     - cmake build .
 
 4. Install executables and system-wide service with sudo cmake --install .
@@ -52,12 +68,10 @@ This code is licensed under the MIT license.
 
 12. Check the status of both the services: sudo systemctl status dc_event_detection, and systemctl --user status dc_idle_detection, and make sure they are successfully running.
 
-13. Copy the dc_pause and dc_unpause scripts to /usr/local/bin and modify to your liking (they are currently set up to control BOINC in its default installation). This will be put in the cmake install shortly:
-    - sudo cp dc_pause /usr/local/bin
-    - sudo cp dc_unpause /usr/local/bin
-    - sudo nano /usr/local/bin/dc_pause
-    - sudo nano /usr/local/bin/dc_unpause
+13. Modify the dc_pause and dc_unpause scripts to your liking (they are currently set up to control BOINC in its default installation).
+- sudo nano /usr/local/bin/dc_pause
+- sudo nano /usr/local/bin/dc_unpause
 
-14. The user level idle_detection script detects changes to the idle_detect.conf file and automatically applies the changes; however if you change the event_detect.conf file for the system event detection service, then you currently need to restart the system level dc_event_detection service via sudo systemctl restart dc_event_detection.
+14. If you change the event_detect.conf file or the idle_detect.conf files, then you currently need to restart the appropriate service to pick up the changes. Automatic change detection without restart will be added later.
 
 ### This is alpha level code and is currently subject to rapid change.
