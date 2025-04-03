@@ -5,47 +5,48 @@
  */
 
 #include "idle_detect.h"
-#include "util.h"
+#include "util.h" // Includes tinyformat.h, filesystem, etc.
 
-#include <fstream>
-#include <cstdlib> // For system()
-#include <cstdint> // For int64_t
-#include <future>
-#include <cstring> // For strcmp
+// Standard Libs
+#include <cstdlib>     // For getenv(), system()
+#include <cstdint>     // For int64_t, uint64_t
+#include <cstring>     // For strcmp, strerror
+#include <chrono>      // For std::chrono
+#include <thread>      // For std::this_thread, std::thread
+#include <atomic>      // For std::atomic
+#include <fstream>     // For std::ofstream
+#include <future>      // For std::async, std::future
+#include <system_error>// For std::error_code
+#include <csignal>     // For signal handling (sigaction etc)
+#include <variant>     // For std::get
+#include <algorithm>   // For std::min, std::max
+
+// Platform Specific Libs
 #include <X11/Xlib.h>
 #include <X11/extensions/scrnsaver.h>
-#include <unistd.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <gio/gio.h> // For D-Bus
-#include <fcntl.h>      // For pipe2, O_NONBLOCK, O_CLOEXEC
-#include <poll.h>       // For poll()
-#include <unistd.h>     // For pipe, read, write, close
-#include <errno.h>      // For errno
-#include <algorithm>    // For std::min
+#include <unistd.h>    // For pipe, read, write, close, getenv, sleep
+#include <sys/types.h> // Usually included by others
+#include <sys/wait.h>  // Usually included by others
+#include <poll.h>      // For poll()
+#include <fcntl.h>     // For O_NONBLOCK, O_CLOEXEC
 
-// Wayland includes
+// D-Bus Libs (if needed for fallback)
+#include <gio/gio.h>
+
+// Wayland Libs
 #include <wayland-client.h>
-// This header MUST be generated from ext-idle-notify-v1.xml using wayland-scanner
-#include <./build/cmake/ext-idle-notify-v1-protocol.h>
-#include <ext-idle-notify-v1-protocol.h>
+// This is the correct include now that CMake adds the build dir to include paths
+#include "ext-idle-notify-v1-protocol.h"
 
-
-//!
-//! \brief This is populated by main from an early GetArg so that the debug_log doesn't use the heavyweight GetArg call constantly.
-//!
+// --- Globals ---
+//! Populated by main after reading config
 std::atomic<bool> g_debug = false;
-
-//!
-//! \brief Global config singleton
-//!
+//! Global config singleton
 IdleDetectConfig g_config;
-
-//!
-//! \brief Global Wayland idle monitor singleton
-//!
+//! Global Wayland idle monitor singleton
 IdleDetect::WaylandIdleMonitor g_wayland_idle_monitor;
-
+//! Global flag for signal handling
+std::atomic<bool> g_shutdown_requested = false;
 
 void IdleDetectConfig::ProcessArgs()
 {
@@ -725,50 +726,122 @@ const struct ext_idle_notification_v1_listener g_idle_notification_listener = {
 // --- Update GetIdleTimeSeconds ---
 int64_t GetIdleTimeSeconds() {
     if (IsTtySession()) {
-        debug_log("%s: TTY session detected, idle check not applicable.", __func__);
+        debug_log("INFO: %s: TTY session detected, idle check not applicable.", __func__);
         return 0;
     } else if (IsWaylandSession()) {
-        debug_log("%s: Wayland session detected.", __func__);
+        debug_log("INFO: %s: Wayland session detected.", __func__);
         // Check if the Wayland monitor using the protocol is available and initialized
         if (g_wayland_idle_monitor.IsAvailable()) {
-            debug_log("%s: Using WaylandIdleMonitor (ext-idle-notify-v1).", __func__);
+            debug_log("INFO: %s: Using WaylandIdleMonitor (ext-idle-notify-v1).", __func__);
             return g_wayland_idle_monitor.GetIdleSeconds();
         }
         // --- Fallback Logic ---
         // Only try D-Bus for Gnome if Wayland monitor failed/unavailable
         else if (IsGnomeSession()) {
-            debug_log("%s: WaylandIdleMonitor unavailable, falling back to D-Bus for Gnome.", __func__);
+            debug_log("INFO: %s: WaylandIdleMonitor unavailable, falling back to D-Bus for Gnome.", __func__);
             return GetIdleTimeWaylandGnomeViaDBus(); // Ensure this function exists
         }
         // Add other Wayland fallbacks here if needed (e.g., check for deprecated kde-idle?)
         else {
-            debug_log("%s: WaylandIdleMonitor unavailable, no other Wayland method implemented/available.", __func__);
+            debug_log("INFO: %s: WaylandIdleMonitor unavailable, no other Wayland method implemented/available.", __func__);
             return 0; // No Wayland method worked
         }
     } else { // Assume X11
-        debug_log("%s: X11 session detected. Using XScreenSaver.", __func__);
+        debug_log("INFO: %s: X11 session detected. Using XScreenSaver.",
+                  __func__);
+
         // --- X11 implementation as before ---
         Display* display = XOpenDisplay(nullptr);
-        if (!display) { error_log("%s: Could not open X display.", __func__); return 0; }
-        int event_base, error_base;
-        if (!XScreenSaverQueryExtension(display, &event_base, &error_base)) { error_log("%s: XScreenSaver extension unavailable.", __func__); XCloseDisplay(display); return 0; }
+
+        if (!display) {
+            error_log("%s: Could not open X display.", __func__);
+            return 0;
+        }
+
+        int event_base;
+        int error_base;
+
+        if (!XScreenSaverQueryExtension(display, &event_base, &error_base)) {
+            error_log("%s: XScreenSaver extension unavailable.", __func__);
+            XCloseDisplay(display);
+            return 0;
+        }
+
         XScreenSaverInfo* info = XScreenSaverAllocInfo();
-        if (!info) { error_log("%s: Could not allocate XScreenSaverInfo.", __func__); XCloseDisplay(display); return 0; }
+
+        if (!info) {
+            error_log("%s: Could not allocate XScreenSaverInfo.",
+                      __func__);
+            XCloseDisplay(display);
+            return 0;
+        }
+
         Window root = DefaultRootWindow(display);
+
         XScreenSaverQueryInfo(display, root, info);
+
         int64_t idle_time_ms = info->idle;
+
         XFree(info);
         XCloseDisplay(display);
+
         int64_t idle_time_seconds = idle_time_ms / 1000;
-        debug_log("%s: XScreenSaver reported: %lld ms (%lld seconds)", __func__, (long long)idle_time_ms, (long long)idle_time_seconds);
+
+        debug_log("%s: XScreenSaver reported: %lld ms (%lld seconds)",
+                  __func__,
+                  (int64_t)idle_time_ms,
+                  (int64_t)idle_time_seconds);
+
         return idle_time_seconds;
         // --- End X11 implementation ---
     }
 }
 
+// --- New Helper for Background Command Execution ---
+/**
+ * @brief Executes a shell command string in the background (detached thread).
+ * @param command The command string to execute via /bin/sh -c.
+ */
+void ExecuteCommandBackground(const std::string& command) {
+    if (command.empty()) {
+        debug_log("%s: No command provided.", __func__);
+        return;
+    }
+
+    debug_log("%s: Executing background command: %s", __func__, command);
+    try {
+        // Launch system() in a detached thread. The lambda captures command by value.
+        std::thread([command]() {
+            int ret = std::system(command.c_str());
+            // Optional: Log result if needed, but tricky as thread is detached.
+            // This log might appear long after the main thread has moved on.
+            if (ret != 0) {
+                // Use thread-safe logging if available or be cautious
+                // error_log("Background command '%s' exited with code %d", command, ret);
+                // For now, maybe skip logging from detached thread.
+            }
+        }).detach();
+    } catch (const std::system_error& e) {
+        error_log("%s: Failed to launch background command thread: %s", __func__, e.what());
+    } catch (...) {
+        error_log("%s: Unknown error launching background command thread.", __func__);
+    }
+}
 
 } // namespace IdleDetect
 
+// --- Signal Handler ---
+void HandleSignal(int signum) {
+    if (signum == SIGINT || signum == SIGTERM) {
+        // Use log() here as it's presumably safe enough during shutdown signal
+        log("INFO: %s: Received signal %d. Requesting shutdown.", __func__, signum);
+        g_shutdown_requested.store(true);
+        // Optional: Notify main thread's condition variable if it were sleeping longer
+        // For a simple polling loop like below, setting the flag is sufficient.
+    } else {
+        log("INFO: %s: Received unexpected signal %d.", __func__, signum);
+    }
+}
 
 int main(int argc, char* argv[]) {
 
@@ -815,6 +888,9 @@ int main(int argc, char* argv[]) {
     bool should_update_event_detect = false;
     fs::path event_data_path;
     int initial_sleep = 0;
+    bool execute_dc_control_scripts = false;
+    std::string active_command;
+    std::string idle_command;
 
     try {
         // Assuming GetArg is PascalCase
@@ -822,24 +898,56 @@ int main(int argc, char* argv[]) {
         should_update_event_detect = std::get<bool>(g_config.GetArg("update_event_detect"));
         event_data_path = std::get<fs::path>(g_config.GetArg("event_count_files_path"));
         initial_sleep = std::get<int>(g_config.GetArg("initial_sleep"));
-        // ... get other config vars ...
+        active_command = std::get<std::string>(g_config.GetArg("active_command"));
+        idle_command = std::get<std::string>(g_config.GetArg("idle_command"));
     } catch (const std::bad_variant_access& e) {
         error_log("%s: Configuration value missing or has wrong type: %s. Using defaults where possible.",
                   __func__,
                   e.what());
     } catch (...) {
-        error_log("%s: main: Unknown error accessing configuration values.", __func__);
+        error_log("%s: Unknown error accessing configuration values.",
+                  __func__);
         return 1;
     }
 
     fs::path pipe_path = event_data_path / "event_registration_pipe";
 
-    log("Idle Detect started.");
-    debug_log("INFO: main: Idle threshold: %d seconds, Check interval: %d seconds, Update event_detect: %s, Pipe path: %s",
+    // --- Signal Handling Setup ---
+    g_shutdown_requested = false;
+    struct sigaction action;
+    memset(&action, 0, sizeof(struct sigaction));
+    action.sa_handler = HandleSignal;
+    action.sa_flags = 0; // Consider SA_RESTART if needed
+    sigemptyset(&action.sa_mask);
+    if (sigaction(SIGINT, &action, nullptr) == -1 || sigaction(SIGTERM, &action, nullptr) == -1) {
+        error_log("%s: Failed to set signal handlers: %s",
+                  __func__,
+                  strerror(errno));
+        return 1;
+    }
+    // Optional: Block signals in other threads if they shouldn't handle them
+    // Optional: Ignore SIGPIPE if writing to pipe fails often
+    // signal(SIGPIPE, SIG_IGN);
+
+
+    log("Idle Detect starting.");
+    debug_log("INFO: %s: Idle threshold: %d seconds, Check interval: %d seconds",
+              __func__,
               idle_threshold_seconds,
-              check_interval_seconds,
+              check_interval_seconds);
+    debug_log("INFO: %s: Update event_detect: %s, Pipe path: %s",
+              __func__,
               should_update_event_detect ? "true" : "false",
               pipe_path.string());
+    debug_log("INFO: %s: Execute scripts: %s",
+              __func__,
+              execute_dc_control_scripts ? "true" : "false");
+    debug_log("INFO: %s: Active command: '%s'",
+              __func__,
+              active_command);
+    debug_log("INFO: %s: Idle command: '%s'",
+              __func__,
+              idle_command);
 
     if (initial_sleep > 0) {
         log("INFO: %s: Waiting for %d seconds to start.",
@@ -849,53 +957,98 @@ int main(int argc, char* argv[]) {
         std::this_thread::sleep_for(std::chrono::seconds(initial_sleep));
     }
 
-    bool use_wayland_monitor = false;
+    // --- Start Wayland Monitor (if applicable) ---
+    bool wayland_monitor_started = false;
     if (IdleDetect::IsWaylandSession()) {
-        // Get timeout from config, convert seconds to ms
-        // Use a reasonably short timeout for notification. Let's use inactivity_time_trigger for now.
-        int notification_timeout_ms = IdleDetect::DEFAULT_IDLE_THRESHOLD_SECONDS * 1000; // Configurable?
-
-        // Start the Wayland monitor; check if successful
+        // Use a short timeout for Wayland notification to detect idle start quickly
+        int notification_timeout_ms = 1000; // 1 second, or make configurable?
+        debug_log("INFO: %s: Attempting to start Wayland idle monitor (timeout %dms)...",
+                  __func__,
+                  notification_timeout_ms);
         if (g_wayland_idle_monitor.Start(notification_timeout_ms)) {
-            debug_log("main: Wayland idle monitor started successfully.");
-            use_wayland_monitor = true;
-            // Need to handle KDE vs Gnome fallback logic based on IsAvailable()
-            // GetIdleTimeSeconds now incorporates the check
+            debug_log("INFO: %s: Wayland idle monitor started successfully.",
+                      __func__);
+            wayland_monitor_started = true;
         } else {
-            error_log("main: Failed to start Wayland idle monitor. Will rely on fallbacks if available.");
+            error_log("%s: Failed to start Wayland idle monitor. "
+                      "Relying on fallbacks (e.g., D-Bus for Gnome) if available.",
+                      __func__);
+            // GetIdleTimeSeconds() will handle the fallback internally
         }
     }
-
 
     // --- Main Loop ---
-    while (true) {
-        // FunctionName is PascalCase
+    bool was_previously_idle = false; // Track state changes
+
+    while (!g_shutdown_requested.load()) {
         int64_t idle_seconds = IdleDetect::GetIdleTimeSeconds();
-        // Logging function call is snake_case
-        debug_log("DEBUG: main: Current idle time: %lld seconds", idle_seconds);
+        bool is_currently_idle = (idle_seconds >= idle_threshold_seconds);
 
-        if (idle_seconds >= idle_threshold_seconds) {
-            // Logging function call is snake_case
-            log("INFO: main: User is idle (%lld seconds >= %d threshold)", idle_seconds, idle_threshold_seconds);
-            // Add logic to execute idle_command
-        } else {
-            // Logging function call is snake_case
-            debug_log("INFO: main: User is active (%lld seconds < %d threshold)", idle_seconds, idle_threshold_seconds);
-            // Add logic to execute active_command
+        debug_log("DEBUG: main: Current idle time: %lld seconds. State: %s",
+                  (long long)idle_seconds,
+                  is_currently_idle ? "Idle" : "Active");
 
+        // --- State Change Logic & Command Execution ---
+        if (is_currently_idle && !was_previously_idle) {
+            log("INFO: %s: User became idle (%llds >= %ds).",
+                __func__,
+                (int64_t)idle_seconds,
+                idle_threshold_seconds);
+            if (execute_dc_control_scripts) {
+                IdleDetect::ExecuteCommandBackground(idle_command);
+            }
+            was_previously_idle = true;
+        } else if (!is_currently_idle && was_previously_idle) {
+            log("INFO: %s: User became active (%llds < %ds).",
+                __func__,
+                (int64_t)idle_seconds,
+                idle_threshold_seconds);
+            if (execute_dc_control_scripts) {
+                IdleDetect::ExecuteCommandBackground(active_command);
+            }
+            // Send pipe notification when becoming active *after* having been idle
             if (should_update_event_detect) {
-                // FunctionName is PascalCase
                 IdleDetect::SendPipeNotification(pipe_path);
             }
+            was_previously_idle = false;
+        } else if (!is_currently_idle && !was_previously_idle) {
+            // User remains active - should we continuously send pipe notifications?
+            // The script only sent on transition *from* idle, based on xprintidle.
+            // Let's only send on transition back to active for now.
+            // If continuous updates are needed, add:
+            // if (should_update_event_detect) {
+            //     IdleDetect::SendPipeNotification(pipe_path);
+            // }
         }
-        std::this_thread::sleep_for(std::chrono::seconds(check_interval_seconds));
-    }
 
-    // --- Shutdown sequence in main ---
-    // ... (before exiting) ...
-    if (use_wayland_monitor) { // Or check g_wayland_idle_monitor.IsAvailable() again?
+        // Sleep for the check interval, but check for shutdown periodically
+        // This loop sleeps for check_interval_seconds total, checking every 100ms
+        auto wake_up_time = std::chrono::steady_clock::now() + std::chrono::seconds(check_interval_seconds);
+        while (std::chrono::steady_clock::now() < wake_up_time) {
+            if (g_shutdown_requested.load()) {
+                debug_log("%s: Shutdown requested during sleep interval.", __func__);
+                break; // Exit inner sleep loop
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        if (g_shutdown_requested.load()) {
+            break; // Exit main loop
+        }
+    } // End main loop
+
+    log("INFO: %s: Shutdown requested. Cleaning up...",
+        __func__);
+
+    // --- Shutdown sequence ---
+    if (wayland_monitor_started) {
+        log("INFO: %s: Stopping Wayland idle monitor...",
+            __func__);
         g_wayland_idle_monitor.Stop();
+        log("INFO: %s: Wayland idle monitor stopped.",
+            __func__);
     }
+    // Add cleanup for other resources if necessary
 
+    log("Idle Detect shutdown.");
     return 0;
-}
+ }
