@@ -134,6 +134,12 @@ void IdleDetectConfig::ProcessArgs()
                   execute_dc_control_scripts_arg);
     }
 
+    // last_active_time_cpp_filename
+
+    std::string last_active_time_cpp_filename = GetArgString("last_active_time_cpp_filename", "last_active_time.dat");
+
+    m_config.insert(std::make_pair("last_active_time_cpp_filename", last_active_time_cpp_filename));
+
     // inactivity_time_trigger
 
     int inactivity_time_trigger = 0;
@@ -171,13 +177,48 @@ static bool IsGnomeSession() {
 }
 
 /**
+ * @brief Reads the timestamp from event_detect's data file.
+ * @param file_path Path to the last_active_time.dat file.
+ * @return int64_t Timestamp read from file, or 0 if file doesn't exist or error occurs.
+ */
+static int64_t ReadLastActiveTimeFile(const fs::path& file_path) {
+    if (!fs::exists(file_path)) {
+        debug_log("INFO: %s: Data file not found: %s", __func__, file_path.string());
+        return 0;
+    }
+
+    std::ifstream time_file(file_path);
+    if (!time_file.is_open()) {
+        error_log("%s: Could not open data file: %s", __func__, file_path.string());
+        return 0;
+    }
+
+    std::string line;
+    if (std::getline(time_file, line)) {
+        try {
+            // Use existing parsing utility which includes validation range checks
+            int64_t timestamp = ParseStringtoInt64(TrimString(line));
+            debug_log("INFO: %s: Read timestamp %lld from %s", __func__, timestamp, file_path.string());
+            return timestamp;
+        } catch (const std::exception& e) {
+            error_log("%s: Failed to parse timestamp from data file '%s': %s", __func__, file_path.string(), e.what());
+            return 0;
+        }
+    } else {
+        error_log("%s: Failed to read line from data file: %s", __func__, file_path.string());
+        return 0;
+    }
+}
+
+/**
  * @brief Sends a notification message to the event_detect named pipe.
  *
  * @param pipe_path The full path to the event_detect named pipe.
+ * @param the last active time to send to event_detect
  */
-void SendPipeNotification(const std::filesystem::path& pipe_path) {
+void SendPipeNotification(const std::filesystem::path& pipe_path, const int64_t& last_active_time) {
     // Construct the message payload using EventMessage format
-    EventMessage msg(::ToString(GetUnixEpochTime()), "USER_ACTIVE");
+    EventMessage msg(::ToString(last_active_time), "USER_ACTIVE");
     if (!msg.IsValid()) {
         error_log("%s: Failed to construct valid EventMessage.",
                   __func__);
@@ -453,7 +494,6 @@ void WaylandIdleMonitor::Stop() {
     debug_log("INFO: %s: Wayland idle monitor stopped.",
               __func__);
 }
-
 
 bool WaylandIdleMonitor::InitializeWayland() {
     debug_log("INFO: %s: Initializing Wayland connection.",
@@ -805,7 +845,6 @@ const struct ext_idle_notification_v1_listener g_idle_notification_listener = {
 } // extern "C"
 
 
-// --- Update GetIdleTimeSeconds ---
 int64_t GetIdleTimeSeconds() {
     if (IsTtySession()) {
         debug_log("INFO: %s: TTY session detected, idle check not applicable.",
@@ -883,7 +922,6 @@ int64_t GetIdleTimeSeconds() {
     }
 }
 
-// --- New Helper for Background Command Execution ---
 /**
  * @brief Executes a shell command string in the background (detached thread).
  * @param command The command string to execute via /bin/sh -c.
@@ -981,12 +1019,14 @@ int main(int argc, char* argv[]) {
     // (variable_names are snake_case)
     int idle_threshold_seconds = 0;
     int check_interval_seconds = IdleDetect::DEFAULT_CHECK_INTERVAL_SECONDS;
-    bool should_update_event_detect = false;
+    bool should_update_event_detect = true;
     fs::path event_data_path;
     int initial_sleep = 0;
-    bool execute_dc_control_scripts = false;
+    bool execute_dc_control_scripts = true;
     std::string active_command;
     std::string idle_command;
+    bool use_event_detect = true;
+    std::string last_active_time_cpp_filename;
 
     try {
         // Assuming GetArg is PascalCase
@@ -997,6 +1037,8 @@ int main(int argc, char* argv[]) {
         active_command = std::get<std::string>(g_config.GetArg("active_command"));
         idle_command = std::get<std::string>(g_config.GetArg("idle_command"));
         execute_dc_control_scripts = std::get<bool>(g_config.GetArg("execute_dc_control_scripts"));
+        use_event_detect = std::get<bool>(g_config.GetArg("use_event_detect"));
+        last_active_time_cpp_filename = std::get<std::string>(g_config.GetArg("last_active_time_cpp_filename"));
     } catch (const std::bad_variant_access& e) {
         error_log("%s: Configuration value missing or has wrong type: %s. Using defaults where possible.",
                   __func__,
@@ -1008,6 +1050,7 @@ int main(int argc, char* argv[]) {
     }
 
     fs::path pipe_path = event_data_path / "event_registration_pipe";
+    fs::path dat_file_path = event_data_path / last_active_time_cpp_filename;
 
     // --- Signal Handling Setup ---
     g_shutdown_requested = false;
@@ -1076,44 +1119,85 @@ int main(int argc, char* argv[]) {
 
     // --- Main Loop ---
     bool was_previously_idle = false; // Track state changes
-    bool first_iteration = true; // send active message on first iteration at startup.
 
     while (!g_shutdown_requested.load()) {
-        int64_t idle_seconds = IdleDetect::GetIdleTimeSeconds();
+        int64_t idle_seconds = 0; // Default to active
+        int64_t direct_idle_seconds = IdleDetect::GetIdleTimeSeconds();
+
+        if (direct_idle_seconds >= 0) {
+            // Successfully got idle time directly
+            idle_seconds = direct_idle_seconds;
+            debug_log("INFO: %s: Using direct idle time: %lld seconds.",
+                      __func__,
+                      (int64_t)idle_seconds);
+        } else {
+            // Failed to get idle time directly, try fallback
+            debug_log("INFO: %s: Direct idle detection failed/unavailable.",
+                      __func__);
+            if (use_event_detect) {
+                debug_log("INFO: %s: Attempting fallback using event_detect file: %s",
+                          __func__,
+                          dat_file_path.string());
+                int64_t file_timestamp = IdleDetect::ReadLastActiveTimeFile(dat_file_path);
+                if (file_timestamp > 0) {
+                    int64_t current_time = GetUnixEpochTime();
+                    int64_t calculated_idle = current_time - file_timestamp;
+                    idle_seconds = (calculated_idle > 0) ? calculated_idle : 0; // Ensure non-negative
+                    debug_log("INFO: %s: Using fallback idle time: %lld seconds (current: %lld, file: %lld)",
+                              __func__,
+                              (int64_t)idle_seconds,
+                              (int64_t)current_time,
+                              (int64_t)file_timestamp);
+                } else {
+                    error_log("%s: Fallback failed: Could not read/parse valid timestamp from event_detect file. Assuming active.",
+                              __func__);
+                    idle_seconds = 0; // Assume active if fallback fails
+                }
+            } else {
+                debug_log("INFO: %s: Fallback disabled by config (use_event_detect=false). Assuming active.",
+                          __func__);
+                idle_seconds = 0; // Assume active if direct fails and fallback disabled
+            }
+        }
+
+        // --- State Calculation & Actions (using effective idle_seconds) ---
         bool is_currently_idle = (idle_seconds >= idle_threshold_seconds);
 
-        debug_log("DEBUG: main: Current idle time: %lld seconds. State: %s",
+        debug_log("INFO: %s: Effective idle time: %lld seconds. State: %s",
+                  __func__,
                   (long long)idle_seconds,
                   is_currently_idle ? "Idle" : "Active");
 
-        // --- State Change Logic & Command Execution ---
-        if (is_currently_idle && !was_previously_idle) {
-            log("INFO: %s: User became idle (%llds >= %ds).",
-                __func__,
-                (int64_t)idle_seconds,
-                idle_threshold_seconds);
-            if (execute_dc_control_scripts) {
-                IdleDetect::ExecuteCommandBackground(idle_command);
+        // --- Handle State Change for Commands ---
+        if (is_currently_idle != was_previously_idle) {
+            if (is_currently_idle) {
+                // Became Idle
+                log("INFO: %s: User became idle (%llds >= %ds).",
+                    __func__,
+                    (int64_t)idle_seconds, idle_threshold_seconds);
+
+                if (execute_dc_control_scripts) {
+                    IdleDetect::ExecuteCommandBackground(idle_command);
+                }
+            } else {
+                // Became Active
+                log("INFO: %s: User became active (%llds < %ds).",
+                    __func__,
+                    (int64_t)idle_seconds,
+                    idle_threshold_seconds);
+
+                if (execute_dc_control_scripts) {
+                    IdleDetect::ExecuteCommandBackground(active_command);
+                }
             }
-            was_previously_idle = true;
-        } else if (!is_currently_idle && was_previously_idle) {
-            log("INFO: %s: User became active (%llds < %ds).",
-                __func__,
-                (int64_t)idle_seconds,
-                idle_threshold_seconds);
-            if (execute_dc_control_scripts) {
-                IdleDetect::ExecuteCommandBackground(active_command);
-            }
-            // Send pipe notification when becoming active *after* having been idle
-            if (should_update_event_detect) {
-                IdleDetect::SendPipeNotification(pipe_path);
-            }
-            was_previously_idle = false;
-        } else if (!is_currently_idle && !was_previously_idle) {
-            if (first_iteration) {
-                IdleDetect::SendPipeNotification(pipe_path);
-                first_iteration = false;
-            }
+
+            was_previously_idle = is_currently_idle; // Update previous state
+        }
+
+        // --- Send Pipe Notification on Every Active Cycle (if enabled) ---
+        if (!is_currently_idle && should_update_event_detect) {
+            debug_log("INFO: %s: Sending active notification to pipe.", __func__);
+            IdleDetect::SendPipeNotification(pipe_path, GetUnixEpochTime() - idle_seconds);
         }
 
         // Sleep for the check interval, but check for shutdown periodically
@@ -1121,7 +1205,8 @@ int main(int argc, char* argv[]) {
         auto wake_up_time = std::chrono::steady_clock::now() + std::chrono::seconds(check_interval_seconds);
         while (std::chrono::steady_clock::now() < wake_up_time) {
             if (g_shutdown_requested.load()) {
-                debug_log("INFO: %s: Shutdown requested during sleep interval.", __func__);
+                debug_log("INFO: %s: Shutdown requested during sleep interval.",
+                          __func__);
                 break; // Exit inner sleep loop
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
