@@ -30,9 +30,6 @@
 #include <poll.h>      // For poll()
 #include <fcntl.h>     // For O_NONBLOCK, O_CLOEXEC
 
-// D-Bus Libs (if needed for fallback)
-#include <gio/gio.h>
-
 // Wayland Libs
 #include <wayland-client.h>
 // This is the correct include now that CMake adds the build dir to include paths
@@ -41,10 +38,13 @@
 // --- Globals ---
 //! Populated by main after reading config
 std::atomic<bool> g_debug = false;
-//! Global config singleton
+//! Global config
 IdleDetectConfig g_config;
-//! Global Wayland idle monitor singleton
+//! Global Wayland idle monitor
 IdleDetect::WaylandIdleMonitor g_wayland_idle_monitor;
+//! DBus idle inhibit monitor
+IdleDetect::DBusInhibitMonitor g_dbus_inhibit_monitor;
+
 //! Global flag for signal handling
 std::atomic<bool> g_shutdown_requested = false;
 
@@ -845,6 +845,305 @@ const struct ext_idle_notification_v1_listener g_idle_notification_listener = {
 } // extern "C"
 
 
+// --- DBusInhibitMonitor Implementation ---
+
+DBusInhibitMonitor::DBusInhibitMonitor() :
+    m_interrupt_monitor(false),
+    m_initialized(false),
+    m_is_inhibited(false), // Assume not inhibited initially
+    m_main_loop(nullptr),
+    m_connection(nullptr),
+    m_signal_subscription_id(0)
+{}
+
+DBusInhibitMonitor::~DBusInhibitMonitor() {
+    Stop(); // Ensure cleanup on destruction
+}
+
+bool DBusInhibitMonitor::Start() {
+    debug_log("INFO: %s: Starting D-Bus inhibit monitor.", __func__);
+    if (m_initialized.load()) {
+        debug_log("INFO: %s: Monitor already initialized.", __func__);
+        return true;
+    }
+
+    // Reset state flags
+    m_interrupt_monitor.store(false);
+    m_is_inhibited.store(false); // Reset to default before getting initial state
+
+    // Initialize D-Bus connection, get initial state, and subscribe to signals
+    // This happens synchronously before starting the thread.
+    if (!InitializeDBus()) {
+        error_log("%s: Failed to initialize D-Bus.", __func__);
+        CleanupDBus(); // Clean up any partial initialization
+        m_initialized.store(false);
+        return false;
+    }
+
+    // If D-Bus setup is okay, start the thread to run the GMainLoop
+    try {
+        m_monitor_thread = std::thread(&DBusInhibitMonitor::DBusMonitorThread, this);
+    } catch (const std::system_error& e) {
+        error_log("%s: Failed to start D-Bus monitor thread: %s", __func__, e.what());
+        CleanupDBus(); // Clean up D-Bus resources if thread fails to start
+        m_initialized.store(false);
+        return false;
+    }
+
+    m_initialized.store(true);
+    debug_log("INFO: %s: D-Bus inhibit monitor started successfully.", __func__);
+    return true;
+}
+
+void DBusInhibitMonitor::Stop() {
+    debug_log("INFO: %s: Stopping D-Bus inhibit monitor...", __func__);
+
+    // Prevent double stopping and signal thread
+    if (m_interrupt_monitor.exchange(true)) {
+        debug_log("INFO: %s: Stop already in progress or completed.", __func__);
+        // Optional: If thread might be stuck, add forceful exit/timeout? Risky.
+        // Ensure join is still attempted if needed
+        if(m_monitor_thread.joinable() && m_monitor_thread.get_id() != std::this_thread::get_id()) {
+            try { m_monitor_thread.join(); } catch (...) { /* Ignore secondary join errors */ }
+        }
+        return;
+    }
+
+    // Signal the GMainLoop running in the thread to quit
+    // Check m_main_loop existence and running status for safety
+    if (m_main_loop != nullptr && g_main_loop_is_running(m_main_loop)) {
+        debug_log("INFO: %s: Quitting D-Bus GMainLoop.", __func__);
+        g_main_loop_quit(m_main_loop);
+    } else {
+        debug_log("INFO: %s: GMainLoop pointer null or not running, cannot quit.", __func__);
+    }
+
+
+    // Join the thread (wait for it to finish)
+    // Avoid joining self if Stop is called from the monitor thread itself (shouldn't happen ideally)
+    if (m_monitor_thread.joinable() && m_monitor_thread.get_id() != std::this_thread::get_id()) {
+        debug_log("INFO: %s: Joining D-Bus monitor thread...", __func__);
+        try {
+            m_monitor_thread.join();
+            debug_log("INFO: %s: D-Bus monitor thread joined.", __func__);
+        } catch (const std::system_error& e) {
+            error_log("%s: Error joining D-Bus monitor thread: %s", __func__, e.what());
+            // Consider if thread cleanup is still needed / possible
+        }
+    } else if (m_monitor_thread.get_id() == std::this_thread::get_id()) {
+        error_log("WARNING: %s: Stop() called from within the monitor thread! Cannot join.", __func__);
+    }
+
+
+    // Cleanup D-Bus resources (connection, subscriptions)
+    // This should happen after the thread has stopped using them.
+    CleanupDBus();
+
+    m_initialized.store(false); // Mark as no longer initialized
+    debug_log("INFO: %s: D-Bus inhibit monitor stopped.", __func__);
+}
+
+// --- Internal Helper Implementations ---
+
+bool DBusInhibitMonitor::InitializeDBus() {
+    GError* error = nullptr;
+    debug_log("INFO: %s: Connecting to D-Bus session bus...", __func__);
+
+    // 1. Connect to the session bus
+    m_connection = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr /* cancellable */, &error);
+    if (!m_connection) {
+        error_log("%s: Failed to connect to D-Bus session bus: %s", __func__, error ? error->message : "Unknown error");
+        if (error) g_error_free(error);
+        return false;
+    }
+    debug_log("INFO: %s: Connected to D-Bus session bus.", __func__);
+
+    // 2. Get the initial inhibition state
+    if (!GetInitialActiveState()) {
+        // Logged inside the function, but maybe warn that initial state is unknown
+        error_log("WARNING: %s: Could not determine initial inhibition state. Assuming not inhibited.", __func__);
+        // Keep m_is_inhibited as its default (false)
+    }
+
+    // 3. Subscribe to the ActiveChanged signal
+    debug_log("INFO: %s: Subscribing to D-Bus signal %s.%s...", __func__, SS_INTERFACE, SS_ACTIVE_CHANGED_SIGNAL);
+    m_signal_subscription_id = g_dbus_connection_signal_subscribe(
+        m_connection,
+        nullptr,                            // Sender filter (nullptr = any sender) - More robust as service name might vary? Or use SS_SERVICE? Let's use null for now.
+        SS_INTERFACE,                       // Interface name
+        SS_ACTIVE_CHANGED_SIGNAL,           // Signal name
+        SS_PATH,                            // Object path
+        nullptr,                            // Argument filter (NULL = all args)
+        G_DBUS_SIGNAL_FLAGS_NONE,
+        HandleActiveChangedSignal,          // Callback function
+        this,                               // User data (pointer to this instance)
+        nullptr                             // User data free function
+        );
+
+    if (m_signal_subscription_id == 0) {
+        error_log("%s: Failed to subscribe to D-Bus signal %s.%s.", __func__, SS_INTERFACE, SS_ACTIVE_CHANGED_SIGNAL);
+        // Maybe the service isn't running or interface isn't present?
+        // Consider this non-fatal for now? Or return false? Let's return false.
+        g_object_unref(m_connection); // Clean up connection
+        m_connection = nullptr;
+        return false;
+    }
+    debug_log("INFO: %s: Subscribed to D-Bus signal (ID: %u).", __func__, m_signal_subscription_id);
+
+    return true; // Success
+}
+
+void DBusInhibitMonitor::CleanupDBus() {
+    debug_log("INFO: %s: Cleaning up D-Bus resources.", __func__);
+    // Unsubscribe from signals
+    if (m_connection != nullptr && m_signal_subscription_id > 0) {
+        debug_log("INFO: %s: Unsubscribing from D-Bus signal ID %u.", __func__, m_signal_subscription_id);
+        g_dbus_connection_signal_unsubscribe(m_connection, m_signal_subscription_id);
+        m_signal_subscription_id = 0; // Reset ID
+    } else {
+        debug_log("INFO: %s: No active D-Bus signal subscription to unsubscribe.", __func__);
+    }
+
+    // Release reference to the connection
+    if (m_connection != nullptr) {
+        debug_log("INFO: %s: Unreferencing D-Bus connection.", __func__);
+        g_object_unref(m_connection);
+        m_connection = nullptr;
+    } else {
+        debug_log("INFO: %s: No active D-Bus connection to unreference.", __func__);
+    }
+
+    // GMainLoop is managed/unreffed by the thread function itself when it exits
+    m_main_loop = nullptr; // Ensure pointer is cleared
+}
+
+void DBusInhibitMonitor::DBusMonitorThread() {
+    debug_log("INFO: %s: D-Bus monitor thread started (ID: %s).",
+              __func__,
+              std::to_string(std::hash<std::thread::id>{}(std::this_thread::get_id()))); // Log thread ID
+
+    // Create a GLib main loop context for this thread
+    m_main_loop = g_main_loop_new(nullptr /* context */, FALSE /* is_running */);
+    if (!m_main_loop) {
+        error_log("CRITICAL: %s: Failed to create GMainLoop in monitor thread!", __func__);
+        // Cannot proceed without a loop. Mark as uninitialized?
+        m_initialized.store(false); // Maybe signal failure state?
+        return; // Exit thread
+    }
+
+    debug_log("INFO: %s: Running GMainLoop...", __func__);
+    // Run the loop. This will block until g_main_loop_quit() is called from Stop()
+    // or if the loop encounters a critical error (less likely).
+    g_main_loop_run(m_main_loop);
+
+    debug_log("INFO: %s: GMainLoop finished.", __func__);
+
+    // Clean up the loop object after it finishes running
+    g_main_loop_unref(m_main_loop);
+    m_main_loop = nullptr; // Clear the pointer
+
+    debug_log("INFO: %s: D-Bus monitor thread exiting.", __func__);
+}
+
+bool DBusInhibitMonitor::IsAvailable() const {
+    return m_initialized.load();
+}
+
+bool DBusInhibitMonitor::IsInhibited() const {
+    // Return the last known state.
+    // If not initialized, this will return the default (false).
+    return m_is_inhibited.load(std::memory_order_relaxed);
+}
+
+bool DBusInhibitMonitor::GetInitialActiveState() {
+    if (!m_connection) return false; // Need connection first
+
+    GError* error = nullptr;
+    GVariant* result = nullptr;
+    debug_log("INFO: %s: Calling D-Bus method %s.%s...", __func__, SS_INTERFACE, SS_GET_ACTIVE_METHOD);
+
+    result = g_dbus_connection_call_sync(m_connection,
+                                         SS_SERVICE,
+                                         SS_PATH,
+                                         SS_INTERFACE,
+                                         SS_GET_ACTIVE_METHOD,
+                                         nullptr, // No parameters
+                                         G_VARIANT_TYPE("(b)"), // Expect boolean reply in a tuple
+                                         G_DBUS_CALL_FLAGS_NONE,
+                                         1000, // Timeout in ms (e.g., 1 second)
+                                         nullptr, // Cancellable
+                                         &error);
+
+    if (error) {
+        error_log("%s: Failed to call D-Bus %s: %s", __func__, SS_GET_ACTIVE_METHOD, error->message);
+        g_error_free(error);
+        return false; // Failed to get state
+    }
+
+    if (result) {
+        gboolean is_active = FALSE;
+        g_variant_get(result, "(b)", &is_active);
+        m_is_inhibited.store(!is_active, std::memory_order_relaxed); // Inhibited = NOT active
+        debug_log("INFO: %s: Initial D-Bus screensaver active state: %s -> Inhibited: %s",
+                  __func__,
+                  is_active ? "true" : "false", m_is_inhibited.load() ? "true" : "false");
+        g_variant_unref(result);
+        return true; // Successfully got state
+    } else {
+        error_log("%s: D-Bus call to %s returned null result without error.", __func__, SS_GET_ACTIVE_METHOD);
+        return false;
+    }
+}
+
+
+// --- Static D-Bus Signal Callback Implementation ---
+void DBusInhibitMonitor::HandleActiveChangedSignal(GDBusConnection * /*connection*/,
+                                                   const gchar *sender_name,
+                                                   const gchar * /*object_path*/,
+                                                   const gchar * /*interface_name*/,
+                                                   const gchar *signal_name,
+                                                   GVariant *parameters,
+                                                   gpointer user_data)
+{
+    DBusInhibitMonitor *monitor = static_cast<DBusInhibitMonitor*>(user_data);
+    if (!monitor || monitor->m_interrupt_monitor.load()) {
+        // Ignore signals if monitor is stopping or pointer is invalid
+        return;
+    }
+
+    gboolean is_active = FALSE;
+    const gchar* sender_display = sender_name ? sender_name : "[Unknown Sender]";
+
+    // Parameter for ActiveChanged is a single boolean 'b' inside a tuple '(b)'
+    if (parameters == nullptr || !g_variant_is_of_type(parameters, G_VARIANT_TYPE("(b)"))) {
+        error_log("%s: Received invalid parameters for %s signal from %s.", __func__, signal_name, sender_display);
+        return;
+    }
+    g_variant_get(parameters, "(b)", &is_active);
+
+    // Inhibition state is the opposite of the screensaver active state
+    bool is_now_inhibited = !is_active;
+
+    // Update atomic state using exchange to detect changes
+    bool was_inhibited = monitor->m_is_inhibited.exchange(is_now_inhibited, std::memory_order_relaxed);
+
+    if (is_now_inhibited != was_inhibited) {
+        debug_log("INFO: %s: Inhibition state CHANGED via D-Bus signal (%s from %s) -> Inhibited: %s",
+                  __func__,
+                  signal_name,
+                  sender_display,
+                  is_now_inhibited ? "true" : "false");
+    } else {
+        // Log that signal was received, even if state is the same (useful for debugging)
+        debug_log("INFO: %s: D-Bus signal received (%s from %s), state unchanged (Inhibited: %s)",
+                  __func__,
+                  signal_name,
+                  sender_display,
+                  is_now_inhibited ? "true" : "false");
+    }
+}
+
+
 int64_t GetIdleTimeSeconds() {
     if (IsTtySession()) {
         debug_log("INFO: %s: TTY session detected, idle check not applicable.",
@@ -921,6 +1220,7 @@ int64_t GetIdleTimeSeconds() {
         // --- End X11 implementation ---
     }
 }
+
 
 /**
  * @brief Executes a shell command string in the background (detached thread).
@@ -1117,119 +1417,161 @@ int main(int argc, char* argv[]) {
         }
     }
 
-    // --- Main Loop ---
-    bool was_previously_idle = false; // Track state changes
+    // Attempt to start D-Bus Inhibit Monitor regardless of session type (X11 or Wayland)
+    // as inhibitions might be relevant in both.
+    bool dbus_monitor_started = false;
+    debug_log("INFO: %s: Attempting to start D-Bus inhibit monitor...", __func__);
+    if (g_dbus_inhibit_monitor.Start()) {
+        debug_log("INFO: %s: D-Bus inhibit monitor started successfully.", __func__);
+        dbus_monitor_started = true;
+    } else {
+        error_log("%s: Failed to start D-Bus inhibit monitor. Inhibition detection unavailable.", __func__);
+    }
 
+    // --- Main Loop ---
+    bool was_previously_idle = false; // Track previous state (based on final idle seconds)
+
+    // Main loop continues until shutdown is requested via signal
     while (!g_shutdown_requested.load()) {
-        int64_t idle_seconds = 0; // Default to active
-        int64_t direct_idle_seconds = IdleDetect::GetIdleTimeSeconds();
+
+        // 1. Get Input Idle Time (includes fallback logic)
+        // ==================================================
+        int64_t input_idle_seconds = 0; // Default to active state (0 seconds idle)
+        int64_t direct_idle_seconds = IdleDetect::GetIdleTimeSeconds(); // Primary check
 
         if (direct_idle_seconds >= 0) {
-            // Successfully got idle time directly
-            idle_seconds = direct_idle_seconds;
-            debug_log("INFO: %s: Using direct idle time: %lld seconds.",
-                      __func__,
-                      (int64_t)idle_seconds);
+            // Successfully got idle time directly from Wayland/X11/D-Bus-Gnome
+            input_idle_seconds = direct_idle_seconds;
+            debug_log("INFO: %s: Using direct input idle time: %lld seconds.", __func__, (int64_t)input_idle_seconds);
         } else {
-            // Failed to get idle time directly, try fallback
-            debug_log("INFO: %s: Direct idle detection failed/unavailable.",
-                      __func__);
-            if (use_event_detect) {
-                debug_log("INFO: %s: Attempting fallback using event_detect file: %s",
-                          __func__,
-                          dat_file_path.string());
-                int64_t file_timestamp = IdleDetect::ReadLastActiveTimeFile(dat_file_path);
+            // Failed to get idle time directly (-1), try fallback by reading event_detect's file
+            debug_log("INFO: %s: Direct idle detection failed/unavailable.", __func__);
+            if (use_event_detect) { // Check if fallback is enabled in config
+                debug_log("INFO: %s: Attempting fallback using event_detect file: %s", __func__, dat_file_path.string());
+                int64_t file_timestamp = IdleDetect::ReadLastActiveTimeFile(dat_file_path); // Helper function defined earlier
                 if (file_timestamp > 0) {
+                    // Calculate idle time based on file timestamp
                     int64_t current_time = GetUnixEpochTime();
                     int64_t calculated_idle = current_time - file_timestamp;
-                    idle_seconds = (calculated_idle > 0) ? calculated_idle : 0; // Ensure non-negative
+                    input_idle_seconds = (calculated_idle > 0) ? calculated_idle : 0; // Ensure non-negative
                     debug_log("INFO: %s: Using fallback idle time: %lld seconds (current: %lld, file: %lld)",
                               __func__,
-                              (int64_t)idle_seconds,
+                              (int64_t)input_idle_seconds,
                               (int64_t)current_time,
                               (int64_t)file_timestamp);
                 } else {
-                    error_log("%s: Fallback failed: Could not read/parse valid timestamp from event_detect file. Assuming active.",
+                    // File read/parse failed
+                    error_log("%s: Fallback failed: Could not read/parse valid timestamp from event_detect file. Assuming 0s idle.",
                               __func__);
-                    idle_seconds = 0; // Assume active if fallback fails
+                    input_idle_seconds = 0; // Assume active if fallback fails
                 }
             } else {
-                debug_log("INFO: %s: Fallback disabled by config (use_event_detect=false). Assuming active.",
-                          __func__);
-                idle_seconds = 0; // Assume active if direct fails and fallback disabled
+                // Fallback disabled in config
+                debug_log("INFO: %s: Fallback disabled by config (use_event_detect=false). Assuming 0s idle.", __func__);
+                input_idle_seconds = 0; // Assume active if direct fails and fallback disabled
             }
+        } // End Fallback Logic
+
+
+        // 2. Get Inhibition State from D-Bus Monitor
+        // ==========================================
+        // dbus_monitor_started flag was set earlier when attempting g_dbus_inhibit_monitor.Start()
+        bool is_inhibited = dbus_monitor_started && g_dbus_inhibit_monitor.IsInhibited();
+
+
+        // 3. Determine Final Idle Seconds (Force to 0 if inhibited)
+        // =======================================================
+        int64_t idle_seconds = 0; // This final value drives decisions
+        if (is_inhibited) {
+            // Log only if inhibition is actually overriding a non-zero input idle time
+            if (input_idle_seconds > 0) {
+                debug_log("INFO: %s: Inhibition detected, overriding input idle time (%llds) to 0s.",
+                          __func__, (int64_t)input_idle_seconds);
+            }
+            idle_seconds = 0; // Treat system as active (0s idle) if inhibited
+        } else {
+            idle_seconds = input_idle_seconds; // Use the actual input idle time (potentially from fallback)
         }
 
-        // --- State Calculation & Actions (using effective idle_seconds) ---
+
+        // 4. Calculate Current State based on final idle seconds
+        // ======================================================
+        // idle_threshold_seconds was loaded from config earlier
         bool is_currently_idle = (idle_seconds >= idle_threshold_seconds);
 
-        debug_log("INFO: %s: Effective idle time: %lld seconds. State: %s",
+        // Comprehensive debug log showing inputs and final decision
+        debug_log("INFO: %s: InputIdle: %llds, Inhibited: %s -> FinalIdle: %llds, State: %s",
                   __func__,
-                  (long long)idle_seconds,
+                  (int64_t)input_idle_seconds,
+                  is_inhibited ? "Yes" : "No",
+                  (int64_t)idle_seconds,
                   is_currently_idle ? "Idle" : "Active");
 
-        // --- Handle State Change for Commands ---
+
+        // --- Handle State Change & Actions (based on the unified final state) ---
+        // ======================================================================
         if (is_currently_idle != was_previously_idle) {
             if (is_currently_idle) {
-                // Became Idle
-                log("INFO: %s: User became idle (%llds >= %ds).",
-                    __func__,
-                    (int64_t)idle_seconds, idle_threshold_seconds);
-
-                if (execute_dc_control_scripts) {
-                    IdleDetect::ExecuteCommandBackground(idle_command);
+                // Became Idle (Input idle threshold met AND Not inhibited)
+                log("INFO: %s: System became idle (Input idle >= %ds AND Not inhibited).",
+                    __func__, idle_threshold_seconds);
+                if (execute_dc_control_scripts) { // execute_dc_control_scripts from config
+                    IdleDetect::ExecuteCommandBackground(idle_command); // idle_command from config
                 }
             } else {
-                // Became Active
-                log("INFO: %s: User became active (%llds < %ds).",
-                    __func__,
-                    (int64_t)idle_seconds,
-                    idle_threshold_seconds);
-
+                // Became Active (Input became active OR Inhibition started)
+                log("INFO: %s: System became active (Input active OR Inhibited).", __func__);
                 if (execute_dc_control_scripts) {
-                    IdleDetect::ExecuteCommandBackground(active_command);
+                    IdleDetect::ExecuteCommandBackground(active_command); // active_command from config
                 }
             }
-
-            was_previously_idle = is_currently_idle; // Update previous state
+            was_previously_idle = is_currently_idle; // Update tracked state
         }
+
 
         // --- Send Pipe Notification on Every Active Cycle (if enabled) ---
-        if (!is_currently_idle && should_update_event_detect) {
-            debug_log("INFO: %s: Sending active notification to pipe.", __func__);
-            IdleDetect::SendPipeNotification(pipe_path, GetUnixEpochTime() - idle_seconds);
+        // ===============================================================
+        // Sends if the final state (considering input AND inhibition) is active
+        if (!is_currently_idle && should_update_event_detect) { // should_update_event_detect from config
+            debug_log("INFO: %s: System effectively active, sending notification to pipe.", __func__);
+            IdleDetect::SendPipeNotification(pipe_path, GetUnixEpochTime() - idle_seconds); // pipe_path defined earlier
         }
 
-        // Sleep for the check interval, but check for shutdown periodically
-        // This loop sleeps for check_interval_seconds total, checking every 100ms
+
+        // --- Sleep for the check interval, interruptible ---
+        // =================================================
+        // check_interval_seconds loaded from config earlier (or default)
         auto wake_up_time = std::chrono::steady_clock::now() + std::chrono::seconds(check_interval_seconds);
         while (std::chrono::steady_clock::now() < wake_up_time) {
             if (g_shutdown_requested.load()) {
-                debug_log("INFO: %s: Shutdown requested during sleep interval.",
-                          __func__);
+                debug_log("INFO: %s: Shutdown requested during sleep interval.", __func__);
                 break; // Exit inner sleep loop
             }
+            // Check more frequently than the full interval for responsiveness
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
-
         if (g_shutdown_requested.load()) {
+            debug_log("INFO: %s: Shutdown requested after sleep interval check.", __func__);
             break; // Exit main loop
         }
-    } // End main loop
+    } // End main while loop
 
-    log("INFO: %s: Shutdown requested. Cleaning up...",
-        __func__);
+    // --- Shutdown Sequence ---
+    // =======================
+    log("INFO: %s: Shutdown requested. Cleaning up...", __func__);
 
-    // --- Shutdown sequence ---
-    if (wayland_monitor_started) {
-        log("INFO: %s: Stopping Wayland idle monitor...",
-            __func__);
-        g_wayland_idle_monitor.Stop();
-        log("INFO: %s: Wayland idle monitor stopped.",
-            __func__);
+    if (dbus_monitor_started) {
+        log("INFO: %s: Stopping D-Bus inhibit monitor...", __func__);
+        g_dbus_inhibit_monitor.Stop();
+        log("INFO: %s: D-Bus inhibit monitor stopped.", __func__);
     }
-    // Add cleanup for other resources if necessary
+    if (wayland_monitor_started) {
+        log("INFO: %s: Stopping Wayland idle monitor...", __func__);
+        g_wayland_idle_monitor.Stop();
+        log("INFO: %s: Wayland idle monitor stopped.", __func__);
+    }
+    // Add cleanup for other resources if necessary (e.g., remove lock file if managing one)
 
-    log("Idle Detect shutdown.");
+    log("INFO: Idle Detect shutdown complete.");
     return 0;
- }
+} // End main function }

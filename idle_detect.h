@@ -12,6 +12,9 @@
 #include <thread>
 #include <util.h>
 
+#include <gio/gio.h> // D-Bus Libs
+
+
 
 // Forward declare Wayland types to minimize header dependencies
 struct wl_display;
@@ -19,6 +22,10 @@ struct wl_registry;
 struct wl_seat;
 struct ext_idle_notifier_v1;
 struct ext_idle_notification_v1;
+
+// Forward declare GLib/GIO types
+typedef struct _GMainLoop GMainLoop;
+typedef struct _GDBusConnection GDBusConnection;
 
 namespace IdleDetect {
 
@@ -117,6 +124,79 @@ private:
     // Pointers to the static listener structs (defined in .cpp)
     static const void* c_registry_listener_ptr;
     static const void* c_idle_notification_listener_ptr;
+};
+
+// --- D-Bus Inhibit Monitor Class ---
+class DBusInhibitMonitor {
+public:
+    DBusInhibitMonitor();
+    ~DBusInhibitMonitor();
+
+    // Delete copy/move semantics
+    DBusInhibitMonitor(const DBusInhibitMonitor&) = delete;
+    DBusInhibitMonitor& operator=(const DBusInhibitMonitor&) = delete;
+    DBusInhibitMonitor(DBusInhibitMonitor&&) = delete;
+    DBusInhibitMonitor& operator=(DBusInhibitMonitor&&) = delete;
+
+    /**
+     * @brief Connects to D-Bus and starts the monitoring thread.
+     * Attempts to get initial state and subscribes to ActiveChanged signal.
+     * @return True on successful initialization and thread start, false otherwise.
+     */
+    bool Start();
+
+    /**
+     * @brief Stops the monitoring thread, unsubscribes, and cleans up D-Bus resources.
+     */
+    void Stop();
+
+    /**
+     * @brief Checks if the monitor initialized successfully and the thread is running.
+     * @return True if available/running.
+     */
+    bool IsAvailable() const;
+
+    /**
+     * @brief Checks the last known state of idle inhibition.
+     * @return True if an inhibition is believed to be active, false otherwise.
+     */
+    bool IsInhibited() const;
+
+private:
+    // --- Configuration Constants ---
+    // D-Bus service details for standard screensaver interface
+    const char* SS_SERVICE = "org.freedesktop.ScreenSaver";
+    const char* SS_PATH = "/org/freedesktop/ScreenSaver";
+    const char* SS_INTERFACE = "org.freedesktop.ScreenSaver";
+    const char* SS_ACTIVE_CHANGED_SIGNAL = "ActiveChanged";
+    const char* SS_GET_ACTIVE_METHOD = "GetActive";
+
+    // --- Threading & State ---
+    std::thread m_monitor_thread;
+    std::atomic<bool> m_interrupt_monitor;  // Flag to signal thread shutdown
+    std::atomic<bool> m_initialized;        // Was Start() successful?
+    std::atomic<bool> m_is_inhibited;       // Current known inhibition state
+
+    // --- GLib/D-Bus Objects ---
+    GMainLoop* m_main_loop;                 // Event loop for the thread
+    GDBusConnection* m_connection;          // Session bus connection
+    guint m_signal_subscription_id;         // ID for D-Bus signal subscription
+
+    // --- Internal Methods ---
+    bool InitializeDBus();                  // Connects, subscribes, gets initial state
+    void CleanupDBus();                     // Unsubscribes, disconnects
+    void DBusMonitorThread();               // Function run by the thread
+
+    // --- Static D-Bus Signal Callback ---
+    static void HandleActiveChangedSignal(GDBusConnection *connection,
+                                          const gchar *sender_name,
+                                          const gchar *object_path,
+                                          const gchar *interface_name,
+                                          const gchar *signal_name,
+                                          GVariant *parameters,
+                                          gpointer user_data);
+    // --- Helper to get initial state ---
+    bool GetInitialActiveState();
 };
 
 } // namespace IdleDetect
