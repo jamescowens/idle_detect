@@ -1,12 +1,6 @@
 [Unit]
 Description=BOINC Idle Detection Service
-# Try to start after the generic graphical target, but don't fail if it doesn't exist/work
 After=graphical-session.target
-# Declare Wants= relationship for relevant targets. The service will be started
-# if any of these are started (due to WantedBy= below).
-# PartOf= ensures service stops if graphical-session.target stops.
-Wants=graphical-session.target plasma-workspace.target gnome-session.target
-PartOf=graphical-session.target
 
 [Service]
 Type=simple
@@ -14,11 +8,8 @@ ProtectHome=read-only
 ExecStart=/usr/local/bin/idle_detect %h/.config/idle_detect.conf
 Restart=on-failure
 RestartSec=5s
-#PrivateTmp=yes Can'd do this with xprintidle.
 ProtectSystem=strict
 NoNewPrivileges=yes
 
 [Install]
-# Enable this service for common graphical targets and the default user target as a fallback.
-# It will start when the first of these targets it's linked to becomes active.
-WantedBy=graphical-session.target plasma-workspace.target gnome-session.target default.target
+WantedBy=graphical-session.target
