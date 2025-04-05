@@ -48,6 +48,10 @@ IdleDetect::WaylandIdleMonitor g_wayland_idle_monitor;
 //! Global flag for signal handling
 std::atomic<bool> g_shutdown_requested = false;
 
+const int MAX_X_CONNECT_RETRIES = 6;  // e.g., 6 attempts
+const int X_RETRY_DELAY_MS = 500;   // e.g., 500ms between attempts (~3 sec total)
+
+
 void IdleDetectConfig::ProcessArgs()
 {
     // debug
@@ -875,13 +879,33 @@ int64_t GetIdleTimeSeconds() {
         debug_log("INFO: %s: X11 session detected. Using XScreenSaver.",
                   __func__);
 
-        // --- X11 implementation as before ---
-        Display* display = XOpenDisplay(nullptr);
+        Display* display = nullptr; // Initialize to null
 
-        if (!display) {
-            error_log("%s: Could not open X display.", __func__);
-            return 0;
+        // --- Add Retry Loop for XOpenDisplay ---
+        for (int attempt = 1; attempt <= MAX_X_CONNECT_RETRIES; ++attempt) {
+            display = XOpenDisplay(nullptr); // Attempt to open display
+            if (display) {
+                debug_log("INFO: %s: Successfully opened X display on attempt %d.", __func__, attempt);
+                break; // Success, exit loop
+            }
+
+            // Failed to open display
+            if (attempt < MAX_X_CONNECT_RETRIES) {
+                error_log("WARNING: %s: Could not open X display (attempt %d/%d). Retrying in %d ms...",
+                          __func__, attempt, MAX_X_CONNECT_RETRIES, X_RETRY_DELAY_MS);
+                std::this_thread::sleep_for(std::chrono::milliseconds(X_RETRY_DELAY_MS));
+                // Check for shutdown request during sleep? Optional but good if main loop isn't running yet.
+                // if (g_shutdown_requested.load()) return -1; // Or appropriate error/exit
+            } else {
+                // Final attempt failed
+                error_log("ERROR: %s: Could not open X display after %d attempts.", __func__, MAX_X_CONNECT_RETRIES);
+                return -1; // Indicate failure (will trigger fallback if configured)
+            }
         }
+        // --- End Retry Loop ---
+
+        // If display is null here, it means all retries failed (handled above)
+        // We should have already returned -1 in that case.
 
         int event_base;
         int error_base;
