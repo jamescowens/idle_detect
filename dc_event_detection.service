@@ -14,7 +14,7 @@ RestartSec=5s
 # Optional: Consider StartLimitIntervalSec=, StartLimitBurst= for rate limiting.
 
 RuntimeDirectory=event_detect
-RuntimeDirectoryMode=0755 # Good: Allows other users/groups to access the directory.
+RuntimeDirectoryMode=0755
 
 # Recommendation: Add User= and Group= for security. HIGHLY RECOMMENDED.
 # Create a dedicated system user/group (e.g., 'event-detect') first:
@@ -34,4 +34,4 @@ RuntimeDirectoryMode=0755 # Good: Allows other users/groups to access the direct
 # PrivateDevices=yes # NO! This service needs device access.
 
 [Install]
-WantedBy=multi-user.target # Correct for a system service started on boot.
+WantedBy=multi-user.target

@@ -1,6 +1,6 @@
 # idle_detect
 
-This is an effort to provide a compact C++/script library to detect user activity on a workstation for the purpose of running commands when the idle/active state changes. It is motivated primarily to solve the idle detection issues with BOINC and other Linux based DC programs. I am implementing the following architecture, as a separate service any particular DC architecture. Note that I did a proof of concept in bash shell script, and am currently near completion on the C++ implementation. Event_detect is essentially finished and the idle_detect C++ version is operational and being tested.
+This is an effort to provide a compact C++ library to detect user activity on a workstation for the purpose of running commands when the idle/active state changes. It is motivated primarily to solve the idle detection issues with BOINC and other Linux based DC programs. I am implementing the following architecture, as a separate service any particular DC architecture. Note that I did a proof of concept in bash shell script, and am currently near completion on the C++ implementation. Event_detect is essentially finished and the idle_detect C++ version is operational and being tested.
 
 Note the C++ is implemented in modern C++-17 compliant code, in an object oriented manner. It also is multithreaded with appropriate locking/critical section control.
 
@@ -37,6 +37,14 @@ This code is licensed under the MIT license.
  - gobject-2.0
  - gio-2.0
  - wayland-client
+ - wayland-protocols
+
+ For Ubuntu the dev packages needed are the following:
+ - libevdev-dev
+ - libxss-dev
+ - libdbus-1-dev
+ - libglib2.0-dev
+ - libwayland-dev
  - wayland-protocols
 
 ### Installation procedure

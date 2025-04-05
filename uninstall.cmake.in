@@ -10,6 +10,7 @@ add_custom_target(uninstall_system
     COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_BIN_DIR}/idle_detect"
     COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_BIN_DIR}/dc_pause"
     COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_BIN_DIR}/dc_unpause"
+    COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_BIN_DIR}/idle_detect_wrapper.sh"
     COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_CONFIG_DIR}/event_detect.conf"
     COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_SYSTEM_SERVICE_DIR}/dc_event_detection.service"
     COMMENT "Uninstalling system-level service"

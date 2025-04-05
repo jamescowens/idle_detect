@@ -39,6 +39,8 @@
 #include "ext-idle-notify-v1-protocol.h"
 
 // --- Globals ---
+const std::string g_version = "Pre-release 0.4: 20250405";
+
 //! Populated by main after reading config
 std::atomic<bool> g_debug = false;
 //! Global config singleton

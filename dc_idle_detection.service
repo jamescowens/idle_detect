@@ -5,7 +5,7 @@ After=graphical-session.target
 [Service]
 Type=simple
 ProtectHome=read-only
-ExecStart=/usr/local/bin/idle_detect %h/.config/idle_detect.conf
+ExecStart=/usr/local/bin/idle_detect_wrapper.sh %h/.config/idle_detect.conf
 Restart=on-failure
 RestartSec=5s
 ProtectSystem=strict

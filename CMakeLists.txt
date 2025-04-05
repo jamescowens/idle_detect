@@ -157,7 +157,7 @@ set(INSTALL_USER_SERVICE_DIR "$ENV{HOME}/.config/systemd/user" CACHE PATH "Insta
 
 # Install the executable and scripts
 install(TARGETS event_detect idle_detect DESTINATION ${INSTALL_BIN_DIR})
-install(FILES "dc_pause" "dc_unpause"
+install(FILES "dc_pause" "dc_unpause" "idle_detect_wrapper.sh"
         PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ GROUP_EXECUTE GROUP_READ WORLD_EXECUTE WORLD_READ
         DESTINATION ${INSTALL_BIN_DIR} )
 
@@ -176,6 +176,7 @@ include(${CMAKE_CURRENT_BINARY_DIR}/uninstall.cmake) # Add this line
 add_custom_target(install_executables_only
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/event_detect" "${INSTALL_BIN_DIR}/event_detect"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/idle_detect" "${INSTALL_BIN_DIR}/idle_detect"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/idle_detect_wrapper.sh" "${INSTALL_BIN_DIR}/idle_detect_wrapper.sh"
 
     COMMENT "installing executables only"
 )
