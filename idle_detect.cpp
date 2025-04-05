@@ -1029,7 +1029,6 @@ int main(int argc, char* argv[]) {
     std::string last_active_time_cpp_filename;
 
     try {
-        // Assuming GetArg is PascalCase
         idle_threshold_seconds = std::get<int>(g_config.GetArg("inactivity_time_trigger"));
         should_update_event_detect = std::get<bool>(g_config.GetArg("update_event_detect"));
         event_data_path = std::get<fs::path>(g_config.GetArg("event_count_files_path"));
@@ -1119,6 +1118,9 @@ int main(int argc, char* argv[]) {
 
     // --- Main Loop ---
     bool was_previously_idle = false; // Track state changes
+    int64_t effective_last_active_time_prev = 0;
+    int64_t effective_last_active_time = 0;
+    bool using_event_detect_as_fallback = false;
 
     while (!g_shutdown_requested.load()) {
         int64_t idle_seconds = 0; // Default to active
@@ -1127,6 +1129,9 @@ int main(int argc, char* argv[]) {
         if (direct_idle_seconds >= 0) {
             // Successfully got idle time directly
             idle_seconds = direct_idle_seconds;
+
+            using_event_detect_as_fallback = false;
+
             debug_log("INFO: %s: Using direct idle time: %lld seconds.",
                       __func__,
                       (int64_t)idle_seconds);
@@ -1143,6 +1148,9 @@ int main(int argc, char* argv[]) {
                     int64_t current_time = GetUnixEpochTime();
                     int64_t calculated_idle = current_time - file_timestamp;
                     idle_seconds = (calculated_idle > 0) ? calculated_idle : 0; // Ensure non-negative
+
+                    using_event_detect_as_fallback = true;
+
                     debug_log("INFO: %s: Using fallback idle time: %lld seconds (current: %lld, file: %lld)",
                               __func__,
                               (int64_t)idle_seconds,
@@ -1151,11 +1159,17 @@ int main(int argc, char* argv[]) {
                 } else {
                     error_log("%s: Fallback failed: Could not read/parse valid timestamp from event_detect file. Assuming active.",
                               __func__);
+
+                    using_event_detect_as_fallback = false;
+
                     idle_seconds = 0; // Assume active if fallback fails
                 }
             } else {
                 debug_log("INFO: %s: Fallback disabled by config (use_event_detect=false). Assuming active.",
                           __func__);
+
+                using_event_detect_as_fallback = false;
+
                 idle_seconds = 0; // Assume active if direct fails and fallback disabled
             }
         }
@@ -1165,7 +1179,7 @@ int main(int argc, char* argv[]) {
 
         debug_log("INFO: %s: Effective idle time: %lld seconds. State: %s",
                   __func__,
-                  (long long)idle_seconds,
+                  (int64_t)idle_seconds,
                   is_currently_idle ? "Idle" : "Active");
 
         // --- Handle State Change for Commands ---
@@ -1194,10 +1208,19 @@ int main(int argc, char* argv[]) {
             was_previously_idle = is_currently_idle; // Update previous state
         }
 
-        // --- Send Pipe Notification on Every Active Cycle (if enabled) ---
-        if (!is_currently_idle && should_update_event_detect) {
+        // --- Send Pipe Notification if not currently idle and should update event detect and
+        // effective last active time has changed. Note if using_event_detect_as_fallback is true, then
+        // the pipe message should not be sent as that would be circular and a waste of bandwidth on the
+        // pipe. ---
+        effective_last_active_time = GetUnixEpochTime() - idle_seconds;
+
+        if (!is_currently_idle && should_update_event_detect && using_event_detect_as_fallback == false
+            && (effective_last_active_time != effective_last_active_time_prev)) {
             debug_log("INFO: %s: Sending active notification to pipe.", __func__);
-            IdleDetect::SendPipeNotification(pipe_path, GetUnixEpochTime() - idle_seconds);
+
+            IdleDetect::SendPipeNotification(pipe_path, effective_last_active_time);
+
+            effective_last_active_time_prev = effective_last_active_time;
         }
 
         // Sleep for the check interval, but check for shutdown periodically
