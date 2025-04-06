@@ -18,9 +18,9 @@
 #include <libevdev/libevdev.h>
 #include <libevdev/libevdev-uinput.h>
 
-#include <event_detect.h>
+#include <release.h>
 
-const std::string g_version = "Pre-release 0.4: 20250405";
+#include <event_detect.h>
 
 const fs::path g_lockfile = "event_detect.pid";
 

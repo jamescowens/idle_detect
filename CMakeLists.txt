@@ -9,6 +9,7 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic -O2 -fPIE -fsta
 
 # Source files
 set(SOURCES_EVENT_DETECT
+    "release.h"
     "util.h"
     "tinyformat.h"
     "event_detect.h"
@@ -18,6 +19,7 @@ set(SOURCES_EVENT_DETECT
 
 # Source files for idle_detect
 set(SOURCES_IDLE_DETECT
+    "release.h"
     "util.h"
     "tinyformat.h"
     "idle_detect.h"
@@ -45,7 +47,8 @@ pkg_check_modules(GLIB REQUIRED glib-2.0 gobject-2.0 gio-2.0)
 # --- as we are using D-Bus or X11 calls only for idle_detect ---
 
 # --- Executable Targets ---
-add_executable(event_detect ${SOURCES_EVENT_DETECT})
+add_executable(event_detect ${SOURCES_EVENT_DETECT}
+    release.h)
 add_executable(idle_detect ${SOURCES_IDLE_DETECT})
 
 # --- Target Properties: event_detect ---

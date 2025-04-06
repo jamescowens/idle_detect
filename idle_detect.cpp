@@ -4,8 +4,9 @@
  * This code is licensed under the MIT license. See LICENSE.md in the repository.
  */
 
-#include "idle_detect.h"
-#include "util.h" // Includes tinyformat.h, filesystem, etc.
+#include <idle_detect.h>
+#include <util.h> // Includes tinyformat.h, filesystem, etc.
+#include <release.h>
 
 // Standard Libs
 #include <cstdlib>     // For getenv(), system()
@@ -30,9 +31,6 @@
 
 // D-Bus Libs (if needed for fallback)
 #include <gio/gio.h>
-
-// --- Globals ---
-const std::string g_version = "Pre-release 0.4: 20250405";
 
 //! Populated by main after reading config
 std::atomic<bool> g_debug = false;
