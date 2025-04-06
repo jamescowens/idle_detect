@@ -1094,8 +1094,13 @@ int main(int argc, char* argv[]) {
     // Optional: Ignore SIGPIPE if writing to pipe fails often
     // signal(SIGPIPE, SIG_IGN);
 
+    pid_t current_pid = getpid();
 
-    log("Idle Detect starting.");
+    log("INFO: %s: idle_detect C++ program, %s, started, pid %i",
+        __func__,
+        g_version,
+        current_pid);
+
     debug_log("INFO: %s: Idle threshold: %d seconds, Check interval: %d seconds",
               __func__,
               idle_threshold_seconds,
