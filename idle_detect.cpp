@@ -309,7 +309,7 @@ static int64_t GetIdleTimeWaylandGnomeViaDBus() {
             error_log("%s: Error connecting to session bus for Gnome idle query (unknown error).",
                       __func__);
         }
-        return 0; // Return 0 on connection error
+        return -1; // Return -1 on connection error
     }
 
     // D-Bus details for getting idle time from Mutter
@@ -330,7 +330,7 @@ static int64_t GetIdleTimeWaylandGnomeViaDBus() {
                   interface_name,
                   dbus_error->message);
         g_error_free(dbus_error);
-        // Keep idle_time_seconds = 0
+        return -1;
     } else if (dbus_result) {
         uint64_t idle_time_ms = 0;
         g_variant_get(dbus_result, "(t)", &idle_time_ms);
@@ -345,7 +345,7 @@ static int64_t GetIdleTimeWaylandGnomeViaDBus() {
                   __func__,
                   method_name,
                   interface_name);
-        // Keep idle_time_seconds = 0
+        return -1;
     }
 
     g_object_unref(connection);
@@ -865,17 +865,22 @@ int64_t GetIdleTimeSeconds() {
             return g_wayland_idle_monitor.GetIdleSeconds();
         }
         // --- Fallback Logic ---
-        // Only try D-Bus for Gnome if Wayland monitor failed/unavailable
-        else if (IsGnomeSession()) {
+        else {
             debug_log("INFO: %s: WaylandIdleMonitor unavailable, falling back to D-Bus for Gnome.",
                       __func__);
-            return GetIdleTimeWaylandGnomeViaDBus(); // Ensure this function exists
-        }
-        // Add other Wayland fallbacks here if needed (e.g., check for deprecated kde-idle?)
-        else {
-            debug_log("INFO: %s: WaylandIdleMonitor unavailable, no other Wayland method implemented/available.",
-                      __func__);
-            return 0; // No Wayland method worked
+            int64_t gnome_idle = GetIdleTimeWaylandGnomeViaDBus();
+
+            // Add other Wayland fallbacks here if needed (e.g., check for deprecated kde-idle?)
+
+            if (gnome_idle >= 0) {
+                // D-Bus call succeeded (even if idle time is 0)
+                debug_log("INFO: %s: Using Gnome D-Bus fallback result: %llds", __func__, (long long)gnome_idle);
+                return gnome_idle;
+            } else {
+                error_log("INFO: %s: Gnome D-Bus fallback failed or NA, no other Wayland method implemented/available.",
+                          __func__);
+                return -1; // No Wayland method worked. Force main to use event_detect if configured as fallback.
+            }
         }
     } else { // Assume X11
         debug_log("INFO: %s: X11 session detected. Using XScreenSaver.",
