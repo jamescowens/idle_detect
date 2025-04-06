@@ -1,6 +1,7 @@
+# Provide cleaned up CMakeLists.txt
 cmake_minimum_required(VERSION 3.15)
 
-project(idle_detect VERSION 0.3 LANGUAGES CXX C)
+project(idle_detect VERSION 0.3 LANGUAGES CXX) # Removed C language
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -8,21 +9,21 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic -O2 -fPIE -fsta
 
 # Source files
 set(SOURCES_EVENT_DETECT
-  "util.h"
-  "tinyformat.h"
-  "event_detect.h"
-  "util.cpp"
-  "event_detect.cpp"
+    "util.h"
+    "tinyformat.h"
+    "event_detect.h"
+    "util.cpp"
+    "event_detect.cpp"
 )
 
 # Source files for idle_detect
-# Note: The generated Wayland source file will be added later via target_sources()
 set(SOURCES_IDLE_DETECT
-  "util.h"
-  "tinyformat.h"
-  "idle_detect.h"
-  "util.cpp"
-  "idle_detect.cpp"
+    "util.h"
+    "tinyformat.h"
+    "idle_detect.h"
+    "util.cpp"
+    "idle_detect.cpp"
+    # No generated Wayland sources needed anymore
 )
 
 include_directories(".")
@@ -35,87 +36,19 @@ pkg_check_modules(LIBEVDEV REQUIRED libevdev)
 
 # Dependencies for idle_detect
 find_package(X11 REQUIRED)
-pkg_check_modules(XSS REQUIRED xscrnsaver)
+pkg_check_modules(XSS REQUIRED xscrnsaver) # Find XScreenSaver lib via pkg-config
 pkg_check_modules(DBUS REQUIRED dbus-1)
+# Find GLib, GObject, GIO together (needed for D-Bus calls)
 pkg_check_modules(GLIB REQUIRED glib-2.0 gobject-2.0 gio-2.0)
 
-# == Wayland Workaround using pkg-config ==
-# Use pkg-config to find wayland-client instead of find_package(Wayland)
-pkg_check_modules(WAYLAND_CLIENT REQUIRED wayland-client)
-
-# Find wayland-protocols (assuming this part worked or has its fallback)
-# Appears broken on openSUSE
-# find_package(WaylandProtocols 1.17 REQUIRED)
-
-# workaround
-# Use pkg-config directly to find the data directory for wayland-protocols
-find_package(PkgConfig REQUIRED) # Ensure pkg-config is found first
-execute_process(
-    COMMAND ${PKG_CONFIG_EXECUTABLE} --variable=pkgdatadir wayland-protocols
-    OUTPUT_VARIABLE WaylandProtocols_DATADIR
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    RESULT_VARIABLE _pkg_config_result
-    ERROR_QUIET # Don't print errors if pkg-config fails
-)
-
-if(NOT _pkg_config_result EQUAL 0 OR NOT WaylandProtocols_DATADIR)
-    message(FATAL_ERROR "Failed to get pkgdatadir for wayland-protocols using pkg-config. Is wayland-protocols-devel installed and configured correctly?")
-else()
-    message(STATUS "Found wayland-protocols data dir via pkg-config: ${WaylandProtocols_DATADIR}")
-endif()
-
-# Find the wayland-scanner executable (assuming it's in the PATH)
-# If this fails later during build, you might need find_program() or specify full path
-find_program(WAYLAND_SCANNER_EXECUTABLE wayland-scanner REQUIRED)
-# =========================================
-
-# --- Wayland Protocol Code Generation ---
-
-# Get the directory where wayland-protocols installs XML files
-if(NOT WaylandProtocols_DATADIR)
-    message(WARNING "WaylandProtocols_DATADIR not set by find_package. Attempting fallback via pkg-config.")
-    pkg_check_modules(WAYLAND_PROTOCOLS_PC REQUIRED wayland-protocols)
-    set(WaylandProtocols_DATADIR ${WAYLAND_PROTOCOLS_PC_pkgdatadir})
-endif()
-set(IDLE_NOTIFY_XML "${WaylandProtocols_DATADIR}/staging/ext-idle-notify/ext-idle-notify-v1.xml")
-
-if(NOT EXISTS ${IDLE_NOTIFY_XML})
-    message(FATAL_ERROR "Wayland protocol XML file not found: ${IDLE_NOTIFY_XML}. "
-                        "Ensure 'wayland-protocols-devel' package is installed and path is correct.")
-endif()
-
-set(IDLE_NOTIFY_CLIENT_HEADER "${CMAKE_CURRENT_BINARY_DIR}/ext-idle-notify-v1-protocol.h")
-set(IDLE_NOTIFY_CLIENT_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/ext-idle-notify-v1-client-protocol.c")
-
-# Use add_custom_command to generate header
-add_custom_command(
-    OUTPUT ${IDLE_NOTIFY_CLIENT_HEADER}
-    # Use variable found by find_program()
-    COMMAND ${WAYLAND_SCANNER_EXECUTABLE} client-header ${IDLE_NOTIFY_XML} ${IDLE_NOTIFY_CLIENT_HEADER}
-    DEPENDS ${IDLE_NOTIFY_XML} ${WAYLAND_SCANNER_EXECUTABLE}
-    COMMENT "Generating Wayland client header ${IDLE_NOTIFY_CLIENT_HEADER}"
-)
-
-# Use add_custom_command to generate source
-add_custom_command(
-    OUTPUT ${IDLE_NOTIFY_CLIENT_SOURCE}
-    COMMAND ${WAYLAND_SCANNER_EXECUTABLE} private-code ${IDLE_NOTIFY_XML} ${IDLE_NOTIFY_CLIENT_SOURCE}
-    DEPENDS ${IDLE_NOTIFY_XML} ${WAYLAND_SCANNER_EXECUTABLE}
-    COMMENT "Generating Wayland client source ${IDLE_NOTIFY_CLIENT_SOURCE}"
-)
-
-# Custom target for generation (unchanged)
-add_custom_target(WaylandIdleNotifyProtocolGenerator DEPENDS
-    ${IDLE_NOTIFY_CLIENT_HEADER}
-    ${IDLE_NOTIFY_CLIENT_SOURCE}
-)
+# --- Wayland protocol generation and wayland-client library are no longer needed ---
+# --- as we are using D-Bus or X11 calls only for idle_detect ---
 
 # --- Executable Targets ---
 add_executable(event_detect ${SOURCES_EVENT_DETECT})
 add_executable(idle_detect ${SOURCES_IDLE_DETECT})
 
 # --- Target Properties: event_detect ---
-# (Unchanged)
 if(LIBEVDEV_FOUND)
     target_include_directories(event_detect PRIVATE ${LIBEVDEV_INCLUDE_DIRS})
     target_link_libraries(event_detect PRIVATE ${LIBEVDEV_LIBRARIES})
@@ -123,29 +56,25 @@ endif()
 
 # --- Target Properties: idle_detect ---
 
-# Add dependency (unchanged)
-add_dependencies(idle_detect WaylandIdleNotifyProtocolGenerator)
+# No dependency needed for Wayland code generation anymore
 
-# Add generated source (unchanged)
-target_sources(idle_detect PRIVATE ${IDLE_NOTIFY_CLIENT_SOURCE})
+# No generated C sources to add anymore
 
-# Add include directories (use pkg-config variable for Wayland)
+# Add include directories (Removed CMAKE_CURRENT_BINARY_DIR and WAYLAND_CLIENT includes)
 target_include_directories(idle_detect PRIVATE
-    ${CMAKE_CURRENT_BINARY_DIR}
+    # "." is already added globally via include_directories()
     ${X11_INCLUDE_DIR}
     ${XSS_INCLUDE_DIRS}
     ${DBUS_INCLUDE_DIRS}
     ${GLIB_INCLUDE_DIRS}
-    ${WAYLAND_CLIENT_INCLUDE_DIRS} # <-- Use variable from pkg_check_modules
 )
 
-# Link libraries (use pkg-config variable for Wayland)
+# Link libraries (Removed WAYLAND_CLIENT library)
 target_link_libraries(idle_detect PRIVATE
     ${X11_LIBRARIES}
     ${XSS_LIBRARIES}
     ${DBUS_LIBRARIES}
-    ${GLIB_LIBRARIES}
-    ${WAYLAND_CLIENT_LIBRARIES} # <-- Use variable from pkg_check_modules
+    ${GLIB_LIBRARIES} # Includes glib, gobject, gio
 )
 
 # Installation paths (parameterized)
