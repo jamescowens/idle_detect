@@ -177,11 +177,6 @@ static bool IsWaylandSession() {
     return (waylandDisplay != nullptr && strlen(waylandDisplay) > 0);
 }
 
-static bool IsGnomeSession() {
-    const char* gnomeSession = getenv("GNOME_DESKTOP_SESSION_ID");
-    return (gnomeSession != nullptr && strlen(gnomeSession) > 0);
-}
-
 /**
  * @brief Reads the timestamp from event_detect's data file.
  * @param file_path Path to the last_active_time.dat file.
