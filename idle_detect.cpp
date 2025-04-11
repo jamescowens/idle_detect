@@ -19,12 +19,15 @@
 #include <system_error>// For std::error_code
 #include <csignal>     // For signal handling (sigaction etc)
 #include <variant>     // For std::get
+#include <cerrno>       // For errno
 
 // Platform Specific Libs
 #include <X11/Xlib.h>
 #include <X11/extensions/scrnsaver.h>
 #include <unistd.h>    // For pipe, read, write, close, getenv, sleep
 #include <sys/types.h> // Usually included by others
+#include <sys/mman.h>   // For mmap, munmap, shm_open
+#include <sys/stat.h>   // For mode constants with shm_open
 #include <sys/wait.h>  // Usually included by others
 #include <poll.h>      // For poll()
 #include <fcntl.h>     // For O_NONBLOCK, O_CLOEXEC
@@ -32,12 +35,10 @@
 // D-Bus Libs (if needed for fallback)
 #include <gio/gio.h>
 
-//! Populated by main after reading config
-std::atomic<bool> g_debug = false;
+
 //! Global config singleton
 IdleDetectConfig g_config;
-//! Global Wayland idle monitor singleton
-//IdleDetect::WaylandIdleMonitor g_wayland_idle_monitor;
+
 //! Global flag for signal handling
 std::atomic<bool> g_shutdown_requested = false;
 
@@ -137,6 +138,10 @@ void IdleDetectConfig::ProcessArgs()
 
     m_config.insert(std::make_pair("last_active_time_cpp_filename", last_active_time_cpp_filename));
 
+    // shmem_name
+
+    m_config.insert(std::make_pair("shmem_name", GetArgString("shmem_name", "/event_detect_last_active")));
+
     // inactivity_time_trigger
 
     int inactivity_time_trigger = 0;
@@ -200,6 +205,84 @@ static int64_t ReadLastActiveTimeFile(const fs::path& file_path) {
         error_log("%s: Failed to read line from data file: %s", __func__, file_path.string());
         return 0;
     }
+}
+
+/**
+ * @brief Reads the atomic timestamp from a POSIX shared memory segment.
+ * @param shm_name The name of the shared memory object (e.g., "/event_detect_last_active").
+ * @return int64_t Timestamp read from shared memory, or -1 if segment cannot be opened/mapped or value read.
+ */
+static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
+    if (shm_name.empty()) {
+        error_log("%s: Shared memory name is empty.", __func__);
+        return -1;
+    }
+    // POSIX shm names should start with a single / and contain no others typically
+    if (shm_name[0] != '/' || shm_name.find('/', 1) != std::string::npos) {
+        error_log("%s: Shared memory name '%s' may not be a valid format (should start with / and contain no others).",
+                  __func__, shm_name.c_str());
+    }
+
+    debug_log("INFO: %s: Attempting to read timestamp from shm: %s", __func__, shm_name.c_str());
+
+    int shm_fd = -1;
+    void* mapped_mem = MAP_FAILED;
+    std::atomic<int64_t>* shm_atomic_ptr = nullptr;
+    int64_t timestamp = -1; // Default to error state
+
+    errno = 0;
+    // Open existing shared memory object for reading only
+    shm_fd = shm_open(shm_name.c_str(), O_RDONLY, 0); // Mode is ignored for O_RDONLY existing object
+    if (shm_fd == -1) {
+        // ENOENT (No such file or directory) is expected if event_detect hasn't created it yet.
+        if (errno != ENOENT) {
+            error_log("%s: shm_open failed for name '%s': %s (%d)",
+                      __func__, shm_name.c_str(), strerror(errno), errno);
+        } else {
+            debug_log("INFO: %s: Shared memory '%s' not found (ENOENT).", __func__, shm_name.c_str());
+        }
+        return -1; // Return error if cannot open
+    }
+
+    errno = 0;
+    // Map the shared memory object (containing one atomic int64_t) into memory
+    mapped_mem = mmap(nullptr, sizeof(std::atomic<int64_t>), PROT_READ, MAP_SHARED, shm_fd, 0);
+
+    // Close the file descriptor immediately after mmap, it's no longer needed
+    close(shm_fd);
+    shm_fd = -1;
+
+    if (mapped_mem == MAP_FAILED) {
+        error_log("%s: mmap failed for shm '%s': %s (%d)",
+                  __func__, shm_name.c_str(), strerror(errno), errno);
+        return -1; // Return error if cannot map
+    }
+
+    // --- Access the data ---
+    shm_atomic_ptr = static_cast<std::atomic<int64_t>*>(mapped_mem);
+    // Atomically load the value using relaxed ordering (sufficient for this case)
+    timestamp = shm_atomic_ptr->load(std::memory_order_relaxed);
+    debug_log("INFO: %s: Successfully read timestamp %lld from shm '%s'",
+              __func__, (long long)timestamp, shm_name.c_str());
+
+    // --- Unmap the memory ---
+    errno = 0;
+    if (munmap(mapped_mem, sizeof(std::atomic<int64_t>)) == -1) {
+        // Log warning but proceed, as we already read the value
+        log("WARN: %s: munmap failed for shm '%s': %s (%d)",
+            __func__, shm_name.c_str(), strerror(errno), errno);
+    }
+
+    // Validate the timestamp read?
+    if (!IsValidTimestamp(timestamp)) {
+        error_log("%s: Timestamp read, %lld, is out of valid range.",
+                  __func__,
+                  timestamp);
+
+        timestamp = -1;
+    }
+
+    return timestamp; // Return the read timestamp (can be 0 or positive)
 }
 
 /**
@@ -377,7 +460,8 @@ static bool CheckGnomeInhibition() {
 
     if (dbus_error) {
         // Method likely doesn't exist or failed - expected on non-Gnome/older Gnome
-        debug_log("INFO: %s: Error calling %s: %s (Perhaps not GNOME or method unavailable?)", __func__, method_name, dbus_error->message);
+        debug_log("INFO: %s: Error calling %s: %s (Perhaps not GNOME or method unavailable?)",
+                  __func__, method_name, dbus_error->message);
         g_error_free(dbus_error);
         is_inhibited = false; // Assume not inhibited if call fails
     } else if (dbus_result) {
@@ -677,7 +761,8 @@ int main(int argc, char* argv[]) {
     bool execute_dc_control_scripts = true;
     std::string active_command;
     std::string idle_command;
-    bool use_event_detect = true;
+    std::string shmem_name = "/event_detect_last_active"; // Default
+    bool use_event_detect = true; // This flag now controls fallback via file OR shmem
     std::string last_active_time_cpp_filename;
 
     try {
@@ -688,6 +773,7 @@ int main(int argc, char* argv[]) {
         active_command = std::get<std::string>(g_config.GetArg("active_command"));
         idle_command = std::get<std::string>(g_config.GetArg("idle_command"));
         execute_dc_control_scripts = std::get<bool>(g_config.GetArg("execute_dc_control_scripts"));
+        shmem_name = std::get<std::string>(g_config.GetArg("shmem_name"));
         use_event_detect = std::get<bool>(g_config.GetArg("use_event_detect"));
         last_active_time_cpp_filename = std::get<std::string>(g_config.GetArg("last_active_time_cpp_filename"));
     } catch (const std::bad_variant_access& e) {
@@ -783,29 +869,48 @@ int main(int argc, char* argv[]) {
             }
 
             if (use_event_detect || direct_idle_seconds == -2) {
-                debug_log("INFO: %s: Attempting fallback using event_detect file: %s",
-                          __func__,
-                          dat_file_path.string());
-                int64_t file_timestamp = IdleDetect::ReadLastActiveTimeFile(dat_file_path);
-                if (file_timestamp > 0) {
+                debug_log("INFO: %s: Attempting fallback using shared memory: %s", __func__, shmem_name.c_str());
+                int64_t shmem_timestamp = IdleDetect::ReadTimestampViaShmem(shmem_name);
+
+                if (shmem_timestamp >= 0) { // Use >= 0 check, as 0 might be valid initial state
                     int64_t current_time = GetUnixEpochTime();
-                    int64_t calculated_idle = current_time - file_timestamp;
+                    int64_t calculated_idle = current_time - shmem_timestamp;
                     idle_seconds = (calculated_idle > 0) ? calculated_idle : 0; // Ensure non-negative
 
                     using_event_detect_as_fallback = true;
 
-                    debug_log("INFO: %s: Using fallback idle time: %lld seconds (current: %lld, file: %lld)",
+                    debug_log("INFO: %s: Using fallback idle time from shmem: %lld seconds (current: %lld, shmem: %lld)",
                               __func__,
-                              (int64_t)idle_seconds,
-                              (int64_t)current_time,
-                              (int64_t)file_timestamp);
+                              (long long)idle_seconds,
+                              (long long)current_time,
+                              (long long)shmem_timestamp);
                 } else {
-                    error_log("%s: Fallback failed: Could not read/parse valid timestamp from event_detect file. Assuming active.",
-                              __func__);
+                    // ReadTimestampViaShmem returns -1 on error
+                    debug_log("INFO: %s: Attempting fallback using event_detect file: %s",
+                              __func__,
+                              dat_file_path.string());
 
-                    using_event_detect_as_fallback = false;
+                    int64_t file_timestamp = IdleDetect::ReadLastActiveTimeFile(dat_file_path);
+                    if (file_timestamp > 0) {
+                        int64_t current_time = GetUnixEpochTime();
+                        int64_t calculated_idle = current_time - file_timestamp;
+                        idle_seconds = (calculated_idle > 0) ? calculated_idle : 0; // Ensure non-negative
 
-                    idle_seconds = 0; // Assume active if fallback fails
+                        using_event_detect_as_fallback = true;
+
+                        debug_log("INFO: %s: Using fallback idle time: %lld seconds (current: %lld, file: %lld)",
+                                  __func__,
+                                  (int64_t)idle_seconds,
+                                  (int64_t)current_time,
+                                  (int64_t)file_timestamp);
+                    } else {
+                        error_log("%s: Fallback failed: Could not read/parse valid timestamp from event_detect file. Assuming active.",
+                                  __func__);
+
+                        using_event_detect_as_fallback = false;
+
+                        idle_seconds = 0; // Assume active if fallback fails
+                    }
                 }
             } else {
                 debug_log("INFO: %s: Fallback disabled by config (use_event_detect=false). Assuming active.",

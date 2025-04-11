@@ -12,6 +12,12 @@
 #include <regex>
 #include <fstream>
 
+//!
+//! \brief This to support early use of the log utility functions before the config is read to get the
+//! debug flag.
+//!
+std::atomic<bool> g_debug = false;
+
 [[nodiscard]] std::vector<std::string> StringSplit(const std::string& s, const std::string& delim)
 {
     size_t pos = 0;

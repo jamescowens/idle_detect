@@ -12,6 +12,7 @@
 #include <fstream>
 #include <iostream>
 #include <unistd.h>
+#include <sys/mman.h>
 #include <sys/wait.h>
 #include <sys/stat.h>
 #include <poll.h>
@@ -28,11 +29,6 @@ pthread_t g_main_thread_id = 0;
 std::atomic<int> g_exit_code = 0;
 
 using namespace EventDetect;
-
-//!
-//! \brief This is populated by main from an early GetArg so that the debug_log doesn't use the heavyweight GetArg call constantly.
-//!
-std::atomic<bool> g_debug = false;
 
 //!
 //! \brief Global config singleton.
@@ -59,6 +55,9 @@ IdleDetectMonitor g_idle_detect_monitor;
 //!
 InputEventRecorders g_event_recorders;
 
+const char* SHM_NAME = "/event_detect_last_active"; // Define name consistently
+EventDetect::SharedMemoryTimestampExporter g_shm_exporter(SHM_NAME); // Global instance manages lifecycle via RAII
+bool g_shm_initialized_successfully = false; // Flag to track if setup worked
 
 // Class Monitor
 
@@ -152,13 +151,21 @@ void Monitor::EventActivityMonitorThread()
                   FormatISO8601DateTime(m_last_active_time.load()));
 
         bool write_last_active_time_to_file = std::get<bool>(g_config.GetArg("write_last_active_time_to_file"));
-        fs::path event_data_path = std::get<fs::path>(g_config.GetArg("event_count_files_path"));
-        std::string last_active_time_cpp_filename = std::get<std::string>(g_config.GetArg("last_active_time_cpp_filename"));
 
         if (write_last_active_time_to_file) {
+            fs::path event_data_path = std::get<fs::path>(g_config.GetArg("event_count_files_path"));
+            std::string last_active_time_cpp_filename = std::get<std::string>(g_config.GetArg("last_active_time_cpp_filename"));
+
             fs::path last_active_time_filepath = event_data_path / last_active_time_cpp_filename;
 
             WriteLastActiveTimeToFile(last_active_time_filepath);
+        }
+
+        // --- In Monitor::EventActivityMonitorThread loop ---
+        if (g_shm_initialized_successfully) { // Check if setup in main worked
+            if (!g_shm_exporter.UpdateTimestamp(m_last_active_time.load())) {
+                error_log("%s: Failed to update shared memory timestamp.", __func__);
+            }
         }
     }
 }
@@ -871,7 +878,176 @@ void EventDetectConfig::ProcessArgs()
                   __func__,
                   debug_arg);
     }
+
+    // use_shared_memory
+
+    bool use_shm = true;
+
+    std::string use_shm_arg = GetArgString("use_shared_memory", "true");
+
+    if (use_shm_arg == "1" || ToLower(use_shm_arg) == "true") {
+        use_shm = true;
+    } else if (use_shm_arg == "0" || ToLower(use_shm_arg) == "false") {
+        use_shm = false;
+    } else {
+        error_log("%s: use_shared_memory parameter has invalid value: %s; defaulting to true.", __func__, use_shm_arg);
+        use_shm = true;
+    }
+
+    m_config.insert(std::make_pair("use_shared_memory", use_shm));
 }
+
+
+// SharedMemoryTimestampExporter class
+
+SharedMemoryTimestampExporter::SharedMemoryTimestampExporter(const std::string& name) :
+    m_shm_name(name),
+    m_shm_fd(-1),
+    m_mapped_ptr(nullptr),
+    m_size(sizeof(int64_t)),
+    m_is_creator(false), // Assume not creator initially
+    m_is_initialized(false)
+{
+    if (m_shm_name.empty() || m_shm_name[0] != '/') {
+        // Log error or throw? Let's log for now.
+        error_log("ERROR: %s: Shared memory name '%s' must be non-empty and start with '/'", __func__, m_shm_name.c_str());
+        // Mark as invalid? State is already !m_is_initialized.
+    }
+}
+
+SharedMemoryTimestampExporter::~SharedMemoryTimestampExporter() {
+    Cleanup(); // RAII guarantees cleanup
+}
+
+bool SharedMemoryTimestampExporter::CreateOrOpen(mode_t mode) {
+    if (m_is_initialized.load()) {
+        debug_log("INFO: %s: Shared memory %s already initialized.", __func__, m_shm_name.c_str());
+        return true;
+    }
+    debug_log("INFO: %s: Initializing shared memory segment %s", __func__, m_shm_name.c_str());
+
+    Cleanup(); // Ensure clean state if called again after failure
+    m_is_creator = false; // Reset ownership flag
+
+    // 1. Create or open RW
+    errno = 0;
+    m_shm_fd = shm_open(m_shm_name.c_str(), O_CREAT | O_RDWR, mode);
+    if (m_shm_fd == -1) {
+        error_log("ERROR: %s: shm_open failed for %s: %s", __func__, m_shm_name.c_str(), strerror(errno));
+        return false;
+    }
+
+    // 2. Check current size, truncate if necessary
+    struct stat shm_stat;
+    if (fstat(m_shm_fd, &shm_stat) == -1) {
+        error_log("ERROR: %s: fstat failed for shm fd %d: %s", __func__, m_shm_fd, strerror(errno));
+        close(m_shm_fd); m_shm_fd = -1;
+        // Don't unlink here, might not have been created by us or error is permissions.
+        return false;
+    }
+
+    if (shm_stat.st_size != (off_t)m_size) {
+        debug_log("INFO: %s: Shm %s has size %ld, resizing to %zu bytes.", __func__, m_shm_name.c_str(), (long)shm_stat.st_size, m_size);
+        m_is_creator = true; // We are responsible for setting the size
+        errno = 0;
+        if (ftruncate(m_shm_fd, m_size) == -1) {
+            error_log("ERROR: %s: ftruncate failed for shm %s: %s", __func__, m_shm_name.c_str(), strerror(errno));
+            close(m_shm_fd); m_shm_fd = -1;
+            shm_unlink(m_shm_name.c_str()); // Clean up object we tried to create/resize
+            return false;
+        }
+    } else {
+        debug_log("INFO: %s: Shm %s exists with correct size.", __func__, m_shm_name.c_str());
+        // Cannot reliably determine ownership if just opening existing, assume not creator.
+        m_is_creator = false;
+    }
+
+    // 3. Map memory RW
+    errno = 0;
+    void* mapped_mem = mmap(nullptr, m_size, PROT_READ | PROT_WRITE, MAP_SHARED, m_shm_fd, 0);
+
+    // 4. Close FD immediately after mmap (no longer needed)
+    close(m_shm_fd);
+    m_shm_fd = -1;
+
+    if (mapped_mem == MAP_FAILED) {
+        error_log("ERROR: %s: mmap failed for shm %s: %s", __func__, m_shm_name.c_str(), strerror(errno));
+        // If we created it, unlink it. If not, maybe leave it? Unlink might fail if permissions wrong.
+        if (m_is_creator) shm_unlink(m_shm_name.c_str());
+        return false;
+    }
+
+    // 5. Store pointer, initialize if we created it
+    m_mapped_ptr = static_cast<std::atomic<int64_t>*>(mapped_mem);
+    if (m_is_creator) {
+        int64_t initial_time = GetUnixEpochTime(); // Assumes GetUnixEpochTime() is available
+        m_mapped_ptr->store(initial_time, std::memory_order_relaxed);
+        debug_log("INFO: %s: Shared memory segment %s initialized to %lld.", __func__, m_shm_name.c_str(), (long long)initial_time);
+    } else {
+        debug_log("INFO: %s: Shared memory segment %s mapped.", __func__, m_shm_name.c_str());
+    }
+
+    m_is_initialized.store(true);
+    return true;
+}
+
+void SharedMemoryTimestampExporter::Cleanup() {
+    if (!m_is_initialized.load() && m_mapped_ptr == nullptr && m_shm_fd == -1) {
+        return; // Already clean or never initialized
+    }
+    debug_log("DEBUG: %s: Cleaning up shared memory %s...", __func__, m_shm_name.c_str());
+
+    // 1. Unmap memory
+    if (m_mapped_ptr != nullptr) {
+        if (munmap(m_mapped_ptr, m_size) == -1) {
+            error_log("ERROR: %s: munmap failed for %s: %s", __func__, m_shm_name.c_str(), strerror(errno));
+        } else {
+            debug_log("DEBUG: %s: Shared memory %s unmapped.", __func__, m_shm_name.c_str());
+        }
+        m_mapped_ptr = nullptr;
+    }
+
+    // 2. Close FD if it's somehow still open
+    if (m_shm_fd != -1) {
+        debug_log("WARNING: %s: Shared memory FD %d was open during cleanup, closing.", __func__, m_shm_fd);
+        close(m_shm_fd);
+        m_shm_fd = -1;
+    }
+
+    // 3. Unlink the name IF we think we were the creator/resizer.
+    // This is imperfect (creator might crash before resize, opener might resize if size is wrong).
+    // A more robust strategy involves lock files or always unlinking on clean shutdown,
+    // but requires careful coordination if multiple processes might map it.
+    // Let's stick with unlinking only if we set the size.
+    // **Alternative:** Always unlink on clean shutdown from the main service.
+    // Let's adopt the "always unlink on clean shutdown" via destructor.
+    debug_log("INFO: %s: Requesting unlink for shared memory %s (will succeed only if no other refs).", __func__, m_shm_name.c_str());
+    if (shm_unlink(m_shm_name.c_str()) == -1) {
+        if (errno != ENOENT) { // Ignore "No such file or directory"
+            error_log("ERROR: %s: shm_unlink failed for %s: %s", __func__, m_shm_name.c_str(), strerror(errno));
+        }
+    } else {
+        debug_log("INFO: %s: Shared memory segment %s unlinked successfully.", __func__, m_shm_name.c_str());
+    }
+
+
+    m_is_initialized.store(false);
+}
+
+bool SharedMemoryTimestampExporter::UpdateTimestamp(int64_t timestamp) {
+    if (!m_is_initialized.load() || m_mapped_ptr == nullptr) {
+        // error_log("ERROR: %s: Cannot update timestamp, shared memory not initialized.", __func__); // Can be noisy
+        return false;
+    }
+    // relaxed is likely fine if the only synchronization needed is the atomic write itself
+    m_mapped_ptr->store(timestamp, std::memory_order_relaxed);
+    return true;
+}
+
+bool SharedMemoryTimestampExporter::IsInitialized() const {
+    return m_is_initialized.load();
+}
+
 
 void EventDetect::Shutdown(const int& exit_code)
 {
@@ -1190,6 +1366,27 @@ int main(int argc, char* argv[])
               __func__,
               g_main_thread_id);
 
+    // --- shmem setupg ---
+    bool use_shared_memory = false; // Local variable for main scope
+    try {
+        use_shared_memory = std::get<bool>(g_config.GetArg("use_shared_memory"));
+    } catch (...) { use_shared_memory = true; /* Default or log error */ }
+
+    if (use_shared_memory) {
+        // CreateOrOpen attempts shm_open, ftruncate, mmap
+        if (g_shm_exporter.CreateOrOpen(0664)) {
+            log("INFO: %s: Shared memory exporter initialized successfully.", __func__);
+            g_shm_initialized_successfully = true; // Set flag for Monitor thread
+        } else {
+            error_log("ERROR: %s: Failed to initialize shared memory exporter. Shared memory export disabled.", __func__);
+            g_shm_initialized_successfully = false;
+            // Maybe exit if shm is critical? Or just continue without it?
+        }
+    } else {
+        log("INFO: %s: Shared memory export disabled by configuration.", __func__);
+        g_shm_initialized_successfully = false;
+    }
+
     try {
         InitiateEventActivityMonitor();
     } catch (ThreadException& e) {
@@ -1292,6 +1489,11 @@ int main(int argc, char* argv[])
             if (g_event_monitor.m_monitor_thread.joinable()) {
                 g_event_monitor.m_monitor_thread.join();
             }
+
+            // --- In main() shutdown sequence ---
+            // NO explicit cleanup needed here anymore for g_shm_exporter!
+            // Its destructor will be called automatically when main exits,
+            // which calls Cleanup() -> munmap() / shm_unlink().
 
             CleanUpFiles(sig);
 
