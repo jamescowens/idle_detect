@@ -23,15 +23,26 @@ RuntimeDirectoryMode=0755
 # Add the user to groups needed for device access (check exact names on openSUSE):
 #   sudo usermod -aG input event-detect
 #   sudo usermod -aG tty event-detect # Or maybe 'dialout'? Check TTY permissions.
-#User=event-detect
-#Group=event-detect
+User=event_detect
+Group=event_detect
 
-# Recommendation: Consider additional security hardening if possible.
-# PrivateTmp=yes # Usually safe and recommended.
-# NoNewPrivileges=yes # Good security practice.
-# ProtectSystem=full # Maybe 'strict' if it doesn't break device access needed.
-                     # Start with 'full' or leave it off initially.
-# PrivateDevices=yes # NO! This service needs device access.
+# --- Security Hardening Additions ---
+
+# Filesystem Access Control
+ProtectHome=true
+ProtectSystem=strict
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+
+# Process Execution Control
+NoNewPrivileges=yes
+
+# Network Access Control
+PrivateNetwork=yes
 
 [Install]
 WantedBy=multi-user.target
