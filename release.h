@@ -9,6 +9,6 @@
 
 #include <string>
 
-const std::string g_version = "Pre-release 0.5: 20250406";
+const std::string g_version = "Pre-release 0.6: 20250411";
 
 #endif // RELEASE_H
