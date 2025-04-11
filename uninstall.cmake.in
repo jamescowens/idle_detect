@@ -8,6 +8,7 @@ endif()
 add_custom_target(uninstall_system
     COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_BIN_DIR}/event_detect"
     COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_BIN_DIR}/idle_detect"
+    COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_BIN_DIR}/read_shmem_timestamp"
     COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_BIN_DIR}/dc_pause"
     COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_BIN_DIR}/dc_unpause"
     COMMAND ${CMAKE_COMMAND} -E remove "${INSTALL_BIN_DIR}/idle_detect_wrapper.sh"
