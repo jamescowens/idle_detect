@@ -28,6 +28,12 @@ set(SOURCES_IDLE_DETECT
     # No generated Wayland sources needed anymore
 )
 
+# Source file for read_shmem_timestamp
+set(SOURCES_READ_SHMEM_TIMESTAMP
+    "util.cpp"
+    "read_shmem_timestamp.cpp"
+)
+
 include_directories(".")
 
 # --- Find Packages ---
@@ -47,9 +53,12 @@ pkg_check_modules(GLIB REQUIRED glib-2.0 gobject-2.0 gio-2.0)
 # --- as we are using D-Bus or X11 calls only for idle_detect ---
 
 # --- Executable Targets ---
-add_executable(event_detect ${SOURCES_EVENT_DETECT}
-    release.h)
+add_executable(event_detect ${SOURCES_EVENT_DETECT})
+
 add_executable(idle_detect ${SOURCES_IDLE_DETECT})
+
+# --- Standalone Shared Memory Reader Utility ---
+add_executable(read_shmem_timestamp ${SOURCES_READ_SHMEM_TIMESTAMP})
 
 # --- Target Properties: event_detect ---
 if(LIBEVDEV_FOUND)
@@ -58,10 +67,6 @@ if(LIBEVDEV_FOUND)
 endif()
 
 # --- Target Properties: idle_detect ---
-
-# No dependency needed for Wayland code generation anymore
-
-# No generated C sources to add anymore
 
 # Add include directories (Removed CMAKE_CURRENT_BINARY_DIR and WAYLAND_CLIENT includes)
 target_include_directories(idle_detect PRIVATE
@@ -72,13 +77,17 @@ target_include_directories(idle_detect PRIVATE
     ${GLIB_INCLUDE_DIRS}
 )
 
-# Link libraries (Removed WAYLAND_CLIENT library)
+# Link libraries
 target_link_libraries(idle_detect PRIVATE
     ${X11_LIBRARIES}
     ${XSS_LIBRARIES}
     ${DBUS_LIBRARIES}
     ${GLIB_LIBRARIES} # Includes glib, gobject, gio
 )
+
+# Link against librt if needed for shm_open/shm_unlink (often implicit now)
+# Use PUBLIC linking if other targets might link against this one, otherwise PRIVATE
+target_link_libraries(read_shmem_timestamp PRIVATE rt)
 
 # Installation paths (parameterized)
 set(INSTALL_BIN_DIR "/usr/local/bin" CACHE PATH "Installation directory for binaries")
@@ -88,7 +97,7 @@ set(INSTALL_USER_CONFIG_DIR "$ENV{HOME}/.config" CACHE PATH "Installation direct
 set(INSTALL_USER_SERVICE_DIR "$ENV{HOME}/.config/systemd/user" CACHE PATH "Installation directory for the user level dc_idle_detection.service")
 
 # Install the executable and scripts
-install(TARGETS event_detect idle_detect DESTINATION ${INSTALL_BIN_DIR})
+install(TARGETS event_detect idle_detect read_shmem_timestamp DESTINATION ${INSTALL_BIN_DIR})
 install(FILES "dc_pause" "dc_unpause" "idle_detect_wrapper.sh"
         PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ GROUP_EXECUTE GROUP_READ WORLD_EXECUTE WORLD_READ
         DESTINATION ${INSTALL_BIN_DIR} )
@@ -109,6 +118,7 @@ add_custom_target(install_executables_only
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/event_detect" "${INSTALL_BIN_DIR}/event_detect"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/idle_detect" "${INSTALL_BIN_DIR}/idle_detect"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/idle_detect_wrapper.sh" "${INSTALL_BIN_DIR}/idle_detect_wrapper.sh"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/read_shmem_timestamp" "${INSTALL_BIN_DIR}/read_shmem_timestamp"
 
     COMMENT "installing executables only"
 )
