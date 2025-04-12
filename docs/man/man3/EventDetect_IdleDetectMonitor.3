@@ -1,0 +1,92 @@
+.TH "EventDetect::IdleDetectMonitor" 3 "Sat Apr 12 2025" "Version 0.7" "idle_detect" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+EventDetect::IdleDetectMonitor
+.SH SYNOPSIS
+.br
+.PP
+.SS "Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "\fBIdleDetectMonitor\fP ()"
+.br
+.RI "Constructor\&. "
+.ti -1c
+.RI "void \fBIdleDetectMonitorThread\fP ()"
+.br
+.RI "Method to instantiate the tty monitor thread\&. "
+.ti -1c
+.RI "bool \fBIsInitialized\fP () const"
+.br
+.RI "Provides a flag to indicate whether the monitor has been initialized\&. This is used in main in the application control paths\&. "
+.ti -1c
+.RI "int64_t \fBGetLastIdleDetectActiveTime\fP () const"
+.br
+.RI "Returns the overall last active time of all of the message receipts from idle_detect instances\&. "
+.in -1c
+.SS "Public Attributes"
+
+.in +1c
+.ti -1c
+.RI "std::thread \fBm_idle_detect_monitor_thread\fP"
+.br
+.RI "Holds the actual idle_detect monitor thread\&. "
+.ti -1c
+.RI "std::condition_variable \fBcv_idle_detect_monitor_thread\fP"
+.br
+.RI "Condition variable for control/synchronization of the idle_detect monitor threads\&. "
+.ti -1c
+.RI "std::atomic< bool > \fBm_interrupt_idle_detect_monitor\fP"
+.br
+.RI "Atomic boolean that interrupts the idle_detect monitor thread\&. "
+.in -1c
+.SS "Private Attributes"
+
+.in +1c
+.ti -1c
+.RI "std::mutex \fBmtx_idle_detect_monitor\fP"
+.br
+.RI "This is the mutex member that provides lock control for the tty monitor object\&. This is used to ensure the tty monitor is thread-safe\&. "
+.ti -1c
+.RI "std::mutex \fBmtx_idle_detect_monitor_thread\fP"
+.br
+.RI "This provides lock control for the tty monitor worker thread itself\&. "
+.ti -1c
+.RI "std::atomic< int64_t > \fBm_last_idle_detect_active_time\fP"
+.br
+.RI "Atomic that holds the overall last active time across all of the monitored pts/ttys\&. "
+.ti -1c
+.RI "std::atomic< bool > \fBm_initialized\fP"
+.br
+.RI "This holds the flag as to whether the tty monitor has been initialized and is provided by the \fBIsInitialized()\fP public method\&. "
+.in -1c
+.SH "Member Function Documentation"
+.PP 
+.SS "int64_t IdleDetectMonitor::GetLastIdleDetectActiveTime () const"
+
+.PP
+Returns the overall last active time of all of the message receipts from idle_detect instances\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+Unix Epoch time in seconds 
+.RE
+.PP
+
+.SS "bool IdleDetectMonitor::IsInitialized () const"
+
+.PP
+Provides a flag to indicate whether the monitor has been initialized\&. This is used in main in the application control paths\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+boolean flag 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for idle_detect from the source code\&.

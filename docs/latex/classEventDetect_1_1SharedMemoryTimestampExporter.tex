@@ -1,0 +1,164 @@
+\hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter}{}\section{Event\+Detect\+:\+:Shared\+Memory\+Timestamp\+Exporter Class Reference}
+\label{classEventDetect_1_1SharedMemoryTimestampExporter}\index{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter@{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter}}
+
+
+Manages a P\+O\+S\+IX shared memory segment for exporting timestamps. Stores an array of two atomic int64\+\_\+t\+: \{update\+\_\+time, last\+\_\+active\+\_\+time\}. Handles creation, mapping, updating, and cleanup via R\+A\+II.  
+
+
+
+
+{\ttfamily \#include $<$event\+\_\+detect.\+h$>$}
+
+\subsection*{Public Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter_a29afd93305dd7dfb30b9448ba9e45cd1}{Shared\+Memory\+Timestamp\+Exporter}} (const std\+::string \&name)
+\begin{DoxyCompactList}\small\item\em Construct with the desired shared memory name. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a654a9ae7c1700838bcf425516de4c892}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a654a9ae7c1700838bcf425516de4c892}} 
+\mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter_a654a9ae7c1700838bcf425516de4c892}{$\sim$\+Shared\+Memory\+Timestamp\+Exporter}} ()
+\begin{DoxyCompactList}\small\item\em Destructor handles unmapping and potentially unlinking the shared memory. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_ae8862c9a78c580902b82dfcb348d1216}\label{classEventDetect_1_1SharedMemoryTimestampExporter_ae8862c9a78c580902b82dfcb348d1216}} 
+{\bfseries Shared\+Memory\+Timestamp\+Exporter} (const \mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter}{Shared\+Memory\+Timestamp\+Exporter}} \&)=delete
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_acfea4a0f47c359884cafbf85ce56b4f7}\label{classEventDetect_1_1SharedMemoryTimestampExporter_acfea4a0f47c359884cafbf85ce56b4f7}} 
+\mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter}{Shared\+Memory\+Timestamp\+Exporter}} \& {\bfseries operator=} (const \mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter}{Shared\+Memory\+Timestamp\+Exporter}} \&)=delete
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a9f512e1dbc5004b7a03d5de1a7539ef1}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a9f512e1dbc5004b7a03d5de1a7539ef1}} 
+{\bfseries Shared\+Memory\+Timestamp\+Exporter} (\mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter}{Shared\+Memory\+Timestamp\+Exporter}} \&\&)=delete
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a76ece0e36a546fc701e2c188f2a6ef1a}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a76ece0e36a546fc701e2c188f2a6ef1a}} 
+\mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter}{Shared\+Memory\+Timestamp\+Exporter}} \& {\bfseries operator=} (\mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter}{Shared\+Memory\+Timestamp\+Exporter}} \&\&)=delete
+\item 
+bool \mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter_ad1fe3658105dcec5df31c8859d843cc5}{Create\+Or\+Open}} (mode\+\_\+t mode=0666)
+\begin{DoxyCompactList}\small\item\em Creates (if necessary) and opens the shared memory segment, sets its size (to sizeof(atomic$<$int64\+\_\+t$>$\mbox{[}2\mbox{]})), and maps it for writing. Must be called before Update\+Timestamps or Is\+Initialized. \end{DoxyCompactList}\item 
+bool \mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter_af3f039d814ed24dde56b1d525d340a34}{Update\+Timestamps}} (int64\+\_\+t update\+\_\+time, int64\+\_\+t last\+\_\+active\+\_\+time)
+\begin{DoxyCompactList}\small\item\em Atomically updates both timestamps in the mapped shared memory. \end{DoxyCompactList}\item 
+bool \mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter_a3e058d7e830a8ae6bb59dfa7a7673a5c}{Is\+Initialized}} () const
+\begin{DoxyCompactList}\small\item\em Checks if the shared memory was successfully initialized (opened and mapped). \end{DoxyCompactList}\item 
+bool \mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter_a7aab6c44488a85d6272606b2f733f2bc}{Unlink\+Segment}} ()
+\begin{DoxyCompactList}\small\item\em Explicitly unlinks the shared memory segment. Call during clean shutdown if desired. Idempotent. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Private Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a5710546acb54eeb6814e9c4e0a03de52}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a5710546acb54eeb6814e9c4e0a03de52}} 
+void \mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter_a5710546acb54eeb6814e9c4e0a03de52}{Cleanup}} ()
+\begin{DoxyCompactList}\small\item\em Performs resource cleanup (munmap). Called by destructor. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Private Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a0ad48e2017a4d1092d798d51292a4c19}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a0ad48e2017a4d1092d798d51292a4c19}} 
+std\+::string {\bfseries m\+\_\+shm\+\_\+name}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a78c29a6554cbf4aadba4f356351874f0}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a78c29a6554cbf4aadba4f356351874f0}} 
+int {\bfseries m\+\_\+shm\+\_\+fd}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a22ce3bdb2600e4d2eaae196fdec16a63}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a22ce3bdb2600e4d2eaae196fdec16a63}} 
+std\+::atomic$<$ int64\+\_\+t $>$ $\ast$ {\bfseries m\+\_\+mapped\+\_\+ptr}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a05b8f56830e36ec0565a6bd604cba15a}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a05b8f56830e36ec0565a6bd604cba15a}} 
+const size\+\_\+t {\bfseries m\+\_\+size}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a5a741cfc2329506bd860836aedd670e4}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a5a741cfc2329506bd860836aedd670e4}} 
+bool {\bfseries m\+\_\+is\+\_\+creator}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a17214ef7c5a2e0c2b1b4b86529b471f9}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a17214ef7c5a2e0c2b1b4b86529b471f9}} 
+std\+::atomic$<$ bool $>$ {\bfseries m\+\_\+is\+\_\+initialized}
+\end{DoxyCompactItemize}
+
+
+\subsection{Detailed Description}
+Manages a P\+O\+S\+IX shared memory segment for exporting timestamps. Stores an array of two atomic int64\+\_\+t\+: \{update\+\_\+time, last\+\_\+active\+\_\+time\}. Handles creation, mapping, updating, and cleanup via R\+A\+II. 
+
+\subsection{Constructor \& Destructor Documentation}
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a29afd93305dd7dfb30b9448ba9e45cd1}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a29afd93305dd7dfb30b9448ba9e45cd1}} 
+\index{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter@{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter}!Shared\+Memory\+Timestamp\+Exporter@{Shared\+Memory\+Timestamp\+Exporter}}
+\index{Shared\+Memory\+Timestamp\+Exporter@{Shared\+Memory\+Timestamp\+Exporter}!Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter@{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter}}
+\subsubsection{\texorpdfstring{Shared\+Memory\+Timestamp\+Exporter()}{SharedMemoryTimestampExporter()}}
+{\footnotesize\ttfamily Shared\+Memory\+Timestamp\+Exporter\+::\+Shared\+Memory\+Timestamp\+Exporter (\begin{DoxyParamCaption}\item[{const std\+::string \&}]{name }\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [explicit]}}
+
+
+
+Construct with the desired shared memory name. 
+
+
+\begin{DoxyParams}{Parameters}
+{\em name} & Must start with \textquotesingle{}/\textquotesingle{} (e.\+g., \char`\"{}/idle\+\_\+detect\+\_\+shmem\char`\"{}). \\
+\hline
+\end{DoxyParams}
+
+
+\subsection{Member Function Documentation}
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_ad1fe3658105dcec5df31c8859d843cc5}\label{classEventDetect_1_1SharedMemoryTimestampExporter_ad1fe3658105dcec5df31c8859d843cc5}} 
+\index{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter@{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter}!Create\+Or\+Open@{Create\+Or\+Open}}
+\index{Create\+Or\+Open@{Create\+Or\+Open}!Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter@{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter}}
+\subsubsection{\texorpdfstring{Create\+Or\+Open()}{CreateOrOpen()}}
+{\footnotesize\ttfamily bool Shared\+Memory\+Timestamp\+Exporter\+::\+Create\+Or\+Open (\begin{DoxyParamCaption}\item[{mode\+\_\+t}]{mode = {\ttfamily 0666} }\end{DoxyParamCaption})}
+
+
+
+Creates (if necessary) and opens the shared memory segment, sets its size (to sizeof(atomic$<$int64\+\_\+t$>$\mbox{[}2\mbox{]})), and maps it for writing. Must be called before Update\+Timestamps or Is\+Initialized. 
+
+
+\begin{DoxyParams}{Parameters}
+{\em mode} & Permissions (e.\+g., 0666 or 0660) to use if creating the segment. \\
+\hline
+\end{DoxyParams}
+\begin{DoxyReturn}{Returns}
+True on success, false on any failure (shm\+\_\+open, ftruncate, mmap). 
+\end{DoxyReturn}
+Here is the call graph for this function\+:
+% FIG 0
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a3e058d7e830a8ae6bb59dfa7a7673a5c}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a3e058d7e830a8ae6bb59dfa7a7673a5c}} 
+\index{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter@{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter}!Is\+Initialized@{Is\+Initialized}}
+\index{Is\+Initialized@{Is\+Initialized}!Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter@{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter}}
+\subsubsection{\texorpdfstring{Is\+Initialized()}{IsInitialized()}}
+{\footnotesize\ttfamily bool Shared\+Memory\+Timestamp\+Exporter\+::\+Is\+Initialized (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption}) const}
+
+
+
+Checks if the shared memory was successfully initialized (opened and mapped). 
+
+\begin{DoxyReturn}{Returns}
+True if initialized and ready for updates, false otherwise. 
+\end{DoxyReturn}
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a7aab6c44488a85d6272606b2f733f2bc}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a7aab6c44488a85d6272606b2f733f2bc}} 
+\index{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter@{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter}!Unlink\+Segment@{Unlink\+Segment}}
+\index{Unlink\+Segment@{Unlink\+Segment}!Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter@{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter}}
+\subsubsection{\texorpdfstring{Unlink\+Segment()}{UnlinkSegment()}}
+{\footnotesize\ttfamily bool Shared\+Memory\+Timestamp\+Exporter\+::\+Unlink\+Segment (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption})}
+
+
+
+Explicitly unlinks the shared memory segment. Call during clean shutdown if desired. Idempotent. 
+
+\begin{DoxyReturn}{Returns}
+True if unlink succeeded or segment already gone, false on error. 
+\end{DoxyReturn}
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_af3f039d814ed24dde56b1d525d340a34}\label{classEventDetect_1_1SharedMemoryTimestampExporter_af3f039d814ed24dde56b1d525d340a34}} 
+\index{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter@{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter}!Update\+Timestamps@{Update\+Timestamps}}
+\index{Update\+Timestamps@{Update\+Timestamps}!Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter@{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter}}
+\subsubsection{\texorpdfstring{Update\+Timestamps()}{UpdateTimestamps()}}
+{\footnotesize\ttfamily bool Shared\+Memory\+Timestamp\+Exporter\+::\+Update\+Timestamps (\begin{DoxyParamCaption}\item[{int64\+\_\+t}]{update\+\_\+time,  }\item[{int64\+\_\+t}]{last\+\_\+active\+\_\+time }\end{DoxyParamCaption})}
+
+
+
+Atomically updates both timestamps in the mapped shared memory. 
+
+
+\begin{DoxyParams}{Parameters}
+{\em update\+\_\+time} & The timestamp of the current update cycle. \\
+\hline
+{\em last\+\_\+active\+\_\+time} & The calculated overall last active time. \\
+\hline
+\end{DoxyParams}
+\begin{DoxyReturn}{Returns}
+True if updated successfully, false if not initialized or pointer is invalid. 
+\end{DoxyReturn}
+Here is the caller graph for this function\+:
+% FIG 1
+
+
+The documentation for this class was generated from the following files\+:\begin{DoxyCompactItemize}
+\item 
+event\+\_\+detect.\+h\item 
+event\+\_\+detect.\+cpp\end{DoxyCompactItemize}

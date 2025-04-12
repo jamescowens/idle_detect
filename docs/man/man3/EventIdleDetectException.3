@@ -1,0 +1,42 @@
+.TH "EventIdleDetectException" 3 "Sat Apr 12 2025" "Version 0.7" "idle_detect" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+EventIdleDetectException \- The EventDetectException class is a customized exception handling class for the event_detect application\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.PP
+\fC#include <util\&.h>\fP
+.PP
+Inherits exception\&.
+.PP
+Inherited by \fBFileSystemException\fP, and \fBThreadException\fP\&.
+.SS "Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "\fBEventIdleDetectException\fP (const std::string &message)"
+.br
+.ti -1c
+.RI "\fBEventIdleDetectException\fP (const char *message)"
+.br
+.ti -1c
+.RI "const char * \fBwhat\fP () const noexcept override"
+.br
+.in -1c
+.SS "Protected Attributes"
+
+.in +1c
+.ti -1c
+.RI "std::string \fBm_message\fP"
+.br
+.in -1c
+.SH "Detailed Description"
+.PP 
+The EventDetectException class is a customized exception handling class for the event_detect application\&. 
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for idle_detect from the source code\&.

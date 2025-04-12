@@ -1,0 +1,38 @@
+.TH "FileSystemException" 3 "Sat Apr 12 2025" "Version 0.7" "idle_detect" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+FileSystemException \- File system related exceptions\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.PP
+\fC#include <util\&.h>\fP
+.PP
+Inherits \fBEventIdleDetectException\fP\&.
+.SS "Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "\fBFileSystemException\fP (const std::string &message, const std::filesystem::path &path)"
+.br
+.ti -1c
+.RI "const std::filesystem::path & \fBpath\fP () const"
+.br
+.in -1c
+.SS "Private Attributes"
+
+.in +1c
+.ti -1c
+.RI "std::filesystem::path \fBm_path\fP"
+.br
+.in -1c
+.SS "Additional Inherited Members"
+.SH "Detailed Description"
+.PP 
+File system related exceptions\&. 
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for idle_detect from the source code\&.

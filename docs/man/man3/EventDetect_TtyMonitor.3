@@ -1,0 +1,146 @@
+.TH "EventDetect::TtyMonitor" 3 "Sat Apr 12 2025" "Version 0.7" "idle_detect" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+EventDetect::TtyMonitor
+.SH SYNOPSIS
+.br
+.PP
+.SS "Classes"
+
+.in +1c
+.ti -1c
+.RI "class \fBTty\fP"
+.br
+.RI "The \fBTty\fP class is a small class to hold pts/tty information\&. It is essentially a struct with a parameterized constructor\&. "
+.in -1c
+.SS "Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "\fBTtyMonitor\fP ()"
+.br
+.RI "Constructor\&. "
+.ti -1c
+.RI "std::vector< fs::path > \fBGetTtyDevices\fP () const"
+.br
+.RI "Returns a copy of the vector of pts/tty paths\&. A copy is returned to avoid holding the lock on mtx_tty_monitor for an extended period\&. "
+.ti -1c
+.RI "void \fBUpdateTtyDevices\fP ()"
+.br
+.RI "Initializes/Updates the pts/tty device paths to monitor\&. "
+.ti -1c
+.RI "void \fBTtyMonitorThread\fP ()"
+.br
+.RI "Method to instantiate the tty monitor thread\&. "
+.ti -1c
+.RI "bool \fBIsInitialized\fP () const"
+.br
+.RI "Provides a flag to indicate whether the monitor has been initialized\&. This is used in main in the application control paths\&. "
+.ti -1c
+.RI "int64_t \fBGetLastTtyActiveTime\fP () const"
+.br
+.RI "Returns the overall last active time of all of the monitored pts/ttys\&. "
+.in -1c
+.SS "Public Attributes"
+
+.in +1c
+.ti -1c
+.RI "std::thread \fBm_tty_monitor_thread\fP"
+.br
+.RI "Holds the actual tty monitor thread\&. "
+.ti -1c
+.RI "std::condition_variable \fBcv_tty_monitor_thread\fP"
+.br
+.RI "Condition variable for control/synchronization of the tty monitor threads\&. "
+.ti -1c
+.RI "std::atomic< bool > \fBm_interrupt_tty_monitor\fP"
+.br
+.RI "Atomic boolean that interrupts the tty monitor thread\&. "
+.in -1c
+.SS "Static Private Member Functions"
+
+.in +1c
+.ti -1c
+.RI "static std::vector< fs::path > \fBEnumerateTtyDevices\fP ()"
+.br
+.RI "Provides the enumerated pts/tty devices\&. "
+.in -1c
+.SS "Private Attributes"
+
+.in +1c
+.ti -1c
+.RI "std::mutex \fBmtx_tty_monitor\fP"
+.br
+.RI "This is the mutex member that provides lock control for the tty monitor object\&. This is used to ensure the tty monitor is thread-safe\&. "
+.ti -1c
+.RI "std::mutex \fBmtx_tty_monitor_thread\fP"
+.br
+.RI "This provides lock control for the tty monitor worker thread itself\&. "
+.ti -1c
+.RI "std::vector< fs::path > \fBm_tty_device_paths\fP"
+.br
+.RI "Holds the device paths of the monitored pts/ttys\&. Note that this is duplicative of information in the individual tty objects, but it allows efficient comparison of the inventory of ttys\&. "
+.ti -1c
+.RI "std::vector< \fBTty\fP > \fBm_ttys\fP"
+.br
+.RI "std::vector holding the tty objects\&. "
+.ti -1c
+.RI "std::atomic< int64_t > \fBm_last_ttys_active_time\fP"
+.br
+.RI "Atomic that holds the overall last active time across all of the monitored pts/ttys\&. "
+.ti -1c
+.RI "std::atomic< bool > \fBm_initialized\fP"
+.br
+.RI "This holds the flag as to whether the tty monitor has been initialized and is provided by the \fBIsInitialized()\fP public method\&. "
+.in -1c
+.SH "Member Function Documentation"
+.PP 
+.SS "std::vector< fs::path > TtyMonitor::EnumerateTtyDevices ()\fC [static]\fP, \fC [private]\fP"
+
+.PP
+Provides the enumerated pts/tty devices\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+std::vector<fs::path> of enumerated pts/tty devices\&. 
+.RE
+.PP
+
+.SS "int64_t TtyMonitor::GetLastTtyActiveTime () const"
+
+.PP
+Returns the overall last active time of all of the monitored pts/ttys\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+Unix Epoch time in seconds 
+.RE
+.PP
+
+.SS "std::vector< fs::path > TtyMonitor::GetTtyDevices () const"
+
+.PP
+Returns a copy of the vector of pts/tty paths\&. A copy is returned to avoid holding the lock on mtx_tty_monitor for an extended period\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+std::vector<fs::path> of the pts/tty paths 
+.RE
+.PP
+
+.SS "bool TtyMonitor::IsInitialized () const"
+
+.PP
+Provides a flag to indicate whether the monitor has been initialized\&. This is used in main in the application control paths\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+boolean flag 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for idle_detect from the source code\&.

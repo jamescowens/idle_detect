@@ -1,0 +1,101 @@
+.TH "EventDetect::InputEventRecorders::EventRecorder" 3 "Sat Apr 12 2025" "Version 0.7" "idle_detect" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+EventDetect::InputEventRecorders::EventRecorder \- The \fBEventRecorder\fP class formalizes the event recorder instance and is instantiated for each event recorder thread\&. These instantiations are wrapped by shared_ptr objects and the shared_ptrs stored in the m_event_recorder_ptrs vector\&. This is essentially a very specialized thread pool\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.PP
+\fC#include <event_detect\&.h>\fP
+.SS "Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "\fBEventRecorder\fP (fs::path event_device_path)"
+.br
+.RI "Parameterized constructor\&. "
+.ti -1c
+.RI "fs::path \fBGetEventDevicePath\fP () const"
+.br
+.RI "Gets the event device path\&. "
+.ti -1c
+.RI "int64_t \fBGetEventCount\fP () const"
+.br
+.RI "Returns the current event count tallied by the recorder\&. "
+.ti -1c
+.RI "void \fBEventActivityRecorderThread\fP ()"
+.br
+.RI "Method to run in the instantiated recorder thread\&. "
+.in -1c
+.SS "Public Attributes"
+
+.in +1c
+.ti -1c
+.RI "std::thread \fBm_event_recorder_thread\fP"
+.br
+.RI "Holds the actual event recorder thread\&. "
+.in -1c
+.SS "Private Attributes"
+
+.in +1c
+.ti -1c
+.RI "std::mutex \fBmtx_event_recorder\fP"
+.br
+.RI "This is the mutex member that provides lock control for the individual event recorder\&. "
+.ti -1c
+.RI "fs::path \fBm_event_device_path\fP"
+.br
+.RI "Holds the event device path of the monitored device\&. "
+.ti -1c
+.RI "std::atomic< int64_t > \fBm_event_count\fP"
+.br
+.RI "Atomic that holds the current event tally for the monitored device\&. "
+.in -1c
+.SH "Detailed Description"
+.PP 
+The \fBEventRecorder\fP class formalizes the event recorder instance and is instantiated for each event recorder thread\&. These instantiations are wrapped by shared_ptr objects and the shared_ptrs stored in the m_event_recorder_ptrs vector\&. This is essentially a very specialized thread pool\&. 
+.SH "Constructor & Destructor Documentation"
+.PP 
+.SS "InputEventRecorders::EventRecorder::EventRecorder (fs::path event_device_path)\fC [explicit]\fP"
+
+.PP
+Parameterized constructor\&. 
+.PP
+\fBParameters:\fP
+.RS 4
+\fIRequired\fP parameter for construction: event_device_path 
+.RE
+.PP
+
+.SH "Member Function Documentation"
+.PP 
+.SS "int64_t InputEventRecorders::EventRecorder::GetEventCount () const"
+
+.PP
+Returns the current event count tallied by the recorder\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+
+.RE
+.PP
+
+.SS "fs::path InputEventRecorders::EventRecorder::GetEventDevicePath () const"
+
+.PP
+Gets the event device path\&. Returns a read only fs::path of the input event device path associated with the recorder\&. No locking is needed as this can only be changed on construction\&.
+.PP
+\fBReturns:\fP
+.RS 4
+A copy of the m_event_device_path\&. A copy is returned to avoid holding the mtx_event_recorder lock for an extended period\&.
+.PP
+fs::path 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for idle_detect from the source code\&.

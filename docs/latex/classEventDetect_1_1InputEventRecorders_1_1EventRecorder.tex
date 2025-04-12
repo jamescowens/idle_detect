@@ -1,0 +1,101 @@
+\hypertarget{classEventDetect_1_1InputEventRecorders_1_1EventRecorder}{}\section{Event\+Detect\+:\+:Input\+Event\+Recorders\+:\+:Event\+Recorder Class Reference}
+\label{classEventDetect_1_1InputEventRecorders_1_1EventRecorder}\index{Event\+Detect\+::\+Input\+Event\+Recorders\+::\+Event\+Recorder@{Event\+Detect\+::\+Input\+Event\+Recorders\+::\+Event\+Recorder}}
+
+
+The \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_1_1EventRecorder}{Event\+Recorder}} class formalizes the event recorder instance and is instantiated for each event recorder thread. These instantiations are wrapped by shared\+\_\+ptr objects and the shared\+\_\+ptrs stored in the m\+\_\+event\+\_\+recorder\+\_\+ptrs vector. This is essentially a very specialized thread pool.  
+
+
+
+
+{\ttfamily \#include $<$event\+\_\+detect.\+h$>$}
+
+\subsection*{Public Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_af865f9dcce55575066f874f93701e03d}{Event\+Recorder}} (fs\+::path event\+\_\+device\+\_\+path)
+\begin{DoxyCompactList}\small\item\em Parameterized constructor. \end{DoxyCompactList}\item 
+fs\+::path \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_a70c83db169bbe5172bb170ac5b22b70b}{Get\+Event\+Device\+Path}} () const
+\begin{DoxyCompactList}\small\item\em Gets the event device path. \end{DoxyCompactList}\item 
+int64\+\_\+t \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_a33725666187f177b9961bbd65d8fd944}{Get\+Event\+Count}} () const
+\begin{DoxyCompactList}\small\item\em Returns the current event count tallied by the recorder. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_ab99ec2e4391f0423a876164c8c19b80f}\label{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_ab99ec2e4391f0423a876164c8c19b80f}} 
+void \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_ab99ec2e4391f0423a876164c8c19b80f}{Event\+Activity\+Recorder\+Thread}} ()
+\begin{DoxyCompactList}\small\item\em Method to run in the instantiated recorder thread. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Public Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_ad61ec8b2d9652351e8fa9dde2de5bc78}\label{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_ad61ec8b2d9652351e8fa9dde2de5bc78}} 
+std\+::thread \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_ad61ec8b2d9652351e8fa9dde2de5bc78}{m\+\_\+event\+\_\+recorder\+\_\+thread}}
+\begin{DoxyCompactList}\small\item\em Holds the actual event recorder thread. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Private Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_a269b65d9d57144f449ea519a3c0ea283}\label{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_a269b65d9d57144f449ea519a3c0ea283}} 
+std\+::mutex \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_a269b65d9d57144f449ea519a3c0ea283}{mtx\+\_\+event\+\_\+recorder}}
+\begin{DoxyCompactList}\small\item\em This is the mutex member that provides lock control for the individual event recorder. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_a7d18cfebc07b50c215e6369d084b9740}\label{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_a7d18cfebc07b50c215e6369d084b9740}} 
+fs\+::path \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_a7d18cfebc07b50c215e6369d084b9740}{m\+\_\+event\+\_\+device\+\_\+path}}
+\begin{DoxyCompactList}\small\item\em Holds the event device path of the monitored device. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_a638aa037004cb9d79b97f89675714a95}\label{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_a638aa037004cb9d79b97f89675714a95}} 
+std\+::atomic$<$ int64\+\_\+t $>$ \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_a638aa037004cb9d79b97f89675714a95}{m\+\_\+event\+\_\+count}}
+\begin{DoxyCompactList}\small\item\em Atomic that holds the current event tally for the monitored device. \end{DoxyCompactList}\end{DoxyCompactItemize}
+
+
+\subsection{Detailed Description}
+The \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_1_1EventRecorder}{Event\+Recorder}} class formalizes the event recorder instance and is instantiated for each event recorder thread. These instantiations are wrapped by shared\+\_\+ptr objects and the shared\+\_\+ptrs stored in the m\+\_\+event\+\_\+recorder\+\_\+ptrs vector. This is essentially a very specialized thread pool. 
+
+\subsection{Constructor \& Destructor Documentation}
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_af865f9dcce55575066f874f93701e03d}\label{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_af865f9dcce55575066f874f93701e03d}} 
+\index{Event\+Detect\+::\+Input\+Event\+Recorders\+::\+Event\+Recorder@{Event\+Detect\+::\+Input\+Event\+Recorders\+::\+Event\+Recorder}!Event\+Recorder@{Event\+Recorder}}
+\index{Event\+Recorder@{Event\+Recorder}!Event\+Detect\+::\+Input\+Event\+Recorders\+::\+Event\+Recorder@{Event\+Detect\+::\+Input\+Event\+Recorders\+::\+Event\+Recorder}}
+\subsubsection{\texorpdfstring{Event\+Recorder()}{EventRecorder()}}
+{\footnotesize\ttfamily Input\+Event\+Recorders\+::\+Event\+Recorder\+::\+Event\+Recorder (\begin{DoxyParamCaption}\item[{fs\+::path}]{event\+\_\+device\+\_\+path }\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [explicit]}}
+
+
+
+Parameterized constructor. 
+
+
+\begin{DoxyParams}{Parameters}
+{\em Required} & parameter for construction\+: event\+\_\+device\+\_\+path \\
+\hline
+\end{DoxyParams}
+
+
+\subsection{Member Function Documentation}
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_a33725666187f177b9961bbd65d8fd944}\label{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_a33725666187f177b9961bbd65d8fd944}} 
+\index{Event\+Detect\+::\+Input\+Event\+Recorders\+::\+Event\+Recorder@{Event\+Detect\+::\+Input\+Event\+Recorders\+::\+Event\+Recorder}!Get\+Event\+Count@{Get\+Event\+Count}}
+\index{Get\+Event\+Count@{Get\+Event\+Count}!Event\+Detect\+::\+Input\+Event\+Recorders\+::\+Event\+Recorder@{Event\+Detect\+::\+Input\+Event\+Recorders\+::\+Event\+Recorder}}
+\subsubsection{\texorpdfstring{Get\+Event\+Count()}{GetEventCount()}}
+{\footnotesize\ttfamily int64\+\_\+t Input\+Event\+Recorders\+::\+Event\+Recorder\+::\+Get\+Event\+Count (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption}) const}
+
+
+
+Returns the current event count tallied by the recorder. 
+
+\begin{DoxyReturn}{Returns}
+
+\end{DoxyReturn}
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_a70c83db169bbe5172bb170ac5b22b70b}\label{classEventDetect_1_1InputEventRecorders_1_1EventRecorder_a70c83db169bbe5172bb170ac5b22b70b}} 
+\index{Event\+Detect\+::\+Input\+Event\+Recorders\+::\+Event\+Recorder@{Event\+Detect\+::\+Input\+Event\+Recorders\+::\+Event\+Recorder}!Get\+Event\+Device\+Path@{Get\+Event\+Device\+Path}}
+\index{Get\+Event\+Device\+Path@{Get\+Event\+Device\+Path}!Event\+Detect\+::\+Input\+Event\+Recorders\+::\+Event\+Recorder@{Event\+Detect\+::\+Input\+Event\+Recorders\+::\+Event\+Recorder}}
+\subsubsection{\texorpdfstring{Get\+Event\+Device\+Path()}{GetEventDevicePath()}}
+{\footnotesize\ttfamily fs\+::path Input\+Event\+Recorders\+::\+Event\+Recorder\+::\+Get\+Event\+Device\+Path (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption}) const}
+
+
+
+Gets the event device path. 
+
+Returns a read only fs\+::path of the input event device path associated with the recorder. No locking is needed as this can only be changed on construction.
+
+\begin{DoxyReturn}{Returns}
+A copy of the m\+\_\+event\+\_\+device\+\_\+path. A copy is returned to avoid holding the mtx\+\_\+event\+\_\+recorder lock for an extended period.
+
+fs\+::path 
+\end{DoxyReturn}
+
+
+The documentation for this class was generated from the following files\+:\begin{DoxyCompactItemize}
+\item 
+event\+\_\+detect.\+h\item 
+event\+\_\+detect.\+cpp\end{DoxyCompactItemize}

@@ -1,0 +1,4 @@
+<map id="Config" name="Config">
+<area shape="rect" id="node2" href="$classEventDetectConfig.html" title="The EventDetectConfig class. This specializes the Config class and implements the virtual method Proc..." alt="" coords="5,80,137,107"/>
+<area shape="rect" id="node3" href="$classIdleDetectConfig.html" title="The IdleDetectConfig class. This specializes the Config class and implements the virtual method Proce..." alt="" coords="162,80,282,107"/>
+</map>

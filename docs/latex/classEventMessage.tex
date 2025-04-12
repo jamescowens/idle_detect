@@ -1,0 +1,173 @@
+\hypertarget{classEventMessage}{}\section{Event\+Message Class Reference}
+\label{classEventMessage}\index{Event\+Message@{Event\+Message}}
+
+
+The \mbox{\hyperlink{classEventMessage}{Event\+Message}} class is a small class that encapsulates the \char`\"{}event message\char`\"{}, which is a message sent from the local idle\+\_\+detect instance to event\+\_\+detect indicating an event that updates the last active time. The message is effectively timestamp\+:m\+\_\+event\+\_\+type in string format (to make use of pipe easier).  
+
+
+
+
+{\ttfamily \#include $<$util.\+h$>$}
+
+\subsection*{Public Types}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventMessage_a262da559aa416f176fdda72e8b5113ab}\label{classEventMessage_a262da559aa416f176fdda72e8b5113ab}} 
+enum \mbox{\hyperlink{classEventMessage_a262da559aa416f176fdda72e8b5113ab}{Event\+Type}} \{ {\bfseries U\+N\+K\+N\+O\+WN}, 
+{\bfseries U\+S\+E\+R\+\_\+\+A\+C\+T\+I\+VE}
+ \}
+\begin{DoxyCompactList}\small\item\em The Event\+Type enum defines event types for the \mbox{\hyperlink{classEventMessage}{Event\+Message}} class. Currently there is only one event type in use, U\+S\+E\+R\+\_\+\+A\+C\+T\+I\+VE. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Public Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventMessage_a1af65b34ed2337c476357d1e8c666308}\label{classEventMessage_a1af65b34ed2337c476357d1e8c666308}} 
+\mbox{\hyperlink{classEventMessage_a1af65b34ed2337c476357d1e8c666308}{Event\+Message}} ()
+\begin{DoxyCompactList}\small\item\em Constructs an \char`\"{}empty\char`\"{} \mbox{\hyperlink{classEventMessage}{Event\+Message}} with timestamp of 0 and Event\+Type of U\+N\+K\+N\+O\+WN. \end{DoxyCompactList}\item 
+\mbox{\hyperlink{classEventMessage_ae9314c9140aec416b1e403c2ec3dad25}{Event\+Message}} (std\+::string timestamp\+\_\+str, std\+::string event\+\_\+type\+\_\+str)
+\begin{DoxyCompactList}\small\item\em Constructs an \mbox{\hyperlink{classEventMessage}{Event\+Message}} from the provided strings. \end{DoxyCompactList}\item 
+std\+::string \mbox{\hyperlink{classEventMessage_a3dd4a7325fcc39e7cfdf2365422ae1c7}{Event\+Type\+To\+String}} ()
+\begin{DoxyCompactList}\small\item\em Converts m\+\_\+event\+\_\+type member variable in the \mbox{\hyperlink{classEventMessage}{Event\+Message}} object to a string. \end{DoxyCompactList}\item 
+bool \mbox{\hyperlink{classEventMessage_aa5356a869ca843577b6af64f5c1c9297}{Is\+Valid}} ()
+\begin{DoxyCompactList}\small\item\em Validates the \mbox{\hyperlink{classEventMessage}{Event\+Message}} object. \end{DoxyCompactList}\item 
+std\+::string \mbox{\hyperlink{classEventMessage_ae13342857432d5274f4d86ecc87cb613}{To\+String}} ()
+\begin{DoxyCompactList}\small\item\em Returns the string message format of the \mbox{\hyperlink{classEventMessage}{Event\+Message}} object. This is meant to go on the pipe. This is in lieu of a full serialization approach, which is overkill here. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Static Public Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+static std\+::string \mbox{\hyperlink{classEventMessage_ac6ffbdd947ed15375d4882003626b33e}{Event\+Type\+To\+String}} (const \mbox{\hyperlink{classEventMessage_a262da559aa416f176fdda72e8b5113ab}{Event\+Type}} \&event\+\_\+type)
+\begin{DoxyCompactList}\small\item\em Static version that takes the event\+\_\+type enum as a parameter and provides the string representation. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Public Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventMessage_a4f06f4fe7d1942cf726290b448388c41}\label{classEventMessage_a4f06f4fe7d1942cf726290b448388c41}} 
+int64\+\_\+t {\bfseries m\+\_\+timestamp}
+\item 
+\mbox{\Hypertarget{classEventMessage_a21de23824810f136bc833c5d62b064dd}\label{classEventMessage_a21de23824810f136bc833c5d62b064dd}} 
+\mbox{\hyperlink{classEventMessage_a262da559aa416f176fdda72e8b5113ab}{Event\+Type}} {\bfseries m\+\_\+event\+\_\+type}
+\end{DoxyCompactItemize}
+\subsection*{Private Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\hyperlink{classEventMessage_a262da559aa416f176fdda72e8b5113ab}{Event\+Type}} \mbox{\hyperlink{classEventMessage_aa4656857adf12d74bd0ba9c04e2ee539}{Event\+Type\+String\+To\+Enum}} (const std\+::string \&event\+\_\+type\+\_\+str)
+\begin{DoxyCompactList}\small\item\em This converts the event type string to the proper enum value. It is the converse of \mbox{\hyperlink{classEventMessage_a3dd4a7325fcc39e7cfdf2365422ae1c7}{Event\+Type\+To\+String()}}. \end{DoxyCompactList}\end{DoxyCompactItemize}
+
+
+\subsection{Detailed Description}
+The \mbox{\hyperlink{classEventMessage}{Event\+Message}} class is a small class that encapsulates the \char`\"{}event message\char`\"{}, which is a message sent from the local idle\+\_\+detect instance to event\+\_\+detect indicating an event that updates the last active time. The message is effectively timestamp\+:m\+\_\+event\+\_\+type in string format (to make use of pipe easier). 
+
+The class stores these in their native format.
+
+A validation method and conversion to string format are provided. 
+
+\subsection{Constructor \& Destructor Documentation}
+\mbox{\Hypertarget{classEventMessage_ae9314c9140aec416b1e403c2ec3dad25}\label{classEventMessage_ae9314c9140aec416b1e403c2ec3dad25}} 
+\index{Event\+Message@{Event\+Message}!Event\+Message@{Event\+Message}}
+\index{Event\+Message@{Event\+Message}!Event\+Message@{Event\+Message}}
+\subsubsection{\texorpdfstring{Event\+Message()}{EventMessage()}}
+{\footnotesize\ttfamily Event\+Message\+::\+Event\+Message (\begin{DoxyParamCaption}\item[{std\+::string}]{timestamp\+\_\+str,  }\item[{std\+::string}]{event\+\_\+type\+\_\+str }\end{DoxyParamCaption})}
+
+
+
+Constructs an \mbox{\hyperlink{classEventMessage}{Event\+Message}} from the provided strings. 
+
+
+\begin{DoxyParams}{Parameters}
+{\em timestamp\+\_\+str} & \\
+\hline
+{\em event\+\_\+type\+\_\+str} & \\
+\hline
+\end{DoxyParams}
+Here is the call graph for this function\+:
+% FIG 0
+
+
+\subsection{Member Function Documentation}
+\mbox{\Hypertarget{classEventMessage_aa4656857adf12d74bd0ba9c04e2ee539}\label{classEventMessage_aa4656857adf12d74bd0ba9c04e2ee539}} 
+\index{Event\+Message@{Event\+Message}!Event\+Type\+String\+To\+Enum@{Event\+Type\+String\+To\+Enum}}
+\index{Event\+Type\+String\+To\+Enum@{Event\+Type\+String\+To\+Enum}!Event\+Message@{Event\+Message}}
+\subsubsection{\texorpdfstring{Event\+Type\+String\+To\+Enum()}{EventTypeStringToEnum()}}
+{\footnotesize\ttfamily \mbox{\hyperlink{classEventMessage_a262da559aa416f176fdda72e8b5113ab}{Event\+Message\+::\+Event\+Type}} Event\+Message\+::\+Event\+Type\+String\+To\+Enum (\begin{DoxyParamCaption}\item[{const std\+::string \&}]{event\+\_\+type\+\_\+str }\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [private]}}
+
+
+
+This converts the event type string to the proper enum value. It is the converse of \mbox{\hyperlink{classEventMessage_a3dd4a7325fcc39e7cfdf2365422ae1c7}{Event\+Type\+To\+String()}}. 
+
+
+\begin{DoxyParams}{Parameters}
+{\em event\+\_\+type\+\_\+str} & \\
+\hline
+\end{DoxyParams}
+\begin{DoxyReturn}{Returns}
+Event\+Type enum value 
+\end{DoxyReturn}
+Here is the caller graph for this function\+:
+% FIG 1
+\mbox{\Hypertarget{classEventMessage_a3dd4a7325fcc39e7cfdf2365422ae1c7}\label{classEventMessage_a3dd4a7325fcc39e7cfdf2365422ae1c7}} 
+\index{Event\+Message@{Event\+Message}!Event\+Type\+To\+String@{Event\+Type\+To\+String}}
+\index{Event\+Type\+To\+String@{Event\+Type\+To\+String}!Event\+Message@{Event\+Message}}
+\subsubsection{\texorpdfstring{Event\+Type\+To\+String()}{EventTypeToString()}\hspace{0.1cm}{\footnotesize\ttfamily [1/2]}}
+{\footnotesize\ttfamily std\+::string Event\+Message\+::\+Event\+Type\+To\+String (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption})}
+
+
+
+Converts m\+\_\+event\+\_\+type member variable in the \mbox{\hyperlink{classEventMessage}{Event\+Message}} object to a string. 
+
+\begin{DoxyReturn}{Returns}
+string representation of enum value 
+\end{DoxyReturn}
+Here is the caller graph for this function\+:
+% FIG 2
+\mbox{\Hypertarget{classEventMessage_ac6ffbdd947ed15375d4882003626b33e}\label{classEventMessage_ac6ffbdd947ed15375d4882003626b33e}} 
+\index{Event\+Message@{Event\+Message}!Event\+Type\+To\+String@{Event\+Type\+To\+String}}
+\index{Event\+Type\+To\+String@{Event\+Type\+To\+String}!Event\+Message@{Event\+Message}}
+\subsubsection{\texorpdfstring{Event\+Type\+To\+String()}{EventTypeToString()}\hspace{0.1cm}{\footnotesize\ttfamily [2/2]}}
+{\footnotesize\ttfamily std\+::string Event\+Message\+::\+Event\+Type\+To\+String (\begin{DoxyParamCaption}\item[{const \mbox{\hyperlink{classEventMessage_a262da559aa416f176fdda72e8b5113ab}{Event\+Type}} \&}]{event\+\_\+type }\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [static]}}
+
+
+
+Static version that takes the event\+\_\+type enum as a parameter and provides the string representation. 
+
+
+\begin{DoxyParams}{Parameters}
+{\em event\+\_\+type} & \\
+\hline
+\end{DoxyParams}
+\begin{DoxyReturn}{Returns}
+string representation of enum value 
+\end{DoxyReturn}
+\mbox{\Hypertarget{classEventMessage_aa5356a869ca843577b6af64f5c1c9297}\label{classEventMessage_aa5356a869ca843577b6af64f5c1c9297}} 
+\index{Event\+Message@{Event\+Message}!Is\+Valid@{Is\+Valid}}
+\index{Is\+Valid@{Is\+Valid}!Event\+Message@{Event\+Message}}
+\subsubsection{\texorpdfstring{Is\+Valid()}{IsValid()}}
+{\footnotesize\ttfamily bool Event\+Message\+::\+Is\+Valid (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption})}
+
+
+
+Validates the \mbox{\hyperlink{classEventMessage}{Event\+Message}} object. 
+
+\begin{DoxyReturn}{Returns}
+true if \mbox{\hyperlink{classEventMessage}{Event\+Message}} is valid. 
+\end{DoxyReturn}
+Here is the caller graph for this function\+:
+% FIG 3
+\mbox{\Hypertarget{classEventMessage_ae13342857432d5274f4d86ecc87cb613}\label{classEventMessage_ae13342857432d5274f4d86ecc87cb613}} 
+\index{Event\+Message@{Event\+Message}!To\+String@{To\+String}}
+\index{To\+String@{To\+String}!Event\+Message@{Event\+Message}}
+\subsubsection{\texorpdfstring{To\+String()}{ToString()}}
+{\footnotesize\ttfamily std\+::string Event\+Message\+::\+To\+String (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption})}
+
+
+
+Returns the string message format of the \mbox{\hyperlink{classEventMessage}{Event\+Message}} object. This is meant to go on the pipe. This is in lieu of a full serialization approach, which is overkill here. 
+
+\begin{DoxyReturn}{Returns}
+std\+::string in the format of $<$timestamp$>$\+:$<$event\+\_\+type string$>$=\char`\"{}\char`\"{}$>$ 
+\end{DoxyReturn}
+Here is the call graph for this function\+:
+% FIG 4
+
+
+The documentation for this class was generated from the following files\+:\begin{DoxyCompactItemize}
+\item 
+util.\+h\item 
+util.\+cpp\end{DoxyCompactItemize}

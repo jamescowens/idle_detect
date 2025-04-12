@@ -1,0 +1,3 @@
+<map id="IdleDetectConfig" name="IdleDetectConfig">
+<area shape="rect" id="node2" href="$classConfig.html" title="The Config class is a singleton that stores program config read from the config file, with applied defaults if the config file cannot be read, or a config parameter is not in the config file. " alt="" coords="35,5,95,32"/>
+</map>

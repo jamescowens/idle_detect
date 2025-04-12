@@ -1,0 +1,107 @@
+This is an effort to provide a compact C++ library to detect user activity on a workstation for the purpose of running commands when the idle/active state changes. It is motivated primarily to solve the idle detection issues with B\+O\+I\+NC and other Linux based DC programs. I am implementing the following architecture, as a separate service independent of any particular DC architecture. Note that I did a proof of concept in bash shell script, and am currently very near completion on the C++ implementation. Event\+\_\+detect is finished and the idle\+\_\+detect C++ version is operational and being tested and fine-\/tuned.
+
+Note the C++ is implemented in modern C++-\/17 compliant code, in an object oriented manner. It also is multithreaded with appropriate locking/critical section control.
+
+
+\begin{DoxyEnumerate}
+\item There is a system level (via a dedicated system account event\+\_\+detect) service, event\+\_\+detect, run in a tightly controlled systemd service, dc\+\_\+event\+\_\+detection.\+service, that checks three things for idle time\+:
+\begin{DoxyItemize}
+\item the /dev/input/event devices that are pointing devices. (This catches all phyiscal mouse movement.)
+\item the pts/tty devices for atime (which provides idle time for terminals/pseudo terminals, including ssh sessions.)
+\item an input event via a named-\/pipe from user level detector (more on that below)
+\end{DoxyItemize}
+\end{DoxyEnumerate}
+
+The output of the event\+\_\+detect is a shared memory segment event\+\_\+detect\+\_\+last\+\_\+active and/or a file last\+\_\+active\+\_\+time.\+dat, which is in /run/event\+\_\+detect. Note that on all reasonably recent Linux distributions, the /run directory is a tmpfs which is in memory only. The shared memory consists of an int64\+\_\+t that is the last\+\_\+active\+\_\+time in Unix epoch seconds U\+TC. Similarly, the O\+N\+LY thing written to the last\+\_\+active\+\_\+time.\+dat is an int64 in string format that represents unix epoch time in seconds U\+TC.
+
+
+\begin{DoxyEnumerate}
+\item There is a user level service, idle\+\_\+detect, run as a user level systemd service (i.\+e. systemctl --user ...) that does the following things\+:
+\begin{DoxyItemize}
+\item determines the session type, i.\+e. tty (non G\+UI), then whether kde.
+\item for tty based session, uses event\+\_\+detect.
+\item If K\+DE, both X and Wayland provide idle time with inhibit propagation via org.\+kde.\+ksmserver Get\+Session\+Idle\+Time. A session inhibit imposed by a movie application here causes the idle time to reset to zero every few seconds.
+\item If not K\+DE, then via Check\+Gnome\+Inhibition() check org.\+gnome.\+Session\+Manager.\+Is\+Inhibited which determines inhibition on both Wayland and X Gnome sessions. If not inhibited get Gnome idle time via mutter. If not Gnome get idle time from X\+SS. Note that the fallback strategy here means that essentially for non-\/\+K\+DE non-\/\+Gnome window managers, X\+SS and/or fallback to event\+\_\+detect will be used, which means that idle inhibit functionality will be lost.
+\item reports the combined last\+\_\+active\+\_\+time from all of the above (unless it fell back to U\+S\+I\+NG event\+\_\+detect) by writing to the named pipe set up by event\+\_\+detect a short message in the form of timestamp\+:U\+S\+E\+R\+\_\+\+A\+C\+T\+I\+VE, which is received by an asynchronous, non-\/blocking read thread on the event\+\_\+detect side, which does validation on the message to prevent a security risk.
+\item optionally can run dc control scripts itself to control dc programs directly based on idle time.
+\end{DoxyItemize}
+\end{DoxyEnumerate}
+
+Since event\+\_\+detect receives update last\+\_\+active\+\_\+times from its own sources A\+ND all user level idle\+\_\+detect instances running on the machine, and provides an overall last\+\_\+active\+\_\+time in last\+\_\+active\+\_\+time.\+dat, the B\+O\+I\+NC client or other DC architecture can simply poll the last\+\_\+idle\+\_\+time.\+dat file once a second to determine idleness.
+
+This pretty much will resolve 99\% of the issues we have been having with idle detection. Other specific window manager code can be added later for idle inhibit detection on other than K\+D\+E/\+Gnome.
+
+This should be considered early beta code. It should run stably. Most corner cases have been tested, but installation is still not straigtforward.
+
+Development work is occurring on the development branch, and releases are on master. I am currently doing periodic pre-\/release tags (i.\+e. 0.\+x) at significant development points.
+
+This code is licensed under the M\+IT license.
+
+\subsubsection*{Current dependencies (both library and development files -\/ for compilation)\+:}
+
+
+\begin{DoxyItemize}
+\item libevdev
+\item lib\+Xss
+\item dbus-\/1
+\item glib-\/2.\+0
+\item gobject-\/2.\+0
+\item gio-\/2.\+0
+\end{DoxyItemize}
+
+Dev packages needed to compile for Ubuntu\+:
+\begin{DoxyItemize}
+\item libevdev-\/dev
+\item libxss-\/dev
+\item libdbus-\/1-\/dev
+\item libglib2.\+0-\/dev
+\end{DoxyItemize}
+
+Fedora\+:
+\begin{DoxyItemize}
+\item libevdev-\/devel
+\item lib\+X11-\/devel
+\item lib\+X\+Scrn\+Saver-\/devel
+\item dbus-\/devel
+\item glib2-\/devel
+\end{DoxyItemize}
+
+\subsubsection*{Installation procedure}
+
+
+\begin{DoxyEnumerate}
+\item git clone \href{https://github.com/jamescowens/idle_detect.git}{\tt https\+://github.\+com/jamescowens/idle\+\_\+detect.\+git} and change into the idle\+\_\+detect directory.
+\item Make sure you have installed the packages for the dependences listed above. The actual names will vary depending on the distribution.
+\item Compile the event\+\_\+detect C++ application with cmake\+:
+\begin{DoxyItemize}
+\item cd ./build/cmake
+\item cmake ../../ (note you may need the -\/\+D\+C\+M\+A\+K\+E\+\_\+\+C\+X\+X\+\_\+\+C\+O\+M\+P\+I\+L\+ER=$<$c++ compiler path$>$ -\/\+D\+C\+M\+A\+K\+E\+\_\+\+C\+\_\+\+C\+O\+M\+P\+I\+L\+ER=$<$c compiler path$>$ options to point to a C++-\/17 compliant compiler)
+\item cmake build .
+\end{DoxyItemize}
+\item Install executables and system-\/wide service with sudo cmake --install .
+\item Load the new service into systemd with sudo systemctl daemon-\/reload.
+\item Create new dedicated system user account for the event\+\_\+detect component.
+\begin{DoxyItemize}
+\item sudo groupadd --system event-\/detect
+\item sudo useradd --system -\/g event-\/detect -\/d / -\/s /sbin/nologin event-\/detect
+\item sudo usermod -\/aG input event-\/detect
+\item sudo usermod -\/aG tty event-\/detect
+\end{DoxyItemize}
+\item Modify event\+\_\+detect.\+conf to your liking with sudo nano /etc/event\+\_\+detect.conf.
+\item Install user level script and user level service with cmake --build . --target install\+\_\+user\+\_\+service. You may need to create $\sim$/.config/systemd/user directory first if it does not exist. Not all distributions create this by default.
+\item Modify idle\+\_\+detect.\+conf to your liking with nano $\sim$/.config/idle\+\_\+detect.\+conf
+\item Load the new user level service into systemd with systemctl --user daemon-\/reload
+\item sudo systemctl enable --now dc\+\_\+event\+\_\+detection. This enables and starts the pointing device and pts/tty event detection service.
+\item systemctl --user enable --now dc\+\_\+idle\+\_\+detection. This enables and starts the user mode component as a user level service.
+\item Check the status of both the services\+: sudo systemctl status dc\+\_\+event\+\_\+detection, and systemctl --user status dc\+\_\+idle\+\_\+detection, and make sure they are successfully running.
+\item Modify the dc\+\_\+pause and dc\+\_\+unpause scripts to your liking (they are currently set up to control B\+O\+I\+NC in its default installation).
+\end{DoxyEnumerate}
+\begin{DoxyItemize}
+\item sudo nano /usr/local/bin/dc\+\_\+pause
+\item sudo nano /usr/local/bin/dc\+\_\+unpause
+\end{DoxyItemize}
+\begin{DoxyEnumerate}
+\item If you change the event\+\_\+detect.\+conf file or the idle\+\_\+detect.\+conf files, then you currently need to restart the appropriate service to pick up the changes. Automatic change detection without restart will be added later.
+\end{DoxyEnumerate}
+
+\subsubsection*{This is early beta level code and is currently subject to rapid change.}

@@ -1,0 +1,5 @@
+<map id="Graphical Class Hierarchy" name="Graphical Class Hierarchy">
+<area shape="rect" id="node1" href="$classConfig.html" title="The Config class is a singleton that stores program config read from the config file, with applied defaults if the config file cannot be read, or a config parameter is not in the config file. " alt="" coords="5,31,65,57"/>
+<area shape="rect" id="node2" href="$classEventDetectConfig.html" title="The EventDetectConfig class. This specializes the Config class and implements the virtual method Proc..." alt="" coords="113,5,245,32"/>
+<area shape="rect" id="node3" href="$classIdleDetectConfig.html" title="The IdleDetectConfig class. This specializes the Config class and implements the virtual method Proce..." alt="" coords="119,56,239,83"/>
+</map>

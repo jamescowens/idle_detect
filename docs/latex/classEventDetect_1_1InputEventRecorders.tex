@@ -1,0 +1,94 @@
+\hypertarget{classEventDetect_1_1InputEventRecorders}{}\section{Event\+Detect\+:\+:Input\+Event\+Recorders Class Reference}
+\label{classEventDetect_1_1InputEventRecorders}\index{Event\+Detect\+::\+Input\+Event\+Recorders@{Event\+Detect\+::\+Input\+Event\+Recorders}}
+
+
+The \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders}{Input\+Event\+Recorders}} class provides the framework for recording event activity from each of the input event devices that are classified as a pointing device (mouse). It is a singleton, but has multiple subordinate threads running, 1 thread for each identified device to monitor.  
+
+
+
+
+{\ttfamily \#include $<$event\+\_\+detect.\+h$>$}
+
+\subsection*{Classes}
+\begin{DoxyCompactItemize}
+\item 
+class \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_1_1EventRecorder}{Event\+Recorder}}
+\begin{DoxyCompactList}\small\item\em The \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_1_1EventRecorder}{Event\+Recorder}} class formalizes the event recorder instance and is instantiated for each event recorder thread. These instantiations are wrapped by shared\+\_\+ptr objects and the shared\+\_\+ptrs stored in the m\+\_\+event\+\_\+recorder\+\_\+ptrs vector. This is essentially a very specialized thread pool. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Public Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_a4570384c57a5e72fbd3a78056f8093e8}\label{classEventDetect_1_1InputEventRecorders_a4570384c57a5e72fbd3a78056f8093e8}} 
+\mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_a4570384c57a5e72fbd3a78056f8093e8}{Input\+Event\+Recorders}} ()
+\begin{DoxyCompactList}\small\item\em Constructor. \end{DoxyCompactList}\item 
+int64\+\_\+t \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_aafd4194710ca37dee2cb8bd4cc5e50b0}{Get\+Total\+Event\+Count}} () const
+\begin{DoxyCompactList}\small\item\em Provides the total count (tally) of events across all monitored devices. \end{DoxyCompactList}\item 
+std\+::vector$<$ std\+::shared\+\_\+ptr$<$ \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_1_1EventRecorder}{Event\+Recorder}} $>$ $>$ \& \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_a33322b5f96196ac7cad264428d04aeda}{Get\+Event\+Recorders}} ()
+\begin{DoxyCompactList}\small\item\em Returns a reference to the event recorder objects thread pool. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_addb90d9c055cb870ea212f9e6ad9565f}\label{classEventDetect_1_1InputEventRecorders_addb90d9c055cb870ea212f9e6ad9565f}} 
+void {\bfseries Reset\+Event\+Recorders} ()
+\end{DoxyCompactItemize}
+\subsection*{Public Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_ac91f01b94760d0b711bd3159749bfb89}\label{classEventDetect_1_1InputEventRecorders_ac91f01b94760d0b711bd3159749bfb89}} 
+std\+::condition\+\_\+variable \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_ac91f01b94760d0b711bd3159749bfb89}{cv\+\_\+recorder\+\_\+threads}}
+\begin{DoxyCompactList}\small\item\em Condition variable for control/synchronization of the recorder threads. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_ad6423bc9846cbd1bbfbda477d65ea76e}\label{classEventDetect_1_1InputEventRecorders_ad6423bc9846cbd1bbfbda477d65ea76e}} 
+std\+::atomic$<$ bool $>$ \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_ad6423bc9846cbd1bbfbda477d65ea76e}{m\+\_\+interrupt\+\_\+recorders}}
+\begin{DoxyCompactList}\small\item\em Atomic boolean that interrupts the recorder threads. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Private Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_a90f6382a599209d35038e37afc904a2a}\label{classEventDetect_1_1InputEventRecorders_a90f6382a599209d35038e37afc904a2a}} 
+std\+::mutex \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_a90f6382a599209d35038e37afc904a2a}{mtx\+\_\+event\+\_\+recorders}}
+\begin{DoxyCompactList}\small\item\em This is the mutex member that provides lock control for the input event recorders object. This is used to ensure the input event recorders is thread-\/safe. Note that the subordinate individual event recorders are covered by their own individual locks. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_a1f54a876d4ac20791fbd770ab8fd82ba}\label{classEventDetect_1_1InputEventRecorders_a1f54a876d4ac20791fbd770ab8fd82ba}} 
+std\+::mutex \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_a1f54a876d4ac20791fbd770ab8fd82ba}{mtx\+\_\+event\+\_\+recorder\+\_\+threads}}
+\begin{DoxyCompactList}\small\item\em This provides lock control for the recorder worker threads themselves. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_a493d7a2d0063cc1e4998a2b99cc0e769}\label{classEventDetect_1_1InputEventRecorders_a493d7a2d0063cc1e4998a2b99cc0e769}} 
+std\+::vector$<$ std\+::shared\+\_\+ptr$<$ \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_1_1EventRecorder}{Event\+Recorder}} $>$ $>$ \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_a493d7a2d0063cc1e4998a2b99cc0e769}{m\+\_\+event\+\_\+recorder\+\_\+ptrs}}
+\begin{DoxyCompactList}\small\item\em Holds smart shared pointers to the event recorder threads. This is a specialized thread pool with associated metadata. \end{DoxyCompactList}\end{DoxyCompactItemize}
+
+
+\subsection{Detailed Description}
+The \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders}{Input\+Event\+Recorders}} class provides the framework for recording event activity from each of the input event devices that are classified as a pointing device (mouse). It is a singleton, but has multiple subordinate threads running, 1 thread for each identified device to monitor. 
+
+\subsection{Member Function Documentation}
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_a33322b5f96196ac7cad264428d04aeda}\label{classEventDetect_1_1InputEventRecorders_a33322b5f96196ac7cad264428d04aeda}} 
+\index{Event\+Detect\+::\+Input\+Event\+Recorders@{Event\+Detect\+::\+Input\+Event\+Recorders}!Get\+Event\+Recorders@{Get\+Event\+Recorders}}
+\index{Get\+Event\+Recorders@{Get\+Event\+Recorders}!Event\+Detect\+::\+Input\+Event\+Recorders@{Event\+Detect\+::\+Input\+Event\+Recorders}}
+\subsubsection{\texorpdfstring{Get\+Event\+Recorders()}{GetEventRecorders()}}
+{\footnotesize\ttfamily std\+::vector$<$ std\+::shared\+\_\+ptr$<$ \mbox{\hyperlink{classEventDetect_1_1InputEventRecorders_1_1EventRecorder}{Input\+Event\+Recorders\+::\+Event\+Recorder}} $>$ $>$ \& Input\+Event\+Recorders\+::\+Get\+Event\+Recorders (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption})}
+
+
+
+Returns a reference to the event recorder objects thread pool. 
+
+\begin{DoxyReturn}{Returns}
+vector of smart shared pointers to the event recorders 
+\end{DoxyReturn}
+\mbox{\Hypertarget{classEventDetect_1_1InputEventRecorders_aafd4194710ca37dee2cb8bd4cc5e50b0}\label{classEventDetect_1_1InputEventRecorders_aafd4194710ca37dee2cb8bd4cc5e50b0}} 
+\index{Event\+Detect\+::\+Input\+Event\+Recorders@{Event\+Detect\+::\+Input\+Event\+Recorders}!Get\+Total\+Event\+Count@{Get\+Total\+Event\+Count}}
+\index{Get\+Total\+Event\+Count@{Get\+Total\+Event\+Count}!Event\+Detect\+::\+Input\+Event\+Recorders@{Event\+Detect\+::\+Input\+Event\+Recorders}}
+\subsubsection{\texorpdfstring{Get\+Total\+Event\+Count()}{GetTotalEventCount()}}
+{\footnotesize\ttfamily int64\+\_\+t Input\+Event\+Recorders\+::\+Get\+Total\+Event\+Count (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption}) const}
+
+
+
+Provides the total count (tally) of events across all monitored devices. 
+
+Returns total event count across all recorders.
+
+\begin{DoxyReturn}{Returns}
+int64\+\_\+t of total event count
+
+
+\end{DoxyReturn}
+Here is the caller graph for this function\+:
+% FIG 0
+
+
+The documentation for this class was generated from the following files\+:\begin{DoxyCompactItemize}
+\item 
+event\+\_\+detect.\+h\item 
+event\+\_\+detect.\+cpp\end{DoxyCompactItemize}

@@ -1,0 +1,159 @@
+.TH "EventDetect::Monitor" 3 "Sat Apr 12 2025" "Version 0.7" "idle_detect" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+EventDetect::Monitor \- The \fBMonitor\fP class provides the framework for monitoring event activity recorded by the EventRecorders class EventRecorder threads\&. It also monitors changes in the input event devices and resets the EventRecorder threads if they change\&. It also updates the m_last_active_time\&. The class is a singleton and has one instantiated thread\&. It uses locks to protect the event_monitor device paths and the thread\&. The m_last_active_time is an atomic and requires no explicit locking\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.PP
+\fC#include <event_detect\&.h>\fP
+.SS "Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "\fBMonitor\fP ()"
+.br
+.RI "Constructor\&. "
+.ti -1c
+.RI "std::vector< fs::path > \fBGetEventDevices\fP () const"
+.br
+.RI "Provides a copy of the m_event_device_paths private member\&. The copy is provided instead of a reference to minimize the lock time held on mtx_event_monitor\&. "
+.ti -1c
+.RI "void \fBUpdateEventDevices\fP ()"
+.br
+.RI "This calls the private method \fBEnumerateEventDevices()\fP and updates the m_event_device_paths private member\&. "
+.ti -1c
+.RI "void \fBEventActivityMonitorThread\fP ()"
+.br
+.RI "This is the function that is the entry point for the event activity monitor worker thread\&. "
+.ti -1c
+.RI "bool \fBIsInitialized\fP () const"
+.br
+.RI "Provides a flag to indicate whether the monitor has been initialized\&. This is used in main in the application control paths\&. "
+.ti -1c
+.RI "int64_t \fBGetLastActiveTime\fP () const"
+.br
+.RI "Provides the last active time on this machine globally based on the activated monitors/recorders\&. "
+.in -1c
+.SS "Public Attributes"
+
+.in +1c
+.ti -1c
+.RI "std::thread \fBm_monitor_thread\fP"
+.br
+.RI "Holds the actual monitor thread\&. "
+.ti -1c
+.RI "std::condition_variable \fBcv_monitor_thread\fP"
+.br
+.RI "Condition variable for control/synchronization of the monitor thread\&. "
+.ti -1c
+.RI "std::atomic< bool > \fBm_interrupt_monitor\fP"
+.br
+.RI "Atomic boolean that interrupts the monitor thread\&. "
+.in -1c
+.SS "Private Member Functions"
+
+.in +1c
+.ti -1c
+.RI "void \fBWriteLastActiveTimeToFile\fP (const fs::path &filepath)"
+.br
+.RI "This is the whole point of the application\&. This writes out the last active time determined by the monitor\&. "
+.in -1c
+.SS "Static Private Member Functions"
+
+.in +1c
+.ti -1c
+.RI "static std::vector< fs::path > \fBEnumerateEventDevices\fP ()"
+.br
+.RI "This is a private method to determine the input event devices to monitor\&. In particular we only want to monitor pointing devices (mice)\&. "
+.in -1c
+.SS "Private Attributes"
+
+.in +1c
+.ti -1c
+.RI "std::mutex \fBmtx_event_monitor\fP"
+.br
+.RI "This is the mutex member that provides lock control for the event monitor object\&. This is used to ensure the event monitor is thread-safe\&. "
+.ti -1c
+.RI "std::mutex \fBmtx_event_monitor_thread\fP"
+.br
+.RI "This provides lock control for the monitor worker thread itself\&. "
+.ti -1c
+.RI "std::vector< fs::path > \fBm_event_device_paths\fP"
+.br
+.RI "Holds the paths of the input event devices to monitor\&. "
+.ti -1c
+.RI "std::atomic< int64_t > \fBm_last_active_time\fP"
+.br
+.RI "holds the last active time determined by the monitor\&. This is an atomic, which means it can be written to/read from without holding the mtx_event_monitor lock\&. "
+.ti -1c
+.RI "std::atomic< bool > \fBm_initialized\fP"
+.br
+.RI "This holds the flag as to whether the monitor has been initialized and is provided by the \fBIsInitialized()\fP public method\&. "
+.in -1c
+.SH "Detailed Description"
+.PP 
+The \fBMonitor\fP class provides the framework for monitoring event activity recorded by the EventRecorders class EventRecorder threads\&. It also monitors changes in the input event devices and resets the EventRecorder threads if they change\&. It also updates the m_last_active_time\&. The class is a singleton and has one instantiated thread\&. It uses locks to protect the event_monitor device paths and the thread\&. The m_last_active_time is an atomic and requires no explicit locking\&. 
+.SH "Member Function Documentation"
+.PP 
+.SS "std::vector< fs::path > Monitor::EnumerateEventDevices ()\fC [static]\fP, \fC [private]\fP"
+
+.PP
+This is a private method to determine the input event devices to monitor\&. In particular we only want to monitor pointing devices (mice)\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+
+.RE
+.PP
+
+.SS "std::vector< fs::path > Monitor::GetEventDevices () const"
+
+.PP
+Provides a copy of the m_event_device_paths private member\&. The copy is provided instead of a reference to minimize the lock time held on mtx_event_monitor\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+std::vector<fs::path> of the input event device paths\&. 
+.RE
+.PP
+
+.SS "int64_t Monitor::GetLastActiveTime () const"
+
+.PP
+Provides the last active time on this machine globally based on the activated monitors/recorders\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+
+.RE
+.PP
+
+.SS "bool Monitor::IsInitialized () const"
+
+.PP
+Provides a flag to indicate whether the monitor has been initialized\&. This is used in main in the application control paths\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+boolean flag 
+.RE
+.PP
+
+.SS "void Monitor::WriteLastActiveTimeToFile (const fs::path & filepath)\fC [private]\fP"
+
+.PP
+This is the whole point of the application\&. This writes out the last active time determined by the monitor\&. 
+.PP
+\fBParameters:\fP
+.RS 4
+\fIfilepath\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for idle_detect from the source code\&.

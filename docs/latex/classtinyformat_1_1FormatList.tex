@@ -1,0 +1,45 @@
+\hypertarget{classtinyformat_1_1FormatList}{}\section{tinyformat\+:\+:Format\+List Class Reference}
+\label{classtinyformat_1_1FormatList}\index{tinyformat\+::\+Format\+List@{tinyformat\+::\+Format\+List}}
+
+
+{\ttfamily \#include $<$tinyformat.\+h$>$}
+
+
+
+Inheritance diagram for tinyformat\+:\+:Format\+List\+:
+% FIG 0
+
+
+Collaboration diagram for tinyformat\+:\+:Format\+List\+:
+% FIG 1
+\subsection*{Public Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classtinyformat_1_1FormatList_a4dc93948fa7b945665800b5c147037c3}\label{classtinyformat_1_1FormatList_a4dc93948fa7b945665800b5c147037c3}} 
+{\bfseries Format\+List} (\mbox{\hyperlink{classtinyformat_1_1detail_1_1FormatArg}{detail\+::\+Format\+Arg}} $\ast$formatters, int N)
+\end{DoxyCompactItemize}
+\subsection*{Private Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classtinyformat_1_1FormatList_a90b0b9b03a90c09e8734b51f8be3f734}\label{classtinyformat_1_1FormatList_a90b0b9b03a90c09e8734b51f8be3f734}} 
+const \mbox{\hyperlink{classtinyformat_1_1detail_1_1FormatArg}{detail\+::\+Format\+Arg}} $\ast$ {\bfseries m\+\_\+formatters}
+\item 
+\mbox{\Hypertarget{classtinyformat_1_1FormatList_aee4267e50285b7adeb57b61d6305312b}\label{classtinyformat_1_1FormatList_aee4267e50285b7adeb57b61d6305312b}} 
+int {\bfseries m\+\_\+N}
+\end{DoxyCompactItemize}
+\subsection*{Friends}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classtinyformat_1_1FormatList_a105eb7b498f1353f8da108bd7284af58}\label{classtinyformat_1_1FormatList_a105eb7b498f1353f8da108bd7284af58}} 
+void {\bfseries vformat} (std\+::ostream \&out, const char $\ast$fmt, const \mbox{\hyperlink{classtinyformat_1_1FormatList}{Format\+List}} \&list)
+\end{DoxyCompactItemize}
+
+
+\subsection{Detailed Description}
+List of template arguments format(), held in a type-\/opaque way.
+
+A const reference to \mbox{\hyperlink{classtinyformat_1_1FormatList}{Format\+List}} (typedef\textquotesingle{}d as Format\+List\+Ref) may be conveniently used to pass arguments to non-\/template functions\+: All type information has been stripped from the arguments, leaving just enough of a common interface to perform formatting as required. 
+
+The documentation for this class was generated from the following file\+:\begin{DoxyCompactItemize}
+\item 
+tinyformat.\+h\end{DoxyCompactItemize}

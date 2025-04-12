@@ -1,0 +1,4 @@
+<map id="EventMessage::EventTypeToString" name="EventMessage::EventTypeToString">
+<area shape="rect" id="node2" href="$classEventDetect_1_1IdleDetectMonitor.html#a03e59f3ae8ea4e93677f6684556d408f" title="Method to instantiate the tty monitor thread. " alt="" coords="244,5,448,47"/>
+<area shape="rect" id="node3" href="$classEventMessage.html#ae13342857432d5274f4d86ecc87cb613" title="Returns the string message format of the EventMessage object. This is meant to go on the pipe..." alt="" coords="264,71,428,98"/>
+</map>

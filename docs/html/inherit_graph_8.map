@@ -1,0 +1,5 @@
+<map id="Graphical Class Hierarchy" name="Graphical Class Hierarchy">
+<area shape="rect" id="node2" href="$classEventIdleDetectException.html" title="The EventDetectException class is a customized exception handling class for the event_detect applicat..." alt="" coords="131,31,303,57"/>
+<area shape="rect" id="node3" href="$classFileSystemException.html" title="File system related exceptions. " alt="" coords="351,5,496,32"/>
+<area shape="rect" id="node4" href="$classThreadException.html" title="Threading Related Exceptions. " alt="" coords="364,56,483,83"/>
+</map>

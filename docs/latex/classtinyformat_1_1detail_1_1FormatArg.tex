@@ -1,0 +1,40 @@
+\hypertarget{classtinyformat_1_1detail_1_1FormatArg}{}\section{tinyformat\+:\+:detail\+:\+:Format\+Arg Class Reference}
+\label{classtinyformat_1_1detail_1_1FormatArg}\index{tinyformat\+::detail\+::\+Format\+Arg@{tinyformat\+::detail\+::\+Format\+Arg}}
+\subsection*{Public Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classtinyformat_1_1detail_1_1FormatArg_adec80164e93744f53ae7ecc6a5f6af27}\label{classtinyformat_1_1detail_1_1FormatArg_adec80164e93744f53ae7ecc6a5f6af27}} 
+{\footnotesize template$<$typename T $>$ }\\{\bfseries Format\+Arg} (const T \&value)
+\item 
+\mbox{\Hypertarget{classtinyformat_1_1detail_1_1FormatArg_acbf435711bbe4a4da7fc81758d7108a9}\label{classtinyformat_1_1detail_1_1FormatArg_acbf435711bbe4a4da7fc81758d7108a9}} 
+void {\bfseries format} (std\+::ostream \&out, const char $\ast$fmt\+Begin, const char $\ast$fmt\+End, int ntrunc) const
+\item 
+\mbox{\Hypertarget{classtinyformat_1_1detail_1_1FormatArg_a91b69f66ce9dc8ca2914dce8985d7a1a}\label{classtinyformat_1_1detail_1_1FormatArg_a91b69f66ce9dc8ca2914dce8985d7a1a}} 
+int {\bfseries to\+Int} () const
+\end{DoxyCompactItemize}
+\subsection*{Static Private Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classtinyformat_1_1detail_1_1FormatArg_a14632665aa1c2ecfbddf35ea23479bfb}\label{classtinyformat_1_1detail_1_1FormatArg_a14632665aa1c2ecfbddf35ea23479bfb}} 
+{\footnotesize template$<$typename T $>$ }\\static T\+I\+N\+Y\+F\+O\+R\+M\+A\+T\+\_\+\+H\+I\+D\+D\+EN void {\bfseries format\+Impl} (std\+::ostream \&out, const char $\ast$fmt\+Begin, const char $\ast$fmt\+End, int ntrunc, const void $\ast$value)
+\item 
+\mbox{\Hypertarget{classtinyformat_1_1detail_1_1FormatArg_a646cd3417730e0a797d37a898bb081be}\label{classtinyformat_1_1detail_1_1FormatArg_a646cd3417730e0a797d37a898bb081be}} 
+{\footnotesize template$<$typename T $>$ }\\static T\+I\+N\+Y\+F\+O\+R\+M\+A\+T\+\_\+\+H\+I\+D\+D\+EN int {\bfseries to\+Int\+Impl} (const void $\ast$value)
+\end{DoxyCompactItemize}
+\subsection*{Private Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classtinyformat_1_1detail_1_1FormatArg_ad7630a7d1e68ac56e46e03722156056a}\label{classtinyformat_1_1detail_1_1FormatArg_ad7630a7d1e68ac56e46e03722156056a}} 
+const void $\ast$ {\bfseries m\+\_\+value}
+\item 
+\mbox{\Hypertarget{classtinyformat_1_1detail_1_1FormatArg_a3e1114e7a277020906bfd4588ff9b6fc}\label{classtinyformat_1_1detail_1_1FormatArg_a3e1114e7a277020906bfd4588ff9b6fc}} 
+void($\ast$ {\bfseries m\+\_\+format\+Impl} )(std\+::ostream \&out, const char $\ast$fmt\+Begin, const char $\ast$fmt\+End, int ntrunc, const void $\ast$value)
+\item 
+\mbox{\Hypertarget{classtinyformat_1_1detail_1_1FormatArg_a999e592d6235d5dbdf0f46cad769f220}\label{classtinyformat_1_1detail_1_1FormatArg_a999e592d6235d5dbdf0f46cad769f220}} 
+int($\ast$ {\bfseries m\+\_\+to\+Int\+Impl} )(const void $\ast$value)
+\end{DoxyCompactItemize}
+
+
+The documentation for this class was generated from the following file\+:\begin{DoxyCompactItemize}
+\item 
+tinyformat.\+h\end{DoxyCompactItemize}

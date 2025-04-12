@@ -1,0 +1,154 @@
+\hypertarget{classEventDetect_1_1Monitor}{}\section{Event\+Detect\+:\+:Monitor Class Reference}
+\label{classEventDetect_1_1Monitor}\index{Event\+Detect\+::\+Monitor@{Event\+Detect\+::\+Monitor}}
+
+
+The \mbox{\hyperlink{classEventDetect_1_1Monitor}{Monitor}} class provides the framework for monitoring event activity recorded by the Event\+Recorders class Event\+Recorder threads. It also monitors changes in the input event devices and resets the Event\+Recorder threads if they change. It also updates the m\+\_\+last\+\_\+active\+\_\+time. The class is a singleton and has one instantiated thread. It uses locks to protect the event\+\_\+monitor device paths and the thread. The m\+\_\+last\+\_\+active\+\_\+time is an atomic and requires no explicit locking.  
+
+
+
+
+{\ttfamily \#include $<$event\+\_\+detect.\+h$>$}
+
+\subsection*{Public Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1Monitor_a639d27b16055d8681c2015d00ea083d8}\label{classEventDetect_1_1Monitor_a639d27b16055d8681c2015d00ea083d8}} 
+\mbox{\hyperlink{classEventDetect_1_1Monitor_a639d27b16055d8681c2015d00ea083d8}{Monitor}} ()
+\begin{DoxyCompactList}\small\item\em Constructor. \end{DoxyCompactList}\item 
+std\+::vector$<$ fs\+::path $>$ \mbox{\hyperlink{classEventDetect_1_1Monitor_ae8da256174cfe6eab25421dc1d2673d7}{Get\+Event\+Devices}} () const
+\begin{DoxyCompactList}\small\item\em Provides a copy of the m\+\_\+event\+\_\+device\+\_\+paths private member. The copy is provided instead of a reference to minimize the lock time held on mtx\+\_\+event\+\_\+monitor. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1Monitor_a3109186021afae63d02df1bf73bbcc2f}\label{classEventDetect_1_1Monitor_a3109186021afae63d02df1bf73bbcc2f}} 
+void \mbox{\hyperlink{classEventDetect_1_1Monitor_a3109186021afae63d02df1bf73bbcc2f}{Update\+Event\+Devices}} ()
+\begin{DoxyCompactList}\small\item\em This calls the private method \mbox{\hyperlink{classEventDetect_1_1Monitor_a46b24be7323eaa4f6e396d14108aea6e}{Enumerate\+Event\+Devices()}} and updates the m\+\_\+event\+\_\+device\+\_\+paths private member. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1Monitor_a598a9da26f5c2970d9b618bbc7b66322}\label{classEventDetect_1_1Monitor_a598a9da26f5c2970d9b618bbc7b66322}} 
+void \mbox{\hyperlink{classEventDetect_1_1Monitor_a598a9da26f5c2970d9b618bbc7b66322}{Event\+Activity\+Monitor\+Thread}} ()
+\begin{DoxyCompactList}\small\item\em This is the function that is the entry point for the event activity monitor worker thread. \end{DoxyCompactList}\item 
+bool \mbox{\hyperlink{classEventDetect_1_1Monitor_a8d0a2609e4c8613bc020e239d280dfb5}{Is\+Initialized}} () const
+\begin{DoxyCompactList}\small\item\em Provides a flag to indicate whether the monitor has been initialized. This is used in main in the application control paths. \end{DoxyCompactList}\item 
+int64\+\_\+t \mbox{\hyperlink{classEventDetect_1_1Monitor_a8abba216129439752a569239173fea87}{Get\+Last\+Active\+Time}} () const
+\begin{DoxyCompactList}\small\item\em Provides the last active time on this machine globally based on the activated monitors/recorders. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Public Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1Monitor_aa132ddeed9eb332078dc32bfa3dd3f6d}\label{classEventDetect_1_1Monitor_aa132ddeed9eb332078dc32bfa3dd3f6d}} 
+std\+::thread \mbox{\hyperlink{classEventDetect_1_1Monitor_aa132ddeed9eb332078dc32bfa3dd3f6d}{m\+\_\+monitor\+\_\+thread}}
+\begin{DoxyCompactList}\small\item\em Holds the actual monitor thread. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1Monitor_aee960d904e743274f0ad54aa5ca4dde3}\label{classEventDetect_1_1Monitor_aee960d904e743274f0ad54aa5ca4dde3}} 
+std\+::condition\+\_\+variable \mbox{\hyperlink{classEventDetect_1_1Monitor_aee960d904e743274f0ad54aa5ca4dde3}{cv\+\_\+monitor\+\_\+thread}}
+\begin{DoxyCompactList}\small\item\em Condition variable for control/synchronization of the monitor thread. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1Monitor_af9810df66ec16b2109994540b298024b}\label{classEventDetect_1_1Monitor_af9810df66ec16b2109994540b298024b}} 
+std\+::atomic$<$ bool $>$ \mbox{\hyperlink{classEventDetect_1_1Monitor_af9810df66ec16b2109994540b298024b}{m\+\_\+interrupt\+\_\+monitor}}
+\begin{DoxyCompactList}\small\item\em Atomic boolean that interrupts the monitor thread. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Private Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+void \mbox{\hyperlink{classEventDetect_1_1Monitor_af1175eb0bedd877b861bfd76451e8711}{Write\+Last\+Active\+Time\+To\+File}} (const fs\+::path \&filepath)
+\begin{DoxyCompactList}\small\item\em This is the whole point of the application. This writes out the last active time determined by the monitor. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Static Private Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+static std\+::vector$<$ fs\+::path $>$ \mbox{\hyperlink{classEventDetect_1_1Monitor_a46b24be7323eaa4f6e396d14108aea6e}{Enumerate\+Event\+Devices}} ()
+\begin{DoxyCompactList}\small\item\em This is a private method to determine the input event devices to monitor. In particular we only want to monitor pointing devices (mice). \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Private Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1Monitor_ac0f7892aadf252355ab285b9961f8359}\label{classEventDetect_1_1Monitor_ac0f7892aadf252355ab285b9961f8359}} 
+std\+::mutex \mbox{\hyperlink{classEventDetect_1_1Monitor_ac0f7892aadf252355ab285b9961f8359}{mtx\+\_\+event\+\_\+monitor}}
+\begin{DoxyCompactList}\small\item\em This is the mutex member that provides lock control for the event monitor object. This is used to ensure the event monitor is thread-\/safe. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1Monitor_a5a9db8559cfc759ca556fc1dca5b5b04}\label{classEventDetect_1_1Monitor_a5a9db8559cfc759ca556fc1dca5b5b04}} 
+std\+::mutex \mbox{\hyperlink{classEventDetect_1_1Monitor_a5a9db8559cfc759ca556fc1dca5b5b04}{mtx\+\_\+event\+\_\+monitor\+\_\+thread}}
+\begin{DoxyCompactList}\small\item\em This provides lock control for the monitor worker thread itself. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1Monitor_ae703991c95b0f32857e034dde9e33bf4}\label{classEventDetect_1_1Monitor_ae703991c95b0f32857e034dde9e33bf4}} 
+std\+::vector$<$ fs\+::path $>$ \mbox{\hyperlink{classEventDetect_1_1Monitor_ae703991c95b0f32857e034dde9e33bf4}{m\+\_\+event\+\_\+device\+\_\+paths}}
+\begin{DoxyCompactList}\small\item\em Holds the paths of the input event devices to monitor. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1Monitor_a2c8731fb47d6d186d33098193d851ea5}\label{classEventDetect_1_1Monitor_a2c8731fb47d6d186d33098193d851ea5}} 
+std\+::atomic$<$ int64\+\_\+t $>$ \mbox{\hyperlink{classEventDetect_1_1Monitor_a2c8731fb47d6d186d33098193d851ea5}{m\+\_\+last\+\_\+active\+\_\+time}}
+\begin{DoxyCompactList}\small\item\em holds the last active time determined by the monitor. This is an atomic, which means it can be written to/read from without holding the mtx\+\_\+event\+\_\+monitor lock. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1Monitor_a875d2d618888fb23ad1cc4000f5ad320}\label{classEventDetect_1_1Monitor_a875d2d618888fb23ad1cc4000f5ad320}} 
+std\+::atomic$<$ bool $>$ \mbox{\hyperlink{classEventDetect_1_1Monitor_a875d2d618888fb23ad1cc4000f5ad320}{m\+\_\+initialized}}
+\begin{DoxyCompactList}\small\item\em This holds the flag as to whether the monitor has been initialized and is provided by the \mbox{\hyperlink{classEventDetect_1_1Monitor_a8d0a2609e4c8613bc020e239d280dfb5}{Is\+Initialized()}} public method. \end{DoxyCompactList}\end{DoxyCompactItemize}
+
+
+\subsection{Detailed Description}
+The \mbox{\hyperlink{classEventDetect_1_1Monitor}{Monitor}} class provides the framework for monitoring event activity recorded by the Event\+Recorders class Event\+Recorder threads. It also monitors changes in the input event devices and resets the Event\+Recorder threads if they change. It also updates the m\+\_\+last\+\_\+active\+\_\+time. The class is a singleton and has one instantiated thread. It uses locks to protect the event\+\_\+monitor device paths and the thread. The m\+\_\+last\+\_\+active\+\_\+time is an atomic and requires no explicit locking. 
+
+\subsection{Member Function Documentation}
+\mbox{\Hypertarget{classEventDetect_1_1Monitor_a46b24be7323eaa4f6e396d14108aea6e}\label{classEventDetect_1_1Monitor_a46b24be7323eaa4f6e396d14108aea6e}} 
+\index{Event\+Detect\+::\+Monitor@{Event\+Detect\+::\+Monitor}!Enumerate\+Event\+Devices@{Enumerate\+Event\+Devices}}
+\index{Enumerate\+Event\+Devices@{Enumerate\+Event\+Devices}!Event\+Detect\+::\+Monitor@{Event\+Detect\+::\+Monitor}}
+\subsubsection{\texorpdfstring{Enumerate\+Event\+Devices()}{EnumerateEventDevices()}}
+{\footnotesize\ttfamily std\+::vector$<$ fs\+::path $>$ Monitor\+::\+Enumerate\+Event\+Devices (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [static]}, {\ttfamily [private]}}
+
+
+
+This is a private method to determine the input event devices to monitor. In particular we only want to monitor pointing devices (mice). 
+
+\begin{DoxyReturn}{Returns}
+
+\end{DoxyReturn}
+Here is the caller graph for this function\+:
+% FIG 0
+\mbox{\Hypertarget{classEventDetect_1_1Monitor_ae8da256174cfe6eab25421dc1d2673d7}\label{classEventDetect_1_1Monitor_ae8da256174cfe6eab25421dc1d2673d7}} 
+\index{Event\+Detect\+::\+Monitor@{Event\+Detect\+::\+Monitor}!Get\+Event\+Devices@{Get\+Event\+Devices}}
+\index{Get\+Event\+Devices@{Get\+Event\+Devices}!Event\+Detect\+::\+Monitor@{Event\+Detect\+::\+Monitor}}
+\subsubsection{\texorpdfstring{Get\+Event\+Devices()}{GetEventDevices()}}
+{\footnotesize\ttfamily std\+::vector$<$ fs\+::path $>$ Monitor\+::\+Get\+Event\+Devices (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption}) const}
+
+
+
+Provides a copy of the m\+\_\+event\+\_\+device\+\_\+paths private member. The copy is provided instead of a reference to minimize the lock time held on mtx\+\_\+event\+\_\+monitor. 
+
+\begin{DoxyReturn}{Returns}
+std\+::vector$<$fs\+::path$>$ of the input event device paths. 
+\end{DoxyReturn}
+Here is the caller graph for this function\+:
+% FIG 1
+\mbox{\Hypertarget{classEventDetect_1_1Monitor_a8abba216129439752a569239173fea87}\label{classEventDetect_1_1Monitor_a8abba216129439752a569239173fea87}} 
+\index{Event\+Detect\+::\+Monitor@{Event\+Detect\+::\+Monitor}!Get\+Last\+Active\+Time@{Get\+Last\+Active\+Time}}
+\index{Get\+Last\+Active\+Time@{Get\+Last\+Active\+Time}!Event\+Detect\+::\+Monitor@{Event\+Detect\+::\+Monitor}}
+\subsubsection{\texorpdfstring{Get\+Last\+Active\+Time()}{GetLastActiveTime()}}
+{\footnotesize\ttfamily int64\+\_\+t Monitor\+::\+Get\+Last\+Active\+Time (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption}) const}
+
+
+
+Provides the last active time on this machine globally based on the activated monitors/recorders. 
+
+\begin{DoxyReturn}{Returns}
+
+\end{DoxyReturn}
+\mbox{\Hypertarget{classEventDetect_1_1Monitor_a8d0a2609e4c8613bc020e239d280dfb5}\label{classEventDetect_1_1Monitor_a8d0a2609e4c8613bc020e239d280dfb5}} 
+\index{Event\+Detect\+::\+Monitor@{Event\+Detect\+::\+Monitor}!Is\+Initialized@{Is\+Initialized}}
+\index{Is\+Initialized@{Is\+Initialized}!Event\+Detect\+::\+Monitor@{Event\+Detect\+::\+Monitor}}
+\subsubsection{\texorpdfstring{Is\+Initialized()}{IsInitialized()}}
+{\footnotesize\ttfamily bool Monitor\+::\+Is\+Initialized (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption}) const}
+
+
+
+Provides a flag to indicate whether the monitor has been initialized. This is used in main in the application control paths. 
+
+\begin{DoxyReturn}{Returns}
+boolean flag 
+\end{DoxyReturn}
+\mbox{\Hypertarget{classEventDetect_1_1Monitor_af1175eb0bedd877b861bfd76451e8711}\label{classEventDetect_1_1Monitor_af1175eb0bedd877b861bfd76451e8711}} 
+\index{Event\+Detect\+::\+Monitor@{Event\+Detect\+::\+Monitor}!Write\+Last\+Active\+Time\+To\+File@{Write\+Last\+Active\+Time\+To\+File}}
+\index{Write\+Last\+Active\+Time\+To\+File@{Write\+Last\+Active\+Time\+To\+File}!Event\+Detect\+::\+Monitor@{Event\+Detect\+::\+Monitor}}
+\subsubsection{\texorpdfstring{Write\+Last\+Active\+Time\+To\+File()}{WriteLastActiveTimeToFile()}}
+{\footnotesize\ttfamily void Monitor\+::\+Write\+Last\+Active\+Time\+To\+File (\begin{DoxyParamCaption}\item[{const fs\+::path \&}]{filepath }\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [private]}}
+
+
+
+This is the whole point of the application. This writes out the last active time determined by the monitor. 
+
+
+\begin{DoxyParams}{Parameters}
+{\em filepath} & \\
+\hline
+\end{DoxyParams}
+Here is the caller graph for this function\+:
+% FIG 2
+
+
+The documentation for this class was generated from the following files\+:\begin{DoxyCompactItemize}
+\item 
+event\+\_\+detect.\+h\item 
+event\+\_\+detect.\+cpp\end{DoxyCompactItemize}

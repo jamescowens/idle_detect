@@ -1,0 +1,162 @@
+.TH "EventMessage" 3 "Sat Apr 12 2025" "Version 0.7" "idle_detect" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+EventMessage \- The \fBEventMessage\fP class is a small class that encapsulates the 'event message', which is a message sent from the local idle_detect instance to event_detect indicating an event that updates the last active time\&. The message is effectively timestamp:m_event_type in string format (to make use of pipe easier)\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.PP
+\fC#include <util\&.h>\fP
+.SS "Public Types"
+
+.in +1c
+.ti -1c
+.RI "enum \fBEventType\fP { \fBUNKNOWN\fP, \fBUSER_ACTIVE\fP }"
+.br
+.RI "The EventType enum defines event types for the \fBEventMessage\fP class\&. Currently there is only one event type in use, USER_ACTIVE\&. "
+.in -1c
+.SS "Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "\fBEventMessage\fP ()"
+.br
+.RI "Constructs an 'empty' \fBEventMessage\fP with timestamp of 0 and EventType of UNKNOWN\&. "
+.ti -1c
+.RI "\fBEventMessage\fP (std::string timestamp_str, std::string event_type_str)"
+.br
+.RI "Constructs an \fBEventMessage\fP from the provided strings\&. "
+.ti -1c
+.RI "std::string \fBEventTypeToString\fP ()"
+.br
+.RI "Converts m_event_type member variable in the \fBEventMessage\fP object to a string\&. "
+.ti -1c
+.RI "bool \fBIsValid\fP ()"
+.br
+.RI "Validates the \fBEventMessage\fP object\&. "
+.ti -1c
+.RI "std::string \fBToString\fP ()"
+.br
+.RI "Returns the string message format of the \fBEventMessage\fP object\&. This is meant to go on the pipe\&. This is in lieu of a full serialization approach, which is overkill here\&. "
+.in -1c
+.SS "Static Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "static std::string \fBEventTypeToString\fP (const \fBEventType\fP &event_type)"
+.br
+.RI "Static version that takes the event_type enum as a parameter and provides the string representation\&. "
+.in -1c
+.SS "Public Attributes"
+
+.in +1c
+.ti -1c
+.RI "int64_t \fBm_timestamp\fP"
+.br
+.ti -1c
+.RI "\fBEventType\fP \fBm_event_type\fP"
+.br
+.in -1c
+.SS "Private Member Functions"
+
+.in +1c
+.ti -1c
+.RI "\fBEventType\fP \fBEventTypeStringToEnum\fP (const std::string &event_type_str)"
+.br
+.RI "This converts the event type string to the proper enum value\&. It is the converse of \fBEventTypeToString()\fP\&. "
+.in -1c
+.SH "Detailed Description"
+.PP 
+The \fBEventMessage\fP class is a small class that encapsulates the 'event message', which is a message sent from the local idle_detect instance to event_detect indicating an event that updates the last active time\&. The message is effectively timestamp:m_event_type in string format (to make use of pipe easier)\&. 
+
+The class stores these in their native format\&.
+.PP
+A validation method and conversion to string format are provided\&. 
+.SH "Constructor & Destructor Documentation"
+.PP 
+.SS "EventMessage::EventMessage (std::string timestamp_str, std::string event_type_str)"
+
+.PP
+Constructs an \fBEventMessage\fP from the provided strings\&. 
+.PP
+\fBParameters:\fP
+.RS 4
+\fItimestamp_str\fP 
+.br
+\fIevent_type_str\fP 
+.RE
+.PP
+
+.SH "Member Function Documentation"
+.PP 
+.SS "\fBEventMessage::EventType\fP EventMessage::EventTypeStringToEnum (const std::string & event_type_str)\fC [private]\fP"
+
+.PP
+This converts the event type string to the proper enum value\&. It is the converse of \fBEventTypeToString()\fP\&. 
+.PP
+\fBParameters:\fP
+.RS 4
+\fIevent_type_str\fP 
+.RE
+.PP
+\fBReturns:\fP
+.RS 4
+EventType enum value 
+.RE
+.PP
+
+.SS "std::string EventMessage::EventTypeToString ()"
+
+.PP
+Converts m_event_type member variable in the \fBEventMessage\fP object to a string\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+string representation of enum value 
+.RE
+.PP
+
+.SS "std::string EventMessage::EventTypeToString (const \fBEventType\fP & event_type)\fC [static]\fP"
+
+.PP
+Static version that takes the event_type enum as a parameter and provides the string representation\&. 
+.PP
+\fBParameters:\fP
+.RS 4
+\fIevent_type\fP 
+.RE
+.PP
+\fBReturns:\fP
+.RS 4
+string representation of enum value 
+.RE
+.PP
+
+.SS "bool EventMessage::IsValid ()"
+
+.PP
+Validates the \fBEventMessage\fP object\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+true if \fBEventMessage\fP is valid\&. 
+.RE
+.PP
+
+.SS "std::string EventMessage::ToString ()"
+
+.PP
+Returns the string message format of the \fBEventMessage\fP object\&. This is meant to go on the pipe\&. This is in lieu of a full serialization approach, which is overkill here\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+std::string in the format of <timestamp>:<event_type string>=''> 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for idle_detect from the source code\&.

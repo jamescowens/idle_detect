@@ -1,0 +1,122 @@
+\hypertarget{classConfig}{}\section{Config Class Reference}
+\label{classConfig}\index{Config@{Config}}
+
+
+The \mbox{\hyperlink{classConfig}{Config}} class is a singleton that stores program config read from the config file, with applied defaults if the config file cannot be read, or a config parameter is not in the config file.  
+
+
+
+
+{\ttfamily \#include $<$util.\+h$>$}
+
+
+
+Inheritance diagram for Config\+:
+% FIG 0
+\subsection*{Public Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classConfig_abd0c571c116924871e30444b192b792a}\label{classConfig_abd0c571c116924871e30444b192b792a}} 
+\mbox{\hyperlink{classConfig_abd0c571c116924871e30444b192b792a}{Config}} ()
+\begin{DoxyCompactList}\small\item\em Constructor. \end{DoxyCompactList}\item 
+void \mbox{\hyperlink{classConfig_a3656d27476e57b4d37c9a6c787359fb5}{Read\+And\+Update\+Config}} (const fs\+::path \&config\+\_\+file)
+\begin{DoxyCompactList}\small\item\em Reads and parses the config file provided by the argument and populates m\+\_\+config\+\_\+in, then calls private method \mbox{\hyperlink{classConfig_a60b62c585643c3a191dedd7cb3ceab9c}{Process\+Args()}} to populate m\+\_\+config. \end{DoxyCompactList}\item 
+config\+\_\+variant \mbox{\hyperlink{classConfig_ac09c7cadd9898fa1d1585f8b643cfef6}{Get\+Arg}} (const std\+::string \&arg)
+\begin{DoxyCompactList}\small\item\em Provides the config\+\_\+variant type value of the config parameter (argument). \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Protected Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+std\+::string \mbox{\hyperlink{classConfig_a1892d0dc4ff12b98eb9e1a8686cb348f}{Get\+Arg\+String}} (const std\+::string \&arg, const std\+::string \&default\+\_\+value) const
+\begin{DoxyCompactList}\small\item\em Private version of Get\+Arg that operates on m\+\_\+config\+\_\+in and also selects the provided default value if the arg is not found. This is how default values for parameters are established. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Protected Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classConfig_a407ccdf48a6e2bf232ce6c3221470c41}\label{classConfig_a407ccdf48a6e2bf232ce6c3221470c41}} 
+std\+::multimap$<$ std\+::string, config\+\_\+variant $>$ \mbox{\hyperlink{classConfig_a407ccdf48a6e2bf232ce6c3221470c41}{m\+\_\+config}}
+\begin{DoxyCompactList}\small\item\em Holds the processed parameter-\/values, which are strongly typed and in a config\+\_\+variant union, and where default values are populated if not found in the config file (m\+\_\+config\+\_\+in). \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Private Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classConfig_a60b62c585643c3a191dedd7cb3ceab9c}\label{classConfig_a60b62c585643c3a191dedd7cb3ceab9c}} 
+virtual void \mbox{\hyperlink{classConfig_a60b62c585643c3a191dedd7cb3ceab9c}{Process\+Args}} ()=0
+\begin{DoxyCompactList}\small\item\em Private helper method used by Read\+And\+Update\+Config. Note this is pure virtual. It must be implemented in a specialization of a derived class for use by a specific application. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Private Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classConfig_a43b97fc788493729fd6440fc6cfe2e76}\label{classConfig_a43b97fc788493729fd6440fc6cfe2e76}} 
+std\+::mutex \mbox{\hyperlink{classConfig_a43b97fc788493729fd6440fc6cfe2e76}{mtx\+\_\+config}}
+\begin{DoxyCompactList}\small\item\em This is the mutex member that provides lock control for the config object. This is used to ensure the config object is thread-\/safe. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classConfig_a81428eaba896a0033f0bcde5623168f2}\label{classConfig_a81428eaba896a0033f0bcde5623168f2}} 
+std\+::multimap$<$ std\+::string, std\+::string $>$ \mbox{\hyperlink{classConfig_a81428eaba896a0033f0bcde5623168f2}{m\+\_\+config\+\_\+in}}
+\begin{DoxyCompactList}\small\item\em Holds the raw parsed parameter-\/values from the config file. \end{DoxyCompactList}\end{DoxyCompactItemize}
+
+
+\subsection{Detailed Description}
+The \mbox{\hyperlink{classConfig}{Config}} class is a singleton that stores program config read from the config file, with applied defaults if the config file cannot be read, or a config parameter is not in the config file. 
+
+\subsection{Member Function Documentation}
+\mbox{\Hypertarget{classConfig_ac09c7cadd9898fa1d1585f8b643cfef6}\label{classConfig_ac09c7cadd9898fa1d1585f8b643cfef6}} 
+\index{Config@{Config}!Get\+Arg@{Get\+Arg}}
+\index{Get\+Arg@{Get\+Arg}!Config@{Config}}
+\subsubsection{\texorpdfstring{Get\+Arg()}{GetArg()}}
+{\footnotesize\ttfamily config\+\_\+variant Config\+::\+Get\+Arg (\begin{DoxyParamCaption}\item[{const std\+::string \&}]{arg }\end{DoxyParamCaption})}
+
+
+
+Provides the config\+\_\+variant type value of the config parameter (argument). 
+
+
+\begin{DoxyParams}{Parameters}
+{\em arg} & (key) to look up value. \\
+\hline
+\end{DoxyParams}
+\begin{DoxyReturn}{Returns}
+config\+\_\+variant type value of the value of the config parameter (argument). 
+\end{DoxyReturn}
+Here is the caller graph for this function\+:
+% FIG 1
+\mbox{\Hypertarget{classConfig_a1892d0dc4ff12b98eb9e1a8686cb348f}\label{classConfig_a1892d0dc4ff12b98eb9e1a8686cb348f}} 
+\index{Config@{Config}!Get\+Arg\+String@{Get\+Arg\+String}}
+\index{Get\+Arg\+String@{Get\+Arg\+String}!Config@{Config}}
+\subsubsection{\texorpdfstring{Get\+Arg\+String()}{GetArgString()}}
+{\footnotesize\ttfamily std\+::string Config\+::\+Get\+Arg\+String (\begin{DoxyParamCaption}\item[{const std\+::string \&}]{arg,  }\item[{const std\+::string \&}]{default\+\_\+value }\end{DoxyParamCaption}) const\hspace{0.3cm}{\ttfamily [protected]}}
+
+
+
+Private version of Get\+Arg that operates on m\+\_\+config\+\_\+in and also selects the provided default value if the arg is not found. This is how default values for parameters are established. 
+
+
+\begin{DoxyParams}{Parameters}
+{\em arg} & (key) to look up value as string. \\
+\hline
+{\em default\+\_\+value} & if arg is not found. \\
+\hline
+\end{DoxyParams}
+\begin{DoxyReturn}{Returns}
+string value found in lookup, default value if not found. 
+\end{DoxyReturn}
+Here is the caller graph for this function\+:
+% FIG 2
+\mbox{\Hypertarget{classConfig_a3656d27476e57b4d37c9a6c787359fb5}\label{classConfig_a3656d27476e57b4d37c9a6c787359fb5}} 
+\index{Config@{Config}!Read\+And\+Update\+Config@{Read\+And\+Update\+Config}}
+\index{Read\+And\+Update\+Config@{Read\+And\+Update\+Config}!Config@{Config}}
+\subsubsection{\texorpdfstring{Read\+And\+Update\+Config()}{ReadAndUpdateConfig()}}
+{\footnotesize\ttfamily void Config\+::\+Read\+And\+Update\+Config (\begin{DoxyParamCaption}\item[{const fs\+::path \&}]{config\+\_\+file }\end{DoxyParamCaption})}
+
+
+
+Reads and parses the config file provided by the argument and populates m\+\_\+config\+\_\+in, then calls private method \mbox{\hyperlink{classConfig_a60b62c585643c3a191dedd7cb3ceab9c}{Process\+Args()}} to populate m\+\_\+config. 
+
+
+\begin{DoxyParams}{Parameters}
+{\em config\+\_\+file} & \\
+\hline
+\end{DoxyParams}
+Here is the call graph for this function\+:
+% FIG 3
+
+
+The documentation for this class was generated from the following files\+:\begin{DoxyCompactItemize}
+\item 
+util.\+h\item 
+util.\+cpp\end{DoxyCompactItemize}

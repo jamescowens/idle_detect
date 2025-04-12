@@ -1,0 +1,119 @@
+.TH "Config" 3 "Sat Apr 12 2025" "Version 0.7" "idle_detect" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+Config \- The \fBConfig\fP class is a singleton that stores program config read from the config file, with applied defaults if the config file cannot be read, or a config parameter is not in the config file\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.PP
+\fC#include <util\&.h>\fP
+.PP
+Inherited by \fBEventDetectConfig\fP, and \fBIdleDetectConfig\fP\&.
+.SS "Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "\fBConfig\fP ()"
+.br
+.RI "Constructor\&. "
+.ti -1c
+.RI "void \fBReadAndUpdateConfig\fP (const fs::path &config_file)"
+.br
+.RI "Reads and parses the config file provided by the argument and populates m_config_in, then calls private method \fBProcessArgs()\fP to populate m_config\&. "
+.ti -1c
+.RI "config_variant \fBGetArg\fP (const std::string &arg)"
+.br
+.RI "Provides the config_variant type value of the config parameter (argument)\&. "
+.in -1c
+.SS "Protected Member Functions"
+
+.in +1c
+.ti -1c
+.RI "std::string \fBGetArgString\fP (const std::string &arg, const std::string &default_value) const"
+.br
+.RI "Private version of GetArg that operates on m_config_in and also selects the provided default value if the arg is not found\&. This is how default values for parameters are established\&. "
+.in -1c
+.SS "Protected Attributes"
+
+.in +1c
+.ti -1c
+.RI "std::multimap< std::string, config_variant > \fBm_config\fP"
+.br
+.RI "Holds the processed parameter-values, which are strongly typed and in a config_variant union, and where default values are populated if not found in the config file (m_config_in)\&. "
+.in -1c
+.SS "Private Member Functions"
+
+.in +1c
+.ti -1c
+.RI "virtual void \fBProcessArgs\fP ()=0"
+.br
+.RI "Private helper method used by ReadAndUpdateConfig\&. Note this is pure virtual\&. It must be implemented in a specialization of a derived class for use by a specific application\&. "
+.in -1c
+.SS "Private Attributes"
+
+.in +1c
+.ti -1c
+.RI "std::mutex \fBmtx_config\fP"
+.br
+.RI "This is the mutex member that provides lock control for the config object\&. This is used to ensure the config object is thread-safe\&. "
+.ti -1c
+.RI "std::multimap< std::string, std::string > \fBm_config_in\fP"
+.br
+.RI "Holds the raw parsed parameter-values from the config file\&. "
+.in -1c
+.SH "Detailed Description"
+.PP 
+The \fBConfig\fP class is a singleton that stores program config read from the config file, with applied defaults if the config file cannot be read, or a config parameter is not in the config file\&. 
+.SH "Member Function Documentation"
+.PP 
+.SS "config_variant Config::GetArg (const std::string & arg)"
+
+.PP
+Provides the config_variant type value of the config parameter (argument)\&. 
+.PP
+\fBParameters:\fP
+.RS 4
+\fIarg\fP (key) to look up value\&. 
+.RE
+.PP
+\fBReturns:\fP
+.RS 4
+config_variant type value of the value of the config parameter (argument)\&. 
+.RE
+.PP
+
+.SS "std::string Config::GetArgString (const std::string & arg, const std::string & default_value) const\fC [protected]\fP"
+
+.PP
+Private version of GetArg that operates on m_config_in and also selects the provided default value if the arg is not found\&. This is how default values for parameters are established\&. 
+.PP
+\fBParameters:\fP
+.RS 4
+\fIarg\fP (key) to look up value as string\&. 
+.br
+\fIdefault_value\fP if arg is not found\&. 
+.RE
+.PP
+\fBReturns:\fP
+.RS 4
+string value found in lookup, default value if not found\&. 
+.RE
+.PP
+
+.SS "void Config::ReadAndUpdateConfig (const fs::path & config_file)"
+
+.PP
+Reads and parses the config file provided by the argument and populates m_config_in, then calls private method \fBProcessArgs()\fP to populate m_config\&. 
+.PP
+\fBParameters:\fP
+.RS 4
+\fIconfig_file\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for idle_detect from the source code\&.

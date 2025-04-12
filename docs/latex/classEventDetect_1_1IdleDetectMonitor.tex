@@ -1,0 +1,79 @@
+\hypertarget{classEventDetect_1_1IdleDetectMonitor}{}\section{Event\+Detect\+:\+:Idle\+Detect\+Monitor Class Reference}
+\label{classEventDetect_1_1IdleDetectMonitor}\index{Event\+Detect\+::\+Idle\+Detect\+Monitor@{Event\+Detect\+::\+Idle\+Detect\+Monitor}}
+\subsection*{Public Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_aed0b4d13a0d9d3416fae76835f094d90}\label{classEventDetect_1_1IdleDetectMonitor_aed0b4d13a0d9d3416fae76835f094d90}} 
+\mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_aed0b4d13a0d9d3416fae76835f094d90}{Idle\+Detect\+Monitor}} ()
+\begin{DoxyCompactList}\small\item\em Constructor. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_a03e59f3ae8ea4e93677f6684556d408f}\label{classEventDetect_1_1IdleDetectMonitor_a03e59f3ae8ea4e93677f6684556d408f}} 
+void \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_a03e59f3ae8ea4e93677f6684556d408f}{Idle\+Detect\+Monitor\+Thread}} ()
+\begin{DoxyCompactList}\small\item\em Method to instantiate the tty monitor thread. \end{DoxyCompactList}\item 
+bool \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_af945f0f33b8c0fe2c8ee33bd9ac83f12}{Is\+Initialized}} () const
+\begin{DoxyCompactList}\small\item\em Provides a flag to indicate whether the monitor has been initialized. This is used in main in the application control paths. \end{DoxyCompactList}\item 
+int64\+\_\+t \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_acc4bec04aa1e47e5e7e7fae87cdf2b76}{Get\+Last\+Idle\+Detect\+Active\+Time}} () const
+\begin{DoxyCompactList}\small\item\em Returns the overall last active time of all of the message receipts from idle\+\_\+detect instances. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Public Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_a64c5c35a0464fd41d34f8186f73ec61f}\label{classEventDetect_1_1IdleDetectMonitor_a64c5c35a0464fd41d34f8186f73ec61f}} 
+std\+::thread \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_a64c5c35a0464fd41d34f8186f73ec61f}{m\+\_\+idle\+\_\+detect\+\_\+monitor\+\_\+thread}}
+\begin{DoxyCompactList}\small\item\em Holds the actual idle\+\_\+detect monitor thread. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_ab87d238be94053688b977a25384f8c1f}\label{classEventDetect_1_1IdleDetectMonitor_ab87d238be94053688b977a25384f8c1f}} 
+std\+::condition\+\_\+variable \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_ab87d238be94053688b977a25384f8c1f}{cv\+\_\+idle\+\_\+detect\+\_\+monitor\+\_\+thread}}
+\begin{DoxyCompactList}\small\item\em Condition variable for control/synchronization of the idle\+\_\+detect monitor threads. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_a1563d170414bbb849532ab972457c7cc}\label{classEventDetect_1_1IdleDetectMonitor_a1563d170414bbb849532ab972457c7cc}} 
+std\+::atomic$<$ bool $>$ \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_a1563d170414bbb849532ab972457c7cc}{m\+\_\+interrupt\+\_\+idle\+\_\+detect\+\_\+monitor}}
+\begin{DoxyCompactList}\small\item\em Atomic boolean that interrupts the idle\+\_\+detect monitor thread. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Private Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_a5a701c9f31c680cda110cdaa8a527da1}\label{classEventDetect_1_1IdleDetectMonitor_a5a701c9f31c680cda110cdaa8a527da1}} 
+std\+::mutex \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_a5a701c9f31c680cda110cdaa8a527da1}{mtx\+\_\+idle\+\_\+detect\+\_\+monitor}}
+\begin{DoxyCompactList}\small\item\em This is the mutex member that provides lock control for the tty monitor object. This is used to ensure the tty monitor is thread-\/safe. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_abf3c0cc87481f3f68db72ecae4c2a609}\label{classEventDetect_1_1IdleDetectMonitor_abf3c0cc87481f3f68db72ecae4c2a609}} 
+std\+::mutex \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_abf3c0cc87481f3f68db72ecae4c2a609}{mtx\+\_\+idle\+\_\+detect\+\_\+monitor\+\_\+thread}}
+\begin{DoxyCompactList}\small\item\em This provides lock control for the tty monitor worker thread itself. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_acc9798f26d29719e8dffae5ed358fa43}\label{classEventDetect_1_1IdleDetectMonitor_acc9798f26d29719e8dffae5ed358fa43}} 
+std\+::atomic$<$ int64\+\_\+t $>$ \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_acc9798f26d29719e8dffae5ed358fa43}{m\+\_\+last\+\_\+idle\+\_\+detect\+\_\+active\+\_\+time}}
+\begin{DoxyCompactList}\small\item\em Atomic that holds the overall last active time across all of the monitored pts/ttys. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_a9247d67e3ace050925e119bfbb45dcc5}\label{classEventDetect_1_1IdleDetectMonitor_a9247d67e3ace050925e119bfbb45dcc5}} 
+std\+::atomic$<$ bool $>$ \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_a9247d67e3ace050925e119bfbb45dcc5}{m\+\_\+initialized}}
+\begin{DoxyCompactList}\small\item\em This holds the flag as to whether the tty monitor has been initialized and is provided by the \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_af945f0f33b8c0fe2c8ee33bd9ac83f12}{Is\+Initialized()}} public method. \end{DoxyCompactList}\end{DoxyCompactItemize}
+
+
+\subsection{Member Function Documentation}
+\mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_acc4bec04aa1e47e5e7e7fae87cdf2b76}\label{classEventDetect_1_1IdleDetectMonitor_acc4bec04aa1e47e5e7e7fae87cdf2b76}} 
+\index{Event\+Detect\+::\+Idle\+Detect\+Monitor@{Event\+Detect\+::\+Idle\+Detect\+Monitor}!Get\+Last\+Idle\+Detect\+Active\+Time@{Get\+Last\+Idle\+Detect\+Active\+Time}}
+\index{Get\+Last\+Idle\+Detect\+Active\+Time@{Get\+Last\+Idle\+Detect\+Active\+Time}!Event\+Detect\+::\+Idle\+Detect\+Monitor@{Event\+Detect\+::\+Idle\+Detect\+Monitor}}
+\subsubsection{\texorpdfstring{Get\+Last\+Idle\+Detect\+Active\+Time()}{GetLastIdleDetectActiveTime()}}
+{\footnotesize\ttfamily int64\+\_\+t Idle\+Detect\+Monitor\+::\+Get\+Last\+Idle\+Detect\+Active\+Time (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption}) const}
+
+
+
+Returns the overall last active time of all of the message receipts from idle\+\_\+detect instances. 
+
+\begin{DoxyReturn}{Returns}
+Unix Epoch time in seconds 
+\end{DoxyReturn}
+Here is the caller graph for this function\+:
+% FIG 0
+\mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_af945f0f33b8c0fe2c8ee33bd9ac83f12}\label{classEventDetect_1_1IdleDetectMonitor_af945f0f33b8c0fe2c8ee33bd9ac83f12}} 
+\index{Event\+Detect\+::\+Idle\+Detect\+Monitor@{Event\+Detect\+::\+Idle\+Detect\+Monitor}!Is\+Initialized@{Is\+Initialized}}
+\index{Is\+Initialized@{Is\+Initialized}!Event\+Detect\+::\+Idle\+Detect\+Monitor@{Event\+Detect\+::\+Idle\+Detect\+Monitor}}
+\subsubsection{\texorpdfstring{Is\+Initialized()}{IsInitialized()}}
+{\footnotesize\ttfamily bool Idle\+Detect\+Monitor\+::\+Is\+Initialized (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption}) const}
+
+
+
+Provides a flag to indicate whether the monitor has been initialized. This is used in main in the application control paths. 
+
+\begin{DoxyReturn}{Returns}
+boolean flag 
+\end{DoxyReturn}
+
+
+The documentation for this class was generated from the following files\+:\begin{DoxyCompactItemize}
+\item 
+event\+\_\+detect.\+h\item 
+event\+\_\+detect.\+cpp\end{DoxyCompactItemize}

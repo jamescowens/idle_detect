@@ -1,0 +1,159 @@
+.TH "EventDetect::SharedMemoryTimestampExporter" 3 "Sat Apr 12 2025" "Version 0.7" "idle_detect" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+EventDetect::SharedMemoryTimestampExporter \- Manages a POSIX shared memory segment for exporting timestamps\&. Stores an array of two atomic int64_t: {update_time, last_active_time}\&. Handles creation, mapping, updating, and cleanup via RAII\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.PP
+\fC#include <event_detect\&.h>\fP
+.SS "Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "\fBSharedMemoryTimestampExporter\fP (const std::string &name)"
+.br
+.RI "Construct with the desired shared memory name\&. "
+.ti -1c
+.RI "\fB~SharedMemoryTimestampExporter\fP ()"
+.br
+.RI "Destructor handles unmapping and potentially unlinking the shared memory\&. "
+.ti -1c
+.RI "\fBSharedMemoryTimestampExporter\fP (const \fBSharedMemoryTimestampExporter\fP &)=delete"
+.br
+.ti -1c
+.RI "\fBSharedMemoryTimestampExporter\fP & \fBoperator=\fP (const \fBSharedMemoryTimestampExporter\fP &)=delete"
+.br
+.ti -1c
+.RI "\fBSharedMemoryTimestampExporter\fP (\fBSharedMemoryTimestampExporter\fP &&)=delete"
+.br
+.ti -1c
+.RI "\fBSharedMemoryTimestampExporter\fP & \fBoperator=\fP (\fBSharedMemoryTimestampExporter\fP &&)=delete"
+.br
+.ti -1c
+.RI "bool \fBCreateOrOpen\fP (mode_t mode=0666)"
+.br
+.RI "Creates (if necessary) and opens the shared memory segment, sets its size (to sizeof(atomic<int64_t>[2])), and maps it for writing\&. Must be called before UpdateTimestamps or IsInitialized\&. "
+.ti -1c
+.RI "bool \fBUpdateTimestamps\fP (int64_t update_time, int64_t last_active_time)"
+.br
+.RI "Atomically updates both timestamps in the mapped shared memory\&. "
+.ti -1c
+.RI "bool \fBIsInitialized\fP () const"
+.br
+.RI "Checks if the shared memory was successfully initialized (opened and mapped)\&. "
+.ti -1c
+.RI "bool \fBUnlinkSegment\fP ()"
+.br
+.RI "Explicitly unlinks the shared memory segment\&. Call during clean shutdown if desired\&. Idempotent\&. "
+.in -1c
+.SS "Private Member Functions"
+
+.in +1c
+.ti -1c
+.RI "void \fBCleanup\fP ()"
+.br
+.RI "Performs resource cleanup (munmap)\&. Called by destructor\&. "
+.in -1c
+.SS "Private Attributes"
+
+.in +1c
+.ti -1c
+.RI "std::string \fBm_shm_name\fP"
+.br
+.ti -1c
+.RI "int \fBm_shm_fd\fP"
+.br
+.ti -1c
+.RI "std::atomic< int64_t > * \fBm_mapped_ptr\fP"
+.br
+.ti -1c
+.RI "const size_t \fBm_size\fP"
+.br
+.ti -1c
+.RI "bool \fBm_is_creator\fP"
+.br
+.ti -1c
+.RI "std::atomic< bool > \fBm_is_initialized\fP"
+.br
+.in -1c
+.SH "Detailed Description"
+.PP 
+Manages a POSIX shared memory segment for exporting timestamps\&. Stores an array of two atomic int64_t: {update_time, last_active_time}\&. Handles creation, mapping, updating, and cleanup via RAII\&. 
+.SH "Constructor & Destructor Documentation"
+.PP 
+.SS "SharedMemoryTimestampExporter::SharedMemoryTimestampExporter (const std::string & name)\fC [explicit]\fP"
+
+.PP
+Construct with the desired shared memory name\&. 
+.PP
+\fBParameters:\fP
+.RS 4
+\fIname\fP Must start with '/' (e\&.g\&., '/idle_detect_shmem')\&. 
+.RE
+.PP
+
+.SH "Member Function Documentation"
+.PP 
+.SS "bool SharedMemoryTimestampExporter::CreateOrOpen (mode_t mode = \fC0666\fP)"
+
+.PP
+Creates (if necessary) and opens the shared memory segment, sets its size (to sizeof(atomic<int64_t>[2])), and maps it for writing\&. Must be called before UpdateTimestamps or IsInitialized\&. 
+.PP
+\fBParameters:\fP
+.RS 4
+\fImode\fP Permissions (e\&.g\&., 0666 or 0660) to use if creating the segment\&. 
+.RE
+.PP
+\fBReturns:\fP
+.RS 4
+True on success, false on any failure (shm_open, ftruncate, mmap)\&. 
+.RE
+.PP
+
+.SS "bool SharedMemoryTimestampExporter::IsInitialized () const"
+
+.PP
+Checks if the shared memory was successfully initialized (opened and mapped)\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+True if initialized and ready for updates, false otherwise\&. 
+.RE
+.PP
+
+.SS "bool SharedMemoryTimestampExporter::UnlinkSegment ()"
+
+.PP
+Explicitly unlinks the shared memory segment\&. Call during clean shutdown if desired\&. Idempotent\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+True if unlink succeeded or segment already gone, false on error\&. 
+.RE
+.PP
+
+.SS "bool SharedMemoryTimestampExporter::UpdateTimestamps (int64_t update_time, int64_t last_active_time)"
+
+.PP
+Atomically updates both timestamps in the mapped shared memory\&. 
+.PP
+\fBParameters:\fP
+.RS 4
+\fIupdate_time\fP The timestamp of the current update cycle\&. 
+.br
+\fIlast_active_time\fP The calculated overall last active time\&. 
+.RE
+.PP
+\fBReturns:\fP
+.RS 4
+True if updated successfully, false if not initialized or pointer is invalid\&. 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for idle_detect from the source code\&.

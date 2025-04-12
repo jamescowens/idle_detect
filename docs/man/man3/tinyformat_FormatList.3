@@ -1,0 +1,45 @@
+.TH "tinyformat::FormatList" 3 "Sat Apr 12 2025" "Version 0.7" "idle_detect" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+tinyformat::FormatList
+.SH SYNOPSIS
+.br
+.PP
+.PP
+\fC#include <tinyformat\&.h>\fP
+.PP
+Inherited by \fBtinyformat::detail::FormatListN< N >\fP, and \fBtinyformat::detail::FormatListN< 0 >\fP\&.
+.SS "Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "\fBFormatList\fP (\fBdetail::FormatArg\fP *formatters, int N)"
+.br
+.in -1c
+.SS "Private Attributes"
+
+.in +1c
+.ti -1c
+.RI "const \fBdetail::FormatArg\fP * \fBm_formatters\fP"
+.br
+.ti -1c
+.RI "int \fBm_N\fP"
+.br
+.in -1c
+.SS "Friends"
+
+.in +1c
+.ti -1c
+.RI "void \fBvformat\fP (std::ostream &out, const char *fmt, const \fBFormatList\fP &list)"
+.br
+.in -1c
+.SH "Detailed Description"
+.PP 
+List of template arguments format(), held in a type-opaque way\&.
+.PP
+A const reference to \fBFormatList\fP (typedef'd as FormatListRef) may be conveniently used to pass arguments to non-template functions: All type information has been stripped from the arguments, leaving just enough of a common interface to perform formatting as required\&. 
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for idle_detect from the source code\&.

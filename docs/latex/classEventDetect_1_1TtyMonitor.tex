@@ -1,0 +1,130 @@
+\hypertarget{classEventDetect_1_1TtyMonitor}{}\section{Event\+Detect\+:\+:Tty\+Monitor Class Reference}
+\label{classEventDetect_1_1TtyMonitor}\index{Event\+Detect\+::\+Tty\+Monitor@{Event\+Detect\+::\+Tty\+Monitor}}
+\subsection*{Classes}
+\begin{DoxyCompactItemize}
+\item 
+class \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_1_1Tty}{Tty}}
+\begin{DoxyCompactList}\small\item\em The \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_1_1Tty}{Tty}} class is a small class to hold pts/tty information. It is essentially a struct with a parameterized constructor. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Public Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1TtyMonitor_acb5eb49281a95f16f0b0dca502fa7625}\label{classEventDetect_1_1TtyMonitor_acb5eb49281a95f16f0b0dca502fa7625}} 
+\mbox{\hyperlink{classEventDetect_1_1TtyMonitor_acb5eb49281a95f16f0b0dca502fa7625}{Tty\+Monitor}} ()
+\begin{DoxyCompactList}\small\item\em Constructor. \end{DoxyCompactList}\item 
+std\+::vector$<$ fs\+::path $>$ \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_aad86d815a645f6afd9168852d85ccf3c}{Get\+Tty\+Devices}} () const
+\begin{DoxyCompactList}\small\item\em Returns a copy of the vector of pts/tty paths. A copy is returned to avoid holding the lock on mtx\+\_\+tty\+\_\+monitor for an extended period. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1TtyMonitor_a24535f00a547b861b0d2a12e00b1c6f1}\label{classEventDetect_1_1TtyMonitor_a24535f00a547b861b0d2a12e00b1c6f1}} 
+void \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_a24535f00a547b861b0d2a12e00b1c6f1}{Update\+Tty\+Devices}} ()
+\begin{DoxyCompactList}\small\item\em Initializes/\+Updates the pts/tty device paths to monitor. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1TtyMonitor_a4960b659ae1e97aaab6581964e014703}\label{classEventDetect_1_1TtyMonitor_a4960b659ae1e97aaab6581964e014703}} 
+void \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_a4960b659ae1e97aaab6581964e014703}{Tty\+Monitor\+Thread}} ()
+\begin{DoxyCompactList}\small\item\em Method to instantiate the tty monitor thread. \end{DoxyCompactList}\item 
+bool \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_a7a3482d371bfa556a13c9ee11ca1a2c2}{Is\+Initialized}} () const
+\begin{DoxyCompactList}\small\item\em Provides a flag to indicate whether the monitor has been initialized. This is used in main in the application control paths. \end{DoxyCompactList}\item 
+int64\+\_\+t \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_aae27c11393b72229dc03cc4b29f15b80}{Get\+Last\+Tty\+Active\+Time}} () const
+\begin{DoxyCompactList}\small\item\em Returns the overall last active time of all of the monitored pts/ttys. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Public Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1TtyMonitor_a33d166bea609b24b35551d8ba1030b69}\label{classEventDetect_1_1TtyMonitor_a33d166bea609b24b35551d8ba1030b69}} 
+std\+::thread \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_a33d166bea609b24b35551d8ba1030b69}{m\+\_\+tty\+\_\+monitor\+\_\+thread}}
+\begin{DoxyCompactList}\small\item\em Holds the actual tty monitor thread. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1TtyMonitor_a64f88801024f9d55be77dd62cfa35cd7}\label{classEventDetect_1_1TtyMonitor_a64f88801024f9d55be77dd62cfa35cd7}} 
+std\+::condition\+\_\+variable \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_a64f88801024f9d55be77dd62cfa35cd7}{cv\+\_\+tty\+\_\+monitor\+\_\+thread}}
+\begin{DoxyCompactList}\small\item\em Condition variable for control/synchronization of the tty monitor threads. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1TtyMonitor_af0525ecc811f972155b3c4c1a1b44b84}\label{classEventDetect_1_1TtyMonitor_af0525ecc811f972155b3c4c1a1b44b84}} 
+std\+::atomic$<$ bool $>$ \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_af0525ecc811f972155b3c4c1a1b44b84}{m\+\_\+interrupt\+\_\+tty\+\_\+monitor}}
+\begin{DoxyCompactList}\small\item\em Atomic boolean that interrupts the tty monitor thread. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Static Private Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+static std\+::vector$<$ fs\+::path $>$ \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_ab0a2e0d72dba323fad08077825432da0}{Enumerate\+Tty\+Devices}} ()
+\begin{DoxyCompactList}\small\item\em Provides the enumerated pts/tty devices. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Private Attributes}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1TtyMonitor_a96ac4aec5d852d6d4271e98fba16bb95}\label{classEventDetect_1_1TtyMonitor_a96ac4aec5d852d6d4271e98fba16bb95}} 
+std\+::mutex \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_a96ac4aec5d852d6d4271e98fba16bb95}{mtx\+\_\+tty\+\_\+monitor}}
+\begin{DoxyCompactList}\small\item\em This is the mutex member that provides lock control for the tty monitor object. This is used to ensure the tty monitor is thread-\/safe. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1TtyMonitor_af0a17c0482162c9f74bb3e8b40d9c456}\label{classEventDetect_1_1TtyMonitor_af0a17c0482162c9f74bb3e8b40d9c456}} 
+std\+::mutex \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_af0a17c0482162c9f74bb3e8b40d9c456}{mtx\+\_\+tty\+\_\+monitor\+\_\+thread}}
+\begin{DoxyCompactList}\small\item\em This provides lock control for the tty monitor worker thread itself. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1TtyMonitor_aba414a40bfd7cf2e357df8b1a4b41e47}\label{classEventDetect_1_1TtyMonitor_aba414a40bfd7cf2e357df8b1a4b41e47}} 
+std\+::vector$<$ fs\+::path $>$ \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_aba414a40bfd7cf2e357df8b1a4b41e47}{m\+\_\+tty\+\_\+device\+\_\+paths}}
+\begin{DoxyCompactList}\small\item\em Holds the device paths of the monitored pts/ttys. Note that this is duplicative of information in the individual tty objects, but it allows efficient comparison of the inventory of ttys. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1TtyMonitor_a1f094e24704b1f7b81c46120524f6820}\label{classEventDetect_1_1TtyMonitor_a1f094e24704b1f7b81c46120524f6820}} 
+std\+::vector$<$ \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_1_1Tty}{Tty}} $>$ \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_a1f094e24704b1f7b81c46120524f6820}{m\+\_\+ttys}}
+\begin{DoxyCompactList}\small\item\em std\+::vector holding the tty objects. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1TtyMonitor_a3b8c2310acdd1549c3e57de230ffdcef}\label{classEventDetect_1_1TtyMonitor_a3b8c2310acdd1549c3e57de230ffdcef}} 
+std\+::atomic$<$ int64\+\_\+t $>$ \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_a3b8c2310acdd1549c3e57de230ffdcef}{m\+\_\+last\+\_\+ttys\+\_\+active\+\_\+time}}
+\begin{DoxyCompactList}\small\item\em Atomic that holds the overall last active time across all of the monitored pts/ttys. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1TtyMonitor_a908ced0aaf053b25b2633e5cbe3f8ad7}\label{classEventDetect_1_1TtyMonitor_a908ced0aaf053b25b2633e5cbe3f8ad7}} 
+std\+::atomic$<$ bool $>$ \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_a908ced0aaf053b25b2633e5cbe3f8ad7}{m\+\_\+initialized}}
+\begin{DoxyCompactList}\small\item\em This holds the flag as to whether the tty monitor has been initialized and is provided by the \mbox{\hyperlink{classEventDetect_1_1TtyMonitor_a7a3482d371bfa556a13c9ee11ca1a2c2}{Is\+Initialized()}} public method. \end{DoxyCompactList}\end{DoxyCompactItemize}
+
+
+\subsection{Member Function Documentation}
+\mbox{\Hypertarget{classEventDetect_1_1TtyMonitor_ab0a2e0d72dba323fad08077825432da0}\label{classEventDetect_1_1TtyMonitor_ab0a2e0d72dba323fad08077825432da0}} 
+\index{Event\+Detect\+::\+Tty\+Monitor@{Event\+Detect\+::\+Tty\+Monitor}!Enumerate\+Tty\+Devices@{Enumerate\+Tty\+Devices}}
+\index{Enumerate\+Tty\+Devices@{Enumerate\+Tty\+Devices}!Event\+Detect\+::\+Tty\+Monitor@{Event\+Detect\+::\+Tty\+Monitor}}
+\subsubsection{\texorpdfstring{Enumerate\+Tty\+Devices()}{EnumerateTtyDevices()}}
+{\footnotesize\ttfamily std\+::vector$<$ fs\+::path $>$ Tty\+Monitor\+::\+Enumerate\+Tty\+Devices (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [static]}, {\ttfamily [private]}}
+
+
+
+Provides the enumerated pts/tty devices. 
+
+\begin{DoxyReturn}{Returns}
+std\+::vector$<$fs\+::path$>$ of enumerated pts/tty devices. 
+\end{DoxyReturn}
+Here is the caller graph for this function\+:
+% FIG 0
+\mbox{\Hypertarget{classEventDetect_1_1TtyMonitor_aae27c11393b72229dc03cc4b29f15b80}\label{classEventDetect_1_1TtyMonitor_aae27c11393b72229dc03cc4b29f15b80}} 
+\index{Event\+Detect\+::\+Tty\+Monitor@{Event\+Detect\+::\+Tty\+Monitor}!Get\+Last\+Tty\+Active\+Time@{Get\+Last\+Tty\+Active\+Time}}
+\index{Get\+Last\+Tty\+Active\+Time@{Get\+Last\+Tty\+Active\+Time}!Event\+Detect\+::\+Tty\+Monitor@{Event\+Detect\+::\+Tty\+Monitor}}
+\subsubsection{\texorpdfstring{Get\+Last\+Tty\+Active\+Time()}{GetLastTtyActiveTime()}}
+{\footnotesize\ttfamily int64\+\_\+t Tty\+Monitor\+::\+Get\+Last\+Tty\+Active\+Time (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption}) const}
+
+
+
+Returns the overall last active time of all of the monitored pts/ttys. 
+
+\begin{DoxyReturn}{Returns}
+Unix Epoch time in seconds 
+\end{DoxyReturn}
+Here is the caller graph for this function\+:
+% FIG 1
+\mbox{\Hypertarget{classEventDetect_1_1TtyMonitor_aad86d815a645f6afd9168852d85ccf3c}\label{classEventDetect_1_1TtyMonitor_aad86d815a645f6afd9168852d85ccf3c}} 
+\index{Event\+Detect\+::\+Tty\+Monitor@{Event\+Detect\+::\+Tty\+Monitor}!Get\+Tty\+Devices@{Get\+Tty\+Devices}}
+\index{Get\+Tty\+Devices@{Get\+Tty\+Devices}!Event\+Detect\+::\+Tty\+Monitor@{Event\+Detect\+::\+Tty\+Monitor}}
+\subsubsection{\texorpdfstring{Get\+Tty\+Devices()}{GetTtyDevices()}}
+{\footnotesize\ttfamily std\+::vector$<$ fs\+::path $>$ Tty\+Monitor\+::\+Get\+Tty\+Devices (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption}) const}
+
+
+
+Returns a copy of the vector of pts/tty paths. A copy is returned to avoid holding the lock on mtx\+\_\+tty\+\_\+monitor for an extended period. 
+
+\begin{DoxyReturn}{Returns}
+std\+::vector$<$fs\+::path$>$ of the pts/tty paths 
+\end{DoxyReturn}
+\mbox{\Hypertarget{classEventDetect_1_1TtyMonitor_a7a3482d371bfa556a13c9ee11ca1a2c2}\label{classEventDetect_1_1TtyMonitor_a7a3482d371bfa556a13c9ee11ca1a2c2}} 
+\index{Event\+Detect\+::\+Tty\+Monitor@{Event\+Detect\+::\+Tty\+Monitor}!Is\+Initialized@{Is\+Initialized}}
+\index{Is\+Initialized@{Is\+Initialized}!Event\+Detect\+::\+Tty\+Monitor@{Event\+Detect\+::\+Tty\+Monitor}}
+\subsubsection{\texorpdfstring{Is\+Initialized()}{IsInitialized()}}
+{\footnotesize\ttfamily bool Tty\+Monitor\+::\+Is\+Initialized (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption}) const}
+
+
+
+Provides a flag to indicate whether the monitor has been initialized. This is used in main in the application control paths. 
+
+\begin{DoxyReturn}{Returns}
+boolean flag 
+\end{DoxyReturn}
+Here is the caller graph for this function\+:
+% FIG 2
+
+
+The documentation for this class was generated from the following files\+:\begin{DoxyCompactItemize}
+\item 
+event\+\_\+detect.\+h\item 
+event\+\_\+detect.\+cpp\end{DoxyCompactItemize}

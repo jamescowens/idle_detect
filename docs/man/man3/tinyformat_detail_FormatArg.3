@@ -1,0 +1,48 @@
+.TH "tinyformat::detail::FormatArg" 3 "Sat Apr 12 2025" "Version 0.7" "idle_detect" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+tinyformat::detail::FormatArg
+.SH SYNOPSIS
+.br
+.PP
+.SS "Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "template<typename T > \fBFormatArg\fP (const T &value)"
+.br
+.ti -1c
+.RI "void \fBformat\fP (std::ostream &out, const char *fmtBegin, const char *fmtEnd, int ntrunc) const"
+.br
+.ti -1c
+.RI "int \fBtoInt\fP () const"
+.br
+.in -1c
+.SS "Static Private Member Functions"
+
+.in +1c
+.ti -1c
+.RI "template<typename T > static TINYFORMAT_HIDDEN void \fBformatImpl\fP (std::ostream &out, const char *fmtBegin, const char *fmtEnd, int ntrunc, const void *value)"
+.br
+.ti -1c
+.RI "template<typename T > static TINYFORMAT_HIDDEN int \fBtoIntImpl\fP (const void *value)"
+.br
+.in -1c
+.SS "Private Attributes"
+
+.in +1c
+.ti -1c
+.RI "const void * \fBm_value\fP"
+.br
+.ti -1c
+.RI "void(* \fBm_formatImpl\fP )(std::ostream &out, const char *fmtBegin, const char *fmtEnd, int ntrunc, const void *value)"
+.br
+.ti -1c
+.RI "int(* \fBm_toIntImpl\fP )(const void *value)"
+.br
+.in -1c
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for idle_detect from the source code\&.

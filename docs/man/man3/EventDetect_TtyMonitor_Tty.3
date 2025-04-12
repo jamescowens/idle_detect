@@ -1,0 +1,51 @@
+.TH "EventDetect::TtyMonitor::Tty" 3 "Sat Apr 12 2025" "Version 0.7" "idle_detect" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+EventDetect::TtyMonitor::Tty \- The \fBTty\fP class is a small class to hold pts/tty information\&. It is essentially a struct with a parameterized constructor\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.PP
+\fC#include <event_detect\&.h>\fP
+.SS "Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "\fBTty\fP (const fs::path &tty_device_path)"
+.br
+.RI "Parameterized constructor\&. "
+.in -1c
+.SS "Public Attributes"
+
+.in +1c
+.ti -1c
+.RI "fs::path \fBm_tty_device_path\fP"
+.br
+.RI "Holds the pts/tty device path\&. "
+.ti -1c
+.RI "int64_t \fBm_tty_last_active_time\fP"
+.br
+.RI "Holds the last active time of the pts/tty\&. "
+.in -1c
+.SH "Detailed Description"
+.PP 
+The \fBTty\fP class is a small class to hold pts/tty information\&. It is essentially a struct with a parameterized constructor\&. 
+.SH "Constructor & Destructor Documentation"
+.PP 
+.SS "TtyMonitor::Tty::Tty (const fs::path & tty_device_path)\fC [explicit]\fP"
+
+.PP
+Parameterized constructor\&. 
+.PP
+\fBParameters:\fP
+.RS 4
+\fItty_device_path\fP 
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for idle_detect from the source code\&.

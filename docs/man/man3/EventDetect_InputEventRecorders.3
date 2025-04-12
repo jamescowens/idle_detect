@@ -1,0 +1,98 @@
+.TH "EventDetect::InputEventRecorders" 3 "Sat Apr 12 2025" "Version 0.7" "idle_detect" \" -*- nroff -*-
+.ad l
+.nh
+.SH NAME
+EventDetect::InputEventRecorders \- The \fBInputEventRecorders\fP class provides the framework for recording event activity from each of the input event devices that are classified as a pointing device (mouse)\&. It is a singleton, but has multiple subordinate threads running, 1 thread for each identified device to monitor\&.  
+
+.SH SYNOPSIS
+.br
+.PP
+.PP
+\fC#include <event_detect\&.h>\fP
+.SS "Classes"
+
+.in +1c
+.ti -1c
+.RI "class \fBEventRecorder\fP"
+.br
+.RI "The \fBEventRecorder\fP class formalizes the event recorder instance and is instantiated for each event recorder thread\&. These instantiations are wrapped by shared_ptr objects and the shared_ptrs stored in the m_event_recorder_ptrs vector\&. This is essentially a very specialized thread pool\&. "
+.in -1c
+.SS "Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "\fBInputEventRecorders\fP ()"
+.br
+.RI "Constructor\&. "
+.ti -1c
+.RI "int64_t \fBGetTotalEventCount\fP () const"
+.br
+.RI "Provides the total count (tally) of events across all monitored devices\&. "
+.ti -1c
+.RI "std::vector< std::shared_ptr< \fBEventRecorder\fP > > & \fBGetEventRecorders\fP ()"
+.br
+.RI "Returns a reference to the event recorder objects thread pool\&. "
+.ti -1c
+.RI "void \fBResetEventRecorders\fP ()"
+.br
+.in -1c
+.SS "Public Attributes"
+
+.in +1c
+.ti -1c
+.RI "std::condition_variable \fBcv_recorder_threads\fP"
+.br
+.RI "Condition variable for control/synchronization of the recorder threads\&. "
+.ti -1c
+.RI "std::atomic< bool > \fBm_interrupt_recorders\fP"
+.br
+.RI "Atomic boolean that interrupts the recorder threads\&. "
+.in -1c
+.SS "Private Attributes"
+
+.in +1c
+.ti -1c
+.RI "std::mutex \fBmtx_event_recorders\fP"
+.br
+.RI "This is the mutex member that provides lock control for the input event recorders object\&. This is used to ensure the input event recorders is thread-safe\&. Note that the subordinate individual event recorders are covered by their own individual locks\&. "
+.ti -1c
+.RI "std::mutex \fBmtx_event_recorder_threads\fP"
+.br
+.RI "This provides lock control for the recorder worker threads themselves\&. "
+.ti -1c
+.RI "std::vector< std::shared_ptr< \fBEventRecorder\fP > > \fBm_event_recorder_ptrs\fP"
+.br
+.RI "Holds smart shared pointers to the event recorder threads\&. This is a specialized thread pool with associated metadata\&. "
+.in -1c
+.SH "Detailed Description"
+.PP 
+The \fBInputEventRecorders\fP class provides the framework for recording event activity from each of the input event devices that are classified as a pointing device (mouse)\&. It is a singleton, but has multiple subordinate threads running, 1 thread for each identified device to monitor\&. 
+.SH "Member Function Documentation"
+.PP 
+.SS "std::vector< std::shared_ptr< \fBInputEventRecorders::EventRecorder\fP > > & InputEventRecorders::GetEventRecorders ()"
+
+.PP
+Returns a reference to the event recorder objects thread pool\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+vector of smart shared pointers to the event recorders 
+.RE
+.PP
+
+.SS "int64_t InputEventRecorders::GetTotalEventCount () const"
+
+.PP
+Provides the total count (tally) of events across all monitored devices\&. Returns total event count across all recorders\&.
+.PP
+\fBReturns:\fP
+.RS 4
+int64_t of total event count
+.PP
+.RE
+.PP
+
+
+.SH "Author"
+.PP 
+Generated automatically by Doxygen for idle_detect from the source code\&.
