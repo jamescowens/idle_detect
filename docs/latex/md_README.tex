@@ -12,7 +12,7 @@ Note the C++ is implemented in modern C++-\/17 compliant code, in an object orie
 \end{DoxyItemize}
 \end{DoxyEnumerate}
 
-The output of the event\+\_\+detect is a shared memory segment event\+\_\+detect\+\_\+last\+\_\+active and/or a file last\+\_\+active\+\_\+time.\+dat, which is in /run/event\+\_\+detect. Note that on all reasonably recent Linux distributions, the /run directory is a tmpfs which is in memory only. The shared memory consists of an int64\+\_\+t that is the last\+\_\+active\+\_\+time in Unix epoch seconds U\+TC. Similarly, the O\+N\+LY thing written to the last\+\_\+active\+\_\+time.\+dat is an int64 in string format that represents unix epoch time in seconds U\+TC.
+The output of the event\+\_\+detect is a shared memory segment /idle\+\_\+detect\+\_\+shmem and/or a file last\+\_\+active\+\_\+time.\+dat, which is in /run/event\+\_\+detect. Note that on all reasonably recent Linux distributions, the /run directory is a tmpfs which is in memory only. The shared memory consists of a two element array of int64\+\_\+t\textquotesingle{}s that is the timestamp of the update and the last\+\_\+active\+\_\+time in Unix epoch seconds U\+TC. Similarly, the O\+N\+LY thing written to the last\+\_\+active\+\_\+time.\+dat is an int64 in string format that represents unix epoch time in seconds U\+TC.
 
 
 \begin{DoxyEnumerate}
@@ -29,7 +29,7 @@ The output of the event\+\_\+detect is a shared memory segment event\+\_\+detect
 
 Since event\+\_\+detect receives update last\+\_\+active\+\_\+times from its own sources A\+ND all user level idle\+\_\+detect instances running on the machine, and provides an overall last\+\_\+active\+\_\+time in last\+\_\+active\+\_\+time.\+dat, the B\+O\+I\+NC client or other DC architecture can simply poll the last\+\_\+idle\+\_\+time.\+dat file once a second to determine idleness.
 
-This pretty much will resolve 99\% of the issues we have been having with idle detection. Other specific window manager code can be added later for idle inhibit detection on other than K\+D\+E/\+Gnome.
+This resolves 99\% of the issues we have been having with idle detection. Other specific window manager code can be added later for idle inhibit detection on other than K\+D\+E/\+Gnome.
 
 This should be considered early beta code. It should run stably. Most corner cases have been tested, but installation is still not straigtforward.
 

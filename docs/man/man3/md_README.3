@@ -1,4 +1,4 @@
-.TH "md_README" 3 "Sat Apr 12 2025" "Version 0.7" "idle_detect" \" -*- nroff -*-
+.TH "md_README" 3 "Sat Apr 12 2025" "Version 0.7.5.0" "idle_detect" \" -*- nroff -*-
 .ad l
 .nh
 .SH NAME
@@ -19,7 +19,7 @@ an input event via a named-pipe from user level detector (more on that below)
 
 .PP
 .PP
-The output of the event_detect is a shared memory segment event_detect_last_active and/or a file last_active_time\&.dat, which is in /run/event_detect\&. Note that on all reasonably recent Linux distributions, the /run directory is a tmpfs which is in memory only\&. The shared memory consists of an int64_t that is the last_active_time in Unix epoch seconds UTC\&. Similarly, the ONLY thing written to the last_active_time\&.dat is an int64 in string format that represents unix epoch time in seconds UTC\&.
+The output of the event_detect is a shared memory segment /idle_detect_shmem and/or a file last_active_time\&.dat, which is in /run/event_detect\&. Note that on all reasonably recent Linux distributions, the /run directory is a tmpfs which is in memory only\&. The shared memory consists of a two element array of int64_t's that is the timestamp of the update and the last_active_time in Unix epoch seconds UTC\&. Similarly, the ONLY thing written to the last_active_time\&.dat is an int64 in string format that represents unix epoch time in seconds UTC\&.
 .PP
 .IP "2." 4
 There is a user level service, idle_detect, run as a user level systemd service (i\&.e\&. systemctl --user \&.\&.\&.) that does the following things:
@@ -41,7 +41,7 @@ optionally can run dc control scripts itself to control dc programs directly bas
 .PP
 Since event_detect receives update last_active_times from its own sources AND all user level idle_detect instances running on the machine, and provides an overall last_active_time in last_active_time\&.dat, the BOINC client or other DC architecture can simply poll the last_idle_time\&.dat file once a second to determine idleness\&.
 .PP
-This pretty much will resolve 99% of the issues we have been having with idle detection\&. Other specific window manager code can be added later for idle inhibit detection on other than KDE/Gnome\&.
+This resolves 99% of the issues we have been having with idle detection\&. Other specific window manager code can be added later for idle inhibit detection on other than KDE/Gnome\&.
 .PP
 This should be considered early beta code\&. It should run stably\&. Most corner cases have been tested, but installation is still not straigtforward\&.
 .PP

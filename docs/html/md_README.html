@@ -22,7 +22,7 @@
  <tr style="height: 56px;">
   <td id="projectalign" style="padding-left: 0.5em;">
    <div id="projectname">idle_detect
-   &#160;<span id="projectnumber">0.7</span>
+   &#160;<span id="projectnumber">0.7.5.0</span>
    </div>
    <div id="projectbrief">Provides overall idle detection for a linux computer</div>
   </td>
@@ -77,7 +77,7 @@ $(function() {
 </ul>
 </li>
 </ol>
-<p>The output of the event_detect is a shared memory segment event_detect_last_active and/or a file last_active_time.dat, which is in /run/event_detect. Note that on all reasonably recent Linux distributions, the /run directory is a tmpfs which is in memory only. The shared memory consists of an int64_t that is the last_active_time in Unix epoch seconds UTC. Similarly, the ONLY thing written to the last_active_time.dat is an int64 in string format that represents unix epoch time in seconds UTC.</p>
+<p>The output of the event_detect is a shared memory segment /idle_detect_shmem and/or a file last_active_time.dat, which is in /run/event_detect. Note that on all reasonably recent Linux distributions, the /run directory is a tmpfs which is in memory only. The shared memory consists of a two element array of int64_t's that is the timestamp of the update and the last_active_time in Unix epoch seconds UTC. Similarly, the ONLY thing written to the last_active_time.dat is an int64 in string format that represents unix epoch time in seconds UTC.</p>
 <ol type="1">
 <li>There is a user level service, idle_detect, run as a user level systemd service (i.e. systemctl &ndash;user ...) that does the following things:<ul>
 <li>determines the session type, i.e. tty (non GUI), then whether kde.</li>
@@ -90,7 +90,7 @@ $(function() {
 </li>
 </ol>
 <p>Since event_detect receives update last_active_times from its own sources AND all user level idle_detect instances running on the machine, and provides an overall last_active_time in last_active_time.dat, the BOINC client or other DC architecture can simply poll the last_idle_time.dat file once a second to determine idleness.</p>
-<p>This pretty much will resolve 99% of the issues we have been having with idle detection. Other specific window manager code can be added later for idle inhibit detection on other than KDE/Gnome.</p>
+<p>This resolves 99% of the issues we have been having with idle detection. Other specific window manager code can be added later for idle inhibit detection on other than KDE/Gnome.</p>
 <p>This should be considered early beta code. It should run stably. Most corner cases have been tested, but installation is still not straigtforward.</p>
 <p>Development work is occurring on the development branch, and releases are on master. I am currently doing periodic pre-release tags (i.e. 0.x) at significant development points.</p>
 <p>This code is licensed under the MIT license.</p>
