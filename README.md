@@ -93,4 +93,4 @@ Fedora:
 
 15. If you change the event_detect.conf file or the idle_detect.conf files, then you currently need to restart the appropriate service to pick up the changes. Automatic change detection without restart will be added later.
 
-### This is late early beta level code and is currently subject to rapid change.
+### This is early beta level code and is currently subject to rapid change.
