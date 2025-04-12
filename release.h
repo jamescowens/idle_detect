@@ -9,6 +9,23 @@
 
 #include <string>
 
-const std::string g_version = "Pre-release 0.7: 20250412";
+// release.h (Alternative)
+#define IDLE_DETECT_VERSION_MAJOR 0
+#define IDLE_DETECT_VERSION_MINOR 7
+#define IDLE_DETECT_VERSION_PATCH 5
+#define IDLE_DETECT_VERSION_TWEAK 0
+
+#define ID__STRINGIFY(x) #x
+#define ID_STRINGIFY(x) ID__STRINGIFY(x)
+
+#define IDLE_DETECT_VERSION_STRING \
+ID_STRINGIFY(IDLE_DETECT_VERSION_MAJOR) "." \
+    ID_STRINGIFY(IDLE_DETECT_VERSION_MINOR) "." \
+    ID_STRINGIFY(IDLE_DETECT_VERSION_PATCH) "." \
+    ID_STRINGIFY(IDLE_DETECT_VERSION_TWEAK)
+
+const std::string g_version_datetime = "20250412";
+
+const std::string g_version = std::string("version ") + std::string(IDLE_DETECT_VERSION_STRING) + " - " + g_version_datetime;
 
 #endif // RELEASE_H

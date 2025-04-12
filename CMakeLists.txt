@@ -1,11 +1,91 @@
-# Provide cleaned up CMakeLists.txt
 cmake_minimum_required(VERSION 3.15)
 
-project(idle_detect VERSION 0.3 LANGUAGES CXX) # Removed C language
+# Read the content of the updated release.h
+file(READ release.h RELEASE_H_CONTENT)
+
+# Extract version components using regex on the #define lines
+string(REGEX MATCH "#define[ \t]+IDLE_DETECT_VERSION_MAJOR[ \t]+([0-9]+)"
+             _dummy_match "${RELEASE_H_CONTENT}")
+if(NOT CMAKE_MATCH_COUNT EQUAL 1)
+    message(FATAL_ERROR "Could not extract IDLE_DETECT_VERSION_MAJOR from release.h")
+endif()
+set(PROJECT_VERSION_MAJOR "${CMAKE_MATCH_1}")
+
+string(REGEX MATCH "#define[ \t]+IDLE_DETECT_VERSION_MINOR[ \t]+([0-9]+)"
+             _dummy_match "${RELEASE_H_CONTENT}")
+if(NOT CMAKE_MATCH_COUNT EQUAL 1)
+    message(FATAL_ERROR "Could not extract IDLE_DETECT_VERSION_MINOR from release.h")
+endif()
+set(PROJECT_VERSION_MINOR "${CMAKE_MATCH_1}")
+
+string(REGEX MATCH "#define[ \t]+IDLE_DETECT_VERSION_PATCH[ \t]+([0-9]+)"
+             _dummy_match "${RELEASE_H_CONTENT}")
+if(NOT CMAKE_MATCH_COUNT EQUAL 1)
+    message(FATAL_ERROR "Could not extract IDLE_DETECT_VERSION_PATCH from release.h")
+endif()
+set(PROJECT_VERSION_PATCH "${CMAKE_MATCH_1}")
+
+set(PROJECT_VERSION_TWEAK "0") # Default if not found
+string(REGEX MATCH "#define[ \t]+IDLE_DETECT_VERSION_TWEAK[ \t]+([0-9]+)"
+             _dummy_match "${RELEASE_H_CONTENT}")
+if(CMAKE_MATCH_COUNT EQUAL 1)
+    set(PROJECT_VERSION_TWEAK "${CMAKE_MATCH_1}")
+endif()
+
+# Construct the full version string for the project command
+set(PROJECT_VERSION_FROM_HEADER "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}.${PROJECT_VERSION_TWEAK}")
+message(STATUS "Found project version in release.h: ${PROJECT_VERSION_FROM_HEADER}")
+
+# Use the extracted version in the project() command
+project(idle_detect VERSION ${PROJECT_VERSION_FROM_HEADER} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic -O2 -fPIE -fstack-protector-strong")
+# Recommended: Turn off compiler extensions for stricter standard compliance check
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# --- Check for required C++17 features (<filesystem>, <variant>, <atomic>) ---
+include(CheckCXXSourceCompiles) # Include the necessary module
+message(STATUS "Checking for C++17 <filesystem>, <variant>, <atomic> support...")
+
+# Check if a small code snippet using these features compiles
+check_cxx_source_compiles(
+"
+#include <filesystem>
+#include <variant>
+#include <atomic>
+#include <string>
+namespace fs = std::filesystem;
+int main() {
+    fs::path p = fs::current_path();
+    std::variant<int, std::string> v = \"hello\";
+    std::atomic<bool> b = true;
+    (void)p; (void)v; (void)b;
+    return 0;
+}
+"
+CXX17_FEATURES_COMPILES # Variable to store TRUE or FALSE result
+)
+
+# Check the result and fail configuration if necessary
+if(NOT CXX17_FEATURES_COMPILES)
+    # Try to get compiler info if project() didn't already provide it
+    if(NOT CMAKE_CXX_COMPILER_ID)
+         # This part might not be strictly necessary as project() usually sets these
+         execute_process(COMMAND ${CMAKE_CXX_COMPILER} --version OUTPUT_VARIABLE CXX_VERSION_OUTPUT ERROR_QUIET)
+         string(REGEX MATCH "([0-9]+\\.[0-9]+(\\.[0-9]+)?)" CMAKE_CXX_COMPILER_VERSION "${CXX_VERSION_OUTPUT}")
+         # Add logic to determine ID if needed
+    endif()
+
+    message(FATAL_ERROR "Compiler ${CMAKE_CXX_COMPILER} (${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION}) "
+                        "does not provide required C++17 features (like <filesystem>, <variant>, <atomic> support). "
+                        "Please use a C++17 compliant compiler (e.g., GCC 9+, Clang 7+) "
+                        "or specify one using -DCMAKE_CXX_COMPILER=/path/to/g++")
+else()
+     message(STATUS "Checking for C++17 <filesystem>, <variant>, <atomic> support... - Success")
+endif()
+
+include(GNUInstallDirs)
 
 # Source files
 set(SOURCES_EVENT_DETECT
@@ -108,10 +188,35 @@ install(FILES "event_detect.conf" DESTINATION ${INSTALL_CONFIG_DIR})
 # Install system service (root ownership)
 install(FILES "dc_event_detection.service" DESTINATION ${INSTALL_SYSTEM_SERVICE_DIR})
 
+# --- Install Doxygen Documentation ---
+# Assumes Doxygen runs first or manually, generating docs in ${CMAKE_CURRENT_BINARY_DIR}/docs
+# Define where Doxygen output is expected relative to the build dir
+set(DOXYGEN_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/docs")
+
+# Install Man Pages (if they exist)
+if(EXISTS "${DOXYGEN_OUTPUT_DIR}/man/man3") # Check if man3 dir was created
+  install(DIRECTORY ${DOXYGEN_OUTPUT_DIR}/man/man3/ # Source: Install contents of man3
+          DESTINATION ${CMAKE_INSTALL_MANDIR}/man3/  # Destination: standard man3 dir
+          FILES_MATCHING PATTERN "*.3"             # Only install *.3 files
+          COMPONENT Documentation                  # Optional: component for selective install
+  )
+  message(STATUS "Man pages scheduled for installation to ${CMAKE_INSTALL_MANDIR}/man3")
+else()
+   message(STATUS "Man pages not found in ${DOXYGEN_OUTPUT_DIR}/man/man3 - Skipping man page installation.")
+   # Optionally add a CMake option to enable/disable doc generation/installation
+endif()
+
+# Install HTML Docs
+if(EXISTS "${DOXYGEN_OUTPUT_DIR}/html")
+  install(DIRECTORY ${DOXYGEN_OUTPUT_DIR}/html/
+          DESTINATION ${CMAKE_INSTALL_DOCDIR}/html # Standard doc dir + /html
+          COMPONENT Documentation
+  )
+  message(STATUS "HTML docs scheduled for installation to ${CMAKE_INSTALL_DOCDIR}/html")
+endif()
+
 # Uninstall target
 configure_file(uninstall.cmake.in uninstall.cmake @ONLY)
-
-include(${CMAKE_CURRENT_BINARY_DIR}/uninstall.cmake) # Add this line
 
 # Install executables only
 add_custom_target(install_executables_only
@@ -143,3 +248,5 @@ add_custom_target(install_user_service
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/idle_detect.conf" "$ENV{HOME}/.config/idle_detect.conf"
     COMMENT "Installing user-level service (user)"
 )
+
+
