@@ -281,30 +281,74 @@ private:
 
 };
 
+//!
+//! \brief The EventMessage class is a small class that encapsulates the "event message", which is a message sent
+//! from the local idle_detect instance to event_detect indicating an event that updates the last active time. The
+//! message is effectively timestamp:m_event_type in string format (to make use of pipe easier).
+//!
+//! The class stores these in their native format.
+//!
+//! A validation method and conversion to string format are provided.
+//!
 class EventMessage
 {
 public:
+    //!
+    //! \brief The EventType enum defines event types for the EventMessage class. Currently there is only
+    //! one event type in use, USER_ACTIVE.
+    //!
     enum EventType { // Note that if this enum is expanded, EventTypeToString must also be updated.
         UNKNOWN,
         USER_ACTIVE
     };
 
+    //!
+    //! \brief Constructs an "empty" EventMessage with timestamp of 0 and EventType of UNKNOWN.
+    //!
     EventMessage();
 
+    //!
+    //! \brief Constructs an EventMessage from the provided strings.
+    //! \param timestamp_str
+    //! \param event_type_str
+    //!
     EventMessage(std::string timestamp_str, std::string event_type_str);
 
+    //!
+    //! \brief Converts m_event_type member variable in the EventMessage object to a string.
+    //! \return string representation of enum value
+    //!
     std::string EventTypeToString();
 
+    //!
+    //! \brief Static version that takes the event_type enum as a parameter and provides the string representation.
+    //! \param event_type
+    //! \return string representation of enum value
+    //!
     static std::string EventTypeToString(const EventType& event_type);
 
+    //!
+    //! \brief Validates the EventMessage object.
+    //! \return true if EventMessage is valid.
+    //!
     bool IsValid();
 
+    //!
+    //! \brief Returns the string message format of the EventMessage object. This is meant to go on the pipe. This
+    //! is in lieu of a full serialization approach, which is overkill here.
+    //! \return std::string in the format of <timestamp>:<event_type string>
+    //!
     std::string ToString();
 
     int64_t m_timestamp;
     EventType m_event_type;
 
 private:
+    //!
+    //! \brief This converts the event type string to the proper enum value. It is the converse of EventTypeToString().
+    //! \param event_type_str
+    //! \return EventType enum value
+    //!
     EventType EventTypeStringToEnum(const std::string& event_type_str);
 };
 

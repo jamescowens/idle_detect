@@ -468,7 +468,7 @@ private:
     /**
      * @brief Performs resource cleanup (munmap). Called by destructor.
      */
-    void Cleanup(); // Renamed from Close to avoid ambiguity with fd close
+    void Cleanup();
 
     std::string m_shm_name;
     int m_shm_fd;

@@ -20,12 +20,21 @@
 #include <libevdev/libevdev-uinput.h>
 
 #include <release.h>
-
 #include <event_detect.h>
 
+//!
+//! \brief pid file name for the application.
+//!
 const fs::path g_lockfile = "event_detect.pid";
 
+//!
+//! \brief Holds the thread id for the parent thread (i.e. the thread for main()).
+//!
 pthread_t g_main_thread_id = 0;
+
+//!
+//! \brief Application exit code. Zero is normal, non-zero indicates an error condition.
+//!
 std::atomic<int> g_exit_code = 0;
 
 using namespace EventDetect;
@@ -55,11 +64,35 @@ IdleDetectMonitor g_idle_detect_monitor;
 //!
 InputEventRecorders g_event_recorders;
 
-// <<< MODIFIED Shmem Globals >>>
-// Use the new name directly here or read from config if needed later
+//!
+//! \brief The name of the shared memory segment
+//!
 const char* SHMEM_NAME_CONFIG = "/idle_detect_shmem";
-SharedMemoryTimestampExporter g_shmem_exporter(SHMEM_NAME_CONFIG); // Global instance manages lifecycle via RAII
-std::atomic<bool> g_shm_initialized_successfully = false; // Flag to track if setup worked (replaces bool in main)
+
+//!
+//! \brief Global singeton of the shmem exporter class. Lifecycle is RAII.
+//! \return
+//!
+SharedMemoryTimestampExporter g_shmem_exporter(SHMEM_NAME_CONFIG);
+
+//!
+//! \brief Flag to indicate whether setup of shared memory was successful.
+//!
+std::atomic<bool> g_shm_initialized_successfully = false;
+
+// Note this is to check that the data structures are the same between the std::atomic version of in64_t and the
+// raw version, because some DC platforms do not have access to std::atomic on their side, and so will read these
+// raw. Note that the chances of a torn read is very low, and on the write side, we are guaranteeing atomic writes
+// by the use of std::atomic.
+static_assert(sizeof(std::atomic<int64_t>) == sizeof(int64_t),
+              "Size mismatch between atomic<int64_t> and int64_t");
+static_assert(alignof(std::atomic<int64_t>) == alignof(int64_t),
+              "Alignment mismatch between atomic<int64_t> and int64_t");
+// Check the array specifically
+static_assert(sizeof(std::atomic<int64_t>[2]) == sizeof(int64_t[2]),
+              "Size mismatch between atomic<int64_t>[2] and int64_t[2]");
+static_assert(alignof(std::atomic<int64_t>[2]) == alignof(int64_t[2]),
+              "Alignment mismatch between atomic<int64_t>[2] and int64_t[2]");
 
 // Class Monitor
 
@@ -405,6 +438,8 @@ void InputEventRecorders::EventRecorder::EventActivityRecorderThread()
             break;
         }
 
+        lock.unlock();
+
         debug_log("INFO: %s: event_activity_recorder loop iteration for %s",
                   __func__,
                   GetEventDevicePath());
@@ -547,6 +582,8 @@ void TtyMonitor::TtyMonitorThread()
             break;
         }
 
+        lock.unlock();
+
         // Critical section block
         {
             std::unique_lock<std::mutex> lock(mtx_tty_monitor);
@@ -659,6 +696,8 @@ void IdleDetectMonitor::IdleDetectMonitorThread()
         if (g_idle_detect_monitor.m_interrupt_idle_detect_monitor) {
             break;
         }
+
+        lock.unlock();
 
         // Only execute this if the pipe isn't already open in non-blocking mode.
         if (fd == -1) {
@@ -957,7 +996,8 @@ bool SharedMemoryTimestampExporter::CreateOrOpen(mode_t mode) {
     }
 
     if (shm_stat.st_size != (off_t)m_size) {
-        debug_log("INFO: %s: Shm %s has size %ld, resizing to %zu bytes.", __func__, m_shm_name.c_str(), (long)shm_stat.st_size, m_size);
+        debug_log("INFO: %s: Shm %s has size %ld, resizing to %zu bytes.",
+                  __func__, m_shm_name.c_str(), (long)shm_stat.st_size, m_size);
         m_is_creator = true; // We determined the size
         errno = 0;
         if (ftruncate(m_shm_fd, m_size) == -1) { // <-- Truncate to array size
@@ -994,7 +1034,8 @@ bool SharedMemoryTimestampExporter::CreateOrOpen(mode_t mode) {
         // Initialize both elements atomically
         m_mapped_ptr[0].store(initial_time, std::memory_order_relaxed); // update_time
         m_mapped_ptr[1].store(initial_time, std::memory_order_relaxed); // last_active_time
-        debug_log("INFO: %s: Shared memory segment %s initialized. update=%lld, last_active=%lld", __func__, m_shm_name.c_str(), (long long)initial_time, (long long)initial_time);
+        debug_log("INFO: %s: Shared memory segment %s initialized. update=%lld, last_active=%lld",
+                  __func__, m_shm_name.c_str(), (long long)initial_time, (long long)initial_time);
     } else {
         debug_log("INFO: %s: Shared memory segment %s mapped.", __func__, m_shm_name.c_str());
     }
@@ -1003,7 +1044,6 @@ bool SharedMemoryTimestampExporter::CreateOrOpen(mode_t mode) {
     return true;
 }
 
-// Renamed from UpdateTimestamp, takes two arguments
 bool SharedMemoryTimestampExporter::UpdateTimestamps(int64_t update_time, int64_t last_active_time) {
     if (!m_is_initialized.load() || m_mapped_ptr == nullptr) {
         // Log periodically? Avoid flooding logs.
@@ -1024,7 +1064,6 @@ bool SharedMemoryTimestampExporter::IsInitialized() const {
     return m_is_initialized.load();
 }
 
-// Renamed from Cleanup, only does munmap now.
 void SharedMemoryTimestampExporter::Cleanup() { // Renamed from Close
     if (m_mapped_ptr != nullptr) {
         debug_log("DEBUG: %s: Unmapping shared memory %s...", __func__, m_shm_name.c_str());
@@ -1044,7 +1083,6 @@ void SharedMemoryTimestampExporter::Cleanup() { // Renamed from Close
     m_is_initialized.store(false); // Mark as uninitialized after cleanup
 }
 
-// New method to explicitly unlink
 bool SharedMemoryTimestampExporter::UnlinkSegment() {
     debug_log("INFO: %s: Requesting unlink for shared memory %s...", __func__, m_shm_name.c_str());
     errno = 0;

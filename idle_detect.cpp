@@ -36,7 +36,7 @@
 #include <gio/gio.h>
 
 
-//! Global config singleton
+//! Global config singleton for idle_detect
 IdleDetectConfig g_config;
 
 //! Global flag for signal handling
@@ -45,6 +45,8 @@ std::atomic<bool> g_shutdown_requested = false;
 const int MAX_X_CONNECT_RETRIES = 6;  // e.g., 6 attempts
 const int X_RETRY_DELAY_MS = 500;   // e.g., 500ms between attempts (~3 sec total)
 
+
+// IdleDetectConfig class
 
 void IdleDetectConfig::ProcessArgs()
 {
@@ -167,7 +169,21 @@ void IdleDetectConfig::ProcessArgs()
 
 
 namespace IdleDetect {
+//!
+//! \brief DEFAULT_IDLE_THRESHOLD_SECONDS is actually set in main() from the config file and ProcessArgs()
+//! has the default value. It is initialized to zero here.
+//!
+int DEFAULT_IDLE_THRESHOLD_SECONDS = 0;
 
+//!
+//! \brief DEFAULT_CHECK_INTERVAL_SECONDS is set at 1 second and is not configurable.
+//!
+constexpr int DEFAULT_CHECK_INTERVAL_SECONDS = 1;
+
+//!
+//! \brief Helper function to determine whether GUI session is Wayland.
+//! \return true if GUI session is Wayland.
+//!
 static bool IsWaylandSession() {
     const char* waylandDisplay = getenv("WAYLAND_DISPLAY");
     return (waylandDisplay != nullptr && strlen(waylandDisplay) > 0);
@@ -317,7 +333,10 @@ void SendPipeNotification(const std::filesystem::path& pipe_path, const int64_t&
     }
 }
 
-// Helper to check for non-graphical TTY session
+//!
+//! \brief Helper function that determines whether session is tty only.
+//! \return true if session is tty only (i.e. non-GUI).
+//!
 static bool IsTtySession() {
     const char* display = getenv("DISPLAY");
     const char* wayland_display = getenv("WAYLAND_DISPLAY");
@@ -327,6 +346,10 @@ static bool IsTtySession() {
            (wayland_display == nullptr || strlen(wayland_display) == 0);
 }
 
+//!
+//! \brief Helper function to get idle time from KDE DBus interface for KDE sessions, either X or Wayland.
+//! \return int64_t idle time in seconds. -1 for error.
+//!
 static int64_t GetIdleTimeKdeDBus() {
     debug_log("INFO: %s: Querying org.kde.ksmserver GetSessionIdleTime via D-Bus.", __func__);
 
@@ -391,6 +414,10 @@ static int64_t GetIdleTimeKdeDBus() {
 }
 
 // NEW Helper function using IsInhibited(flags) for GNOME Session Manager
+//!
+//! \brief This helper function checks for idle inhibited on Gnome sessions and works for both Gnome X and Wayland.
+//! \return
+//!
 static bool CheckGnomeInhibition() {
     // This function assumes it might be called even if not strictly a GNOME session,
     // relying on the D-Bus call to fail gracefully if the service/method isn't present.
@@ -452,7 +479,11 @@ static bool CheckGnomeInhibition() {
     return is_inhibited;
 }
 
-// D-Bus implementation for Gnome
+//!
+//! \brief This is the D-Bus implementation for Gnome Mutter. Note that it does NOT take into account
+//! idle inhibit, unlike the corresponding KDE D-Bus call.
+//! \return int64_t idle time in seconds. -1 for error.
+//!
 static int64_t GetIdleTimeWaylandGnomeViaDBus() {
     // Assumes IsGnomeSession() has already confirmed this is appropriate to call
     debug_log("INFO: %s: Querying GNOME Mutter IdleMonitor via D-Bus.",
@@ -518,7 +549,10 @@ static int64_t GetIdleTimeWaylandGnomeViaDBus() {
     return idle_time_seconds;
 }
 
-// Function to check if running under KDE (more robust check if needed)
+//!
+//! \brief This determines whether the GUI session is KDE.
+//! \return true if KDE session, false otherwise.
+//!
 static bool IsKdeSession() {
     // Checking for KSMServer D-Bus service might be more reliable than env vars
     GDBusConnection* connection = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, nullptr);
@@ -551,7 +585,10 @@ static bool IsKdeSession() {
     // return (kdeSession != nullptr && strlen(kdeSession) > 0);
 }
 
-// Helper function for X11 XScreenSaver query
+//!
+//! \brief Helper function for X11 XScreenSaver query
+//! \return int64_t idle time in seconds. -1 for error.
+//!
 static int64_t GetIdleTimeXss() {
     debug_log("INFO: %s: Using XScreenSaver.", __func__);
     Display* display = nullptr;
@@ -590,7 +627,11 @@ static int64_t GetIdleTimeXss() {
     return idle_time_seconds;
 }
 
-// --- Rewritten GetIdleTimeSeconds using IsInhibited for GNOME ---
+//!
+//! \brief This function determines the LOCAL session idle time using appropriate fallback logic based on the current
+//! API layout for GUI environments.
+//! \return int64_t idle time in seconds. -1 for error, -2 if tty session only.
+//!
 int64_t GetIdleTimeSeconds() {
     if (IsTtySession()) {
         debug_log("INFO: %s: TTY session detected, idle check not applicable.", __func__);
@@ -667,7 +708,10 @@ void ExecuteCommandBackground(const std::string& command) {
 
 } // namespace IdleDetect
 
-// --- Signal Handler ---
+//!
+//! \brief Signal handler
+//! \param signum
+//!
 void HandleSignal(int signum) {
     if (signum == SIGINT || signum == SIGTERM) {
         // Use log() here as it's presumably safe enough during shutdown signal
@@ -684,6 +728,12 @@ void HandleSignal(int signum) {
     }
 }
 
+//!
+//! \brief main
+//! \param argc
+//! \param argv. Currently one argument is expected, which is the config file path.
+//! \return exit code, 0 for normal, non-zero otherwise.
+//!
 int main(int argc, char* argv[])
 {
     const char* journal_stream = getenv("JOURNAL_STREAM");

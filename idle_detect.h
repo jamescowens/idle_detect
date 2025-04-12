@@ -12,11 +12,6 @@
 #include <util.h>
 
 namespace IdleDetect {
-
-// Global fixed or default config parameter(s).
-int DEFAULT_IDLE_THRESHOLD_SECONDS = 0; // This is set in main from config, and config has the default value.
-constexpr int DEFAULT_CHECK_INTERVAL_SECONDS = 1;
-
 // Function to get the user's idle time in seconds
 int64_t GetIdleTimeSeconds();
 
@@ -28,6 +23,9 @@ int64_t GetIdleTimeSeconds();
 //!
 class IdleDetectConfig : public Config
 {
+    //!
+    //! \brief The is the ProcessArgs() implementation for idle_detect.
+    //!
     void ProcessArgs() override;
 };
 
