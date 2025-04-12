@@ -29,9 +29,9 @@ set(SOURCES_IDLE_DETECT
 )
 
 # Source file for read_shmem_timestamp
-set(SOURCES_READ_SHMEM_TIMESTAMP
+set(SOURCES_READ_SHMEM_TIMESTAMPS
     "util.cpp"
-    "read_shmem_timestamp.cpp"
+    "read_shmem_timestamps.cpp"
 )
 
 include_directories(".")
@@ -58,7 +58,7 @@ add_executable(event_detect ${SOURCES_EVENT_DETECT})
 add_executable(idle_detect ${SOURCES_IDLE_DETECT})
 
 # --- Standalone Shared Memory Reader Utility ---
-add_executable(read_shmem_timestamp ${SOURCES_READ_SHMEM_TIMESTAMP})
+add_executable(read_shmem_timestamps ${SOURCES_READ_SHMEM_TIMESTAMPS})
 
 # --- Target Properties: event_detect ---
 if(LIBEVDEV_FOUND)
@@ -87,7 +87,7 @@ target_link_libraries(idle_detect PRIVATE
 
 # Link against librt if needed for shm_open/shm_unlink (often implicit now)
 # Use PUBLIC linking if other targets might link against this one, otherwise PRIVATE
-target_link_libraries(read_shmem_timestamp PRIVATE rt)
+target_link_libraries(read_shmem_timestamps PRIVATE rt)
 
 # Installation paths (parameterized)
 set(INSTALL_BIN_DIR "/usr/local/bin" CACHE PATH "Installation directory for binaries")
@@ -97,7 +97,7 @@ set(INSTALL_USER_CONFIG_DIR "$ENV{HOME}/.config" CACHE PATH "Installation direct
 set(INSTALL_USER_SERVICE_DIR "$ENV{HOME}/.config/systemd/user" CACHE PATH "Installation directory for the user level dc_idle_detection.service")
 
 # Install the executable and scripts
-install(TARGETS event_detect idle_detect read_shmem_timestamp DESTINATION ${INSTALL_BIN_DIR})
+install(TARGETS event_detect idle_detect read_shmem_timestamps DESTINATION ${INSTALL_BIN_DIR})
 install(FILES "dc_pause" "dc_unpause" "idle_detect_wrapper.sh"
         PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ GROUP_EXECUTE GROUP_READ WORLD_EXECUTE WORLD_READ
         DESTINATION ${INSTALL_BIN_DIR} )
@@ -118,7 +118,7 @@ add_custom_target(install_executables_only
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/event_detect" "${INSTALL_BIN_DIR}/event_detect"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/idle_detect" "${INSTALL_BIN_DIR}/idle_detect"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/idle_detect_wrapper.sh" "${INSTALL_BIN_DIR}/idle_detect_wrapper.sh"
-    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/read_shmem_timestamp" "${INSTALL_BIN_DIR}/read_shmem_timestamp"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/read_shmem_timestamps" "${INSTALL_BIN_DIR}/read_shmem_timestamps"
 
     COMMENT "installing executables only"
 )

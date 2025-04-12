@@ -20,6 +20,10 @@
 // Include the project's utility header
 #include "util.h"
 
+// Define constants for the shared memory layout
+const char* DEFAULT_SHMEM_NAME = "/idle_detect_shmem";
+const size_t SHMEM_SIZE = sizeof(std::atomic<int64_t>[2]); // Size of the array
+
 int main(int argc, char* argv[]) {
     // --- Argument Parsing ---
     if (argc < 2 || argc > 3) {
@@ -41,37 +45,29 @@ int main(int argc, char* argv[]) {
         if (format_lower == "iso" || format_lower == "hr") {
             human_readable = true;
         } else if (format_lower != "raw") {
-            // Use log for non-fatal warnings (stdout)
             log("WARN: %s: Unknown format '%s'. Defaulting to 'raw'.", __func__, argv[2]);
             // format remains "raw", human_readable remains false
         }
     }
 
-    // --- Shared Memory Reading ---
+    // --- Read Shared Memory ---
     int shm_fd = -1;
-    // Map as void* first
     void* mapped_mem = MAP_FAILED;
-    // Pointer to the specific atomic type in shared memory
     std::atomic<int64_t>* shm_atomic_ptr = nullptr;
-
-    int64_t timestamp = 0;
+    int64_t update_time = -1;
+    int64_t last_active_time = -1;
     bool read_success = false;
 
-    errno = 0; // Clear errno before system call
+    errno = 0;
     shm_fd = shm_open(shm_name, O_RDONLY, 0);
     if (shm_fd == -1) {
-        error_log("%s: shm_open failed for name '%s': %s (%d)",
-                  __func__, shm_name, strerror(errno), errno);
+        error_log("%s: shm_open(RO) failed for '%s': %s (%d)", __func__, shm_name, strerror(errno), errno);
         return 2;
     }
 
     errno = 0;
-    // Map exactly the size of the atomic type
-    mapped_mem = mmap(nullptr, sizeof(std::atomic<int64_t>), PROT_READ, MAP_SHARED, shm_fd, 0);
-
-    // File descriptor can be closed immediately after mmap
-    close(shm_fd);
-    shm_fd = -1; // Mark as closed
+    mapped_mem = mmap(nullptr, SHMEM_SIZE, PROT_READ, MAP_SHARED, shm_fd, 0);
+    close(shm_fd); // Close FD immediately
 
     if (mapped_mem == MAP_FAILED) {
         error_log("ERROR: %s: mmap failed for shm '%s': %s (%d)",
@@ -80,10 +76,12 @@ int main(int argc, char* argv[]) {
         return 3;
     }
 
-    // Cast mapped memory and load the timestamp atomically
+    // --- Access Data ---
     shm_atomic_ptr = static_cast<std::atomic<int64_t>*>(mapped_mem);
-    timestamp = shm_atomic_ptr->load(std::memory_order_relaxed);
-    read_success = true; // Value loaded successfully
+    // Atomically load both values from the array
+    update_time = shm_atomic_ptr[0].load(std::memory_order_relaxed);
+    last_active_time = shm_atomic_ptr[1].load(std::memory_order_relaxed);
+    read_success = true;
 
     // Unmap memory
     errno = 0;
@@ -95,27 +93,33 @@ int main(int argc, char* argv[]) {
     mapped_mem = nullptr;
     shm_atomic_ptr = nullptr;
 
+    // --- Unmap ---
+    errno = 0;
+    if (munmap(mapped_mem, SHMEM_SIZE) == -1) {
+        log("WARN: %s: munmap failed for shm '%s': %s (%d)", __func__, shm_name, strerror(errno), errno);
+        // Continue, we already read the data
+    }
+
     // --- Output ---
     if (read_success) {
         if (human_readable) {
-            std::string formatted_time = FormatISO8601DateTime(timestamp);
-
-            if (formatted_time.empty()) {
-                error_log("ERROR: %s: Failed to format timestamp %lld", __func__, (long long)timestamp);
-                return 5; // Formatting error exit code
+            std::string fmt_update = FormatISO8601DateTime(update_time);
+            std::string fmt_last_active = FormatISO8601DateTime(last_active_time);
+            if (fmt_update.empty() || fmt_last_active.empty()) {
+                error_log("%s: Failed to format one or both timestamps (%lld, %lld)",
+                          __func__,
+                          (long long)update_time, (long long)last_active_time);
+                return 5;
             }
-
-            // Keep final success output on std::cout for scripting
-            std::cout << formatted_time << std::endl;
+            // Output space-separated ISO strings to standard output
+            std::cout << fmt_update << " " << fmt_last_active << std::endl;
         } else {
-
-            // Keep final success output on std::cout for scripting
-            std::cout << timestamp << std::endl;
+            // Output space-separated raw epoch seconds to standard output
+            std::cout << update_time << " " << last_active_time << std::endl;
         }
-        return 0; // Success exit code
+        return 0; // Success
     } else {
-        // Should ideally not be reached if errors above exit, but included as a fallback
-        error_log("ERROR: %s: Failed to read timestamp from shared memory (unexpected state).", __func__);
+        error_log("%s: Failed to read data from shared memory '%s'.", __func__, shm_name);
         return 4;
     }
 }

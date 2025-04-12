@@ -410,14 +410,15 @@ private:
 };
 
 /**
- * @brief Manages a POSIX shared memory segment for exporting a single int64_t timestamp.
+ * @brief Manages a POSIX shared memory segment for exporting timestamps.
+ * Stores an array of two atomic int64_t: {update_time, last_active_time}.
  * Handles creation, mapping, updating, and cleanup via RAII.
  */
 class SharedMemoryTimestampExporter {
 public:
     /**
      * @brief Construct with the desired shared memory name.
-     * @param name Must start with '/' and be unique (e.g., "/event_detect_last_active").
+     * @param name Must start with '/' (e.g., "/idle_detect_shmem").
      */
     explicit SharedMemoryTimestampExporter(const std::string& name);
 
@@ -426,7 +427,7 @@ public:
      */
     ~SharedMemoryTimestampExporter();
 
-    // Prevent copying/moving to ensure single ownership semantics for RAII
+    // Prevent copying/moving
     SharedMemoryTimestampExporter(const SharedMemoryTimestampExporter&) = delete;
     SharedMemoryTimestampExporter& operator=(const SharedMemoryTimestampExporter&) = delete;
     SharedMemoryTimestampExporter(SharedMemoryTimestampExporter&&) = delete;
@@ -434,19 +435,21 @@ public:
 
     /**
      * @brief Creates (if necessary) and opens the shared memory segment,
-     * sets its size (to sizeof(int64_t)), and maps it for writing.
-     * Must be called before UpdateTimestamp or IsInitialized.
+     * sets its size (to sizeof(atomic<int64_t>[2])), and maps it for writing.
+     * Must be called before UpdateTimestamps or IsInitialized.
      * @param mode Permissions (e.g., 0666 or 0660) to use if creating the segment.
      * @return True on success, false on any failure (shm_open, ftruncate, mmap).
      */
     bool CreateOrOpen(mode_t mode = 0666);
 
     /**
-     * @brief Atomically updates the timestamp value in the mapped shared memory.
-     * @param timestamp The new int64_t timestamp value.
+     * @brief Atomically updates both timestamps in the mapped shared memory.
+     * @param update_time The timestamp of the current update cycle.
+     * @param last_active_time The calculated overall last active time.
      * @return True if updated successfully, false if not initialized or pointer is invalid.
      */
-    bool UpdateTimestamp(int64_t timestamp);
+    // *** SIGNATURE CHANGED ***
+    bool UpdateTimestamps(int64_t update_time, int64_t last_active_time);
 
     /**
      * @brief Checks if the shared memory was successfully initialized (opened and mapped).
@@ -454,19 +457,25 @@ public:
      */
     bool IsInitialized() const;
 
+    /**
+     * @brief Explicitly unlinks the shared memory segment.
+     * Call during clean shutdown if desired. Idempotent.
+     * @return True if unlink succeeded or segment already gone, false on error.
+     */
+    bool UnlinkSegment();
+
 private:
     /**
-     * @brief Performs resource cleanup (munmap, shm_unlink if owner).
-     * Called by destructor or if CreateOrOpen fails mid-way.
+     * @brief Performs resource cleanup (munmap). Called by destructor.
      */
-    void Cleanup();
+    void Cleanup(); // Renamed from Close to avoid ambiguity with fd close
 
     std::string m_shm_name;
-    int m_shm_fd;                       // File descriptor from shm_open
-    std::atomic<int64_t>* m_mapped_ptr; // Pointer to the mapped atomic int64_t
-    const size_t m_size;                // Should always be sizeof(int64_t)
-    bool m_is_creator;                  // Did this instance create the segment? (For unlink decision)
-    std::atomic<bool> m_is_initialized; // Is it successfully mapped?
+    int m_shm_fd;
+    std::atomic<int64_t>* m_mapped_ptr; // Pointer to the start of the atomic int64_t[2] array
+    const size_t m_size;               // Size of the atomic int64_t[2] array
+    bool m_is_creator;                 // Did this instance create/resize the segment?
+    std::atomic<bool> m_is_initialized;
 };
 
 //!

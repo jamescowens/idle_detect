@@ -207,82 +207,53 @@ static int64_t ReadLastActiveTimeFile(const fs::path& file_path) {
     }
 }
 
-/**
- * @brief Reads the atomic timestamp from a POSIX shared memory segment.
- * @param shm_name The name of the shared memory object (e.g., "/event_detect_last_active").
- * @return int64_t Timestamp read from shared memory, or -1 if segment cannot be opened/mapped or value read.
- */
+//!
+//! \brief Helper function to read from shared memory.
+//! \param shm_name
+//! \return
+//!
 static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
-    if (shm_name.empty()) {
-        error_log("%s: Shared memory name is empty.", __func__);
+    if (shm_name.empty() || shm_name[0] != '/') {
+        error_log("%s: Invalid shared memory name provided: %s", __func__, shm_name.c_str());
         return -1;
     }
-    // POSIX shm names should start with a single / and contain no others typically
-    if (shm_name[0] != '/' || shm_name.find('/', 1) != std::string::npos) {
-        error_log("%s: Shared memory name '%s' may not be a valid format (should start with / and contain no others).",
-                  __func__, shm_name.c_str());
-    }
+    debug_log("DEBUG: %s: Attempting to read timestamp from shm: %s", __func__, shm_name.c_str());
 
-    debug_log("INFO: %s: Attempting to read timestamp from shm: %s", __func__, shm_name.c_str());
-
+    const size_t shmem_size = sizeof(std::atomic<int64_t>[2]);
     int shm_fd = -1;
     void* mapped_mem = MAP_FAILED;
     std::atomic<int64_t>* shm_atomic_ptr = nullptr;
-    int64_t timestamp = -1; // Default to error state
+    int64_t last_active_timestamp = -1;
 
     errno = 0;
-    // Open existing shared memory object for reading only
-    shm_fd = shm_open(shm_name.c_str(), O_RDONLY, 0); // Mode is ignored for O_RDONLY existing object
+    shm_fd = shm_open(shm_name.c_str(), O_RDONLY, 0);
     if (shm_fd == -1) {
-        // ENOENT (No such file or directory) is expected if event_detect hasn't created it yet.
         if (errno != ENOENT) {
-            error_log("%s: shm_open failed for name '%s': %s (%d)",
-                      __func__, shm_name.c_str(), strerror(errno), errno);
-        } else {
-            debug_log("INFO: %s: Shared memory '%s' not found (ENOENT).", __func__, shm_name.c_str());
+            error_log("%s: shm_open(RO) failed for '%s': %s (%d)", __func__, shm_name.c_str(), strerror(errno), errno);
         }
-        return -1; // Return error if cannot open
+        else { debug_log("INFO: %s: Shared memory '%s' not found (ENOENT).", __func__, shm_name.c_str()); }
+        return -1;
     }
 
     errno = 0;
-    // Map the shared memory object (containing one atomic int64_t) into memory
-    mapped_mem = mmap(nullptr, sizeof(std::atomic<int64_t>), PROT_READ, MAP_SHARED, shm_fd, 0);
-
-    // Close the file descriptor immediately after mmap, it's no longer needed
+    mapped_mem = mmap(nullptr, shmem_size, PROT_READ, MAP_SHARED, shm_fd, 0);
     close(shm_fd);
-    shm_fd = -1;
 
     if (mapped_mem == MAP_FAILED) {
-        error_log("%s: mmap failed for shm '%s': %s (%d)",
-                  __func__, shm_name.c_str(), strerror(errno), errno);
-        return -1; // Return error if cannot map
+        error_log("%s: mmap(RO) failed for shm '%s': %s (%d)", __func__, shm_name.c_str(), strerror(errno), errno);
+        return -1;
     }
 
-    // --- Access the data ---
     shm_atomic_ptr = static_cast<std::atomic<int64_t>*>(mapped_mem);
-    // Atomically load the value using relaxed ordering (sufficient for this case)
-    timestamp = shm_atomic_ptr->load(std::memory_order_relaxed);
-    debug_log("INFO: %s: Successfully read timestamp %lld from shm '%s'",
-              __func__, (long long)timestamp, shm_name.c_str());
+    last_active_timestamp = shm_atomic_ptr[1].load(std::memory_order_relaxed); // Read index [1]
+    debug_log("DEBUG: %s: Read last_active %lld from shm %s", __func__, (long long)last_active_timestamp, shm_name.c_str());
 
-    // --- Unmap the memory ---
     errno = 0;
-    if (munmap(mapped_mem, sizeof(std::atomic<int64_t>)) == -1) {
-        // Log warning but proceed, as we already read the value
-        log("WARN: %s: munmap failed for shm '%s': %s (%d)",
-            __func__, shm_name.c_str(), strerror(errno), errno);
+    if (munmap(mapped_mem, shmem_size) == -1) {
+        log("WARN: %s: munmap failed for shm '%s': %s (%d)", __func__, shm_name.c_str(), strerror(errno), errno);
     }
 
-    // Validate the timestamp read?
-    if (!IsValidTimestamp(timestamp)) {
-        error_log("%s: Timestamp read, %lld, is out of valid range.",
-                  __func__,
-                  timestamp);
-
-        timestamp = -1;
-    }
-
-    return timestamp; // Return the read timestamp (can be 0 or positive)
+    return last_active_timestamp;
 }
 
 /**
