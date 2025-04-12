@@ -20,6 +20,7 @@
 namespace fs = std::filesystem;
 
 extern std::atomic<bool> g_debug;
+extern std::atomic<bool> g_log_timestamps;
 
 //!
 //! /brief Locale-independent version of std::to_string
@@ -109,7 +110,12 @@ template <typename... Args>
 //!
 static inline std::string LogPrintStr(const char* fmt, const Args&... args)
 {
-    std::string log_msg = FormatISO8601DateTime(GetUnixEpochTime()) + " ";
+    std::string log_msg;
+
+    // Conditionally add timestamp prefix based on g_log_timestamps flag.
+    if (g_log_timestamps.load(std::memory_order_relaxed)) { // Check the flag
+        log_msg = FormatISO8601DateTime(GetUnixEpochTime()) + " ";
+    }
 
     try {
         log_msg += tfm::format(fmt, args...);

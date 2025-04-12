@@ -18,6 +18,12 @@
 //!
 std::atomic<bool> g_debug = false;
 
+//!
+//! \brief The flag controls the logging of timestamps by the log functions. This is used to suppress
+//! timestamp output when run under systemd, where the journal appends a high resolution timestamp.
+//!
+std::atomic<bool> g_log_timestamps = true;
+
 [[nodiscard]] std::vector<std::string> StringSplit(const std::string& s, const std::string& delim)
 {
     size_t pos = 0;

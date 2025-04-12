@@ -1262,6 +1262,18 @@ void CleanUpFiles(int sig)
 //!
 int main(int argc, char* argv[])
 {
+    const char* journal_stream = getenv("JOURNAL_STREAM");
+    if (journal_stream != nullptr && strlen(journal_stream) > 0) {
+        // If JOURNAL_STREAM is set, assume output is handled by journald
+        g_log_timestamps.store(false);
+        // Optional: Log that internal timestamps are disabled
+        // std::cout << "INFO: Detected systemd journal logging, disabling internal timestamps." << std::endl;
+        // (Use cout directly here as logging itself might not be fully set up)
+    } else {
+        // Not running under journal (or var not set), keep internal timestamps
+        g_log_timestamps.store(true);
+    }
+
     if (argc != 2) {
         error_log("%s: One argument must be specified for the location of the config file.",
                   __func__);
