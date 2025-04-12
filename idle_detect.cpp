@@ -142,7 +142,7 @@ void IdleDetectConfig::ProcessArgs()
 
     // shmem_name
 
-    m_config.insert(std::make_pair("shmem_name", GetArgString("shmem_name", "/event_detect_last_active")));
+    m_config.insert(std::make_pair("shmem_name", GetArgString("shmem_name", "/idle_detect_shmem")));
 
     // inactivity_time_trigger
 

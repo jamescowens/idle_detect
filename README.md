@@ -9,7 +9,7 @@ Note the C++ is implemented in modern C++-17 compliant code, in an object orient
  - the pts/tty devices for atime (which provides idle time for terminals/pseudo terminals, including ssh sessions.)
  - an input event via a named-pipe from user level detector (more on that below)
 
-The output of the event_detect is a shared memory segment event_detect_last_active and/or a file last_active_time.dat, which is in /run/event_detect. Note that on all reasonably recent Linux distributions, the /run directory is a tmpfs which is in memory only. The shared memory consists of an int64_t that is the last_active_time in Unix epoch seconds UTC. Similarly, the ONLY thing written to the last_active_time.dat is an int64 in string format that represents unix epoch time in seconds UTC.
+The output of the event_detect is a shared memory segment /idle_detect_shmem and/or a file last_active_time.dat, which is in /run/event_detect. Note that on all reasonably recent Linux distributions, the /run directory is a tmpfs which is in memory only. The shared memory consists of a two element array of int64_t's that is the timestamp of the update and the last_active_time in Unix epoch seconds UTC. Similarly, the ONLY thing written to the last_active_time.dat is an int64 in string format that represents unix epoch time in seconds UTC.
 
 2. There is a user level service, idle_detect, run as a user level systemd service (i.e. systemctl --user ...) that does the following things:
  - determines the session type, i.e. tty (non GUI), then whether kde.
@@ -22,7 +22,7 @@ XSS. Note that the fallback strategy here means that essentially for non-KDE non
 
 Since event_detect receives update last_active_times from its own sources AND all user level idle_detect instances running on the machine, and provides an overall last_active_time in last_active_time.dat, the BOINC client or other DC architecture can simply poll the last_idle_time.dat file once a second to determine idleness.
 
-This pretty much will resolve 99% of the issues we have been having with idle detection. Other specific window manager code can be added later for idle inhibit detection on other than KDE/Gnome.
+This resolves 99% of the issues we have been having with idle detection. Other specific window manager code can be added later for idle inhibit detection on other than KDE/Gnome.
 
 This should be considered early beta code. It should run stably. Most corner cases have been tested, but installation is still not straigtforward.
 
