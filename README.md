@@ -58,39 +58,20 @@ Fedora:
 
 2. Make sure you have installed the packages for the dependences listed above. The actual names will vary depending on the distribution.
 
-3. Compile the event_detect C++ application with cmake:
-    - cd ./build/cmake
-    - cmake ../../ (note you may need the -DCMAKE_CXX_COMPILER=\<c++ compiler path\> -DCMAKE_C_COMPILER=\<c compiler path\> options to point to a C++-17 compliant compiler)
-    - cmake build .
+3. Compile and install the executables and system level service event_detect and config file with sudo ./install.sh. Two arguments can be supplied to install.sh: --prefix=\<prefix directory\> to change the installation prefix directory from the default of /usr/local/bin, and --cxx-compiler=\<compiler path\> to specify the path of a C++-17 compliant compiler. Note that the cmake install script run by install.sh will do a compile test to ensure the chosen compiler supports the C++-17 features used in this code, as some compilers report C++-17 compatible and accept the flag, but in fact do not fully implement all parts of the C++-17 standard. Gcc-7 is a good example.
 
-4. Install executables and system-wide service with sudo cmake --install .
+4. Modify event_detect.conf to your liking with sudo nano /etc/event_detect.conf and if you changed the event_detect.conf file, reload the service with sudo systemctl restart dc_event_detection.
 
-5. Load the new service into systemd with sudo systemctl daemon-reload.
+5. Install user level script and user level service with ./user_install.sh (This is run as your regular user account, not sudo.)
 
-6. Create new dedicated system user account for the event_detect component.
- - sudo groupadd --system event-detect
- - sudo useradd --system -g event-detect -d / -s /sbin/nologin event-detect
- - sudo usermod -aG input event-detect
- - sudo usermod -aG tty event-detect
+6. Modify idle_detect.conf to your liking with nano ~/.config/idle_detect.conf and reload the service with systemctl --user restart dc_idle_detection.
 
-7. Modify event_detect.conf to your liking with sudo nano /etc/event_detect.conf.
+7. Check the status of both the services: sudo systemctl status dc_event_detection, and systemctl --user status dc_idle_detection, and make sure they are successfully running.
 
-8. Install user level script and user level service with cmake --build . --target install_user_service. You may need to create ~/.config/systemd/user directory first if it does not exist. Not all distributions create this by default.
-
-9. Modify idle_detect.conf to your liking with nano ~/.config/idle_detect.conf
-
-10. Load the new user level service into systemd with systemctl --user daemon-reload
-
-11. sudo systemctl enable --now dc_event_detection. This enables and starts the pointing device and pts/tty event detection service.
-
-12. systemctl --user enable --now dc_idle_detection. This enables and starts the user mode component as a user level service.
-
-13. Check the status of both the services: sudo systemctl status dc_event_detection, and systemctl --user status dc_idle_detection, and make sure they are successfully running.
-
-14. Modify the dc_pause and dc_unpause scripts to your liking (they are currently set up to control BOINC in its default installation).
+8. Modify the dc_pause and dc_unpause scripts to your liking (they are currently set up to control BOINC in its default installation).
 - sudo nano /usr/local/bin/dc_pause
 - sudo nano /usr/local/bin/dc_unpause
 
-15. If you change the event_detect.conf file or the idle_detect.conf files, then you currently need to restart the appropriate service to pick up the changes. Automatic change detection without restart will be added later.
+9. If you make subsequent changes to the event_detect.conf file or the idle_detect.conf files, then you currently need to restart the appropriate service to pick up the changes.
 
 ### This is early beta level code and is currently subject to rapid change.
