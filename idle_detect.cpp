@@ -233,7 +233,7 @@ static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
         error_log("%s: Invalid shared memory name provided: %s", __func__, shm_name.c_str());
         return -1;
     }
-    debug_log("DEBUG: %s: Attempting to read timestamp from shm: %s", __func__, shm_name.c_str());
+    debug_log("INFO: %s: Attempting to read timestamp from shm: %s", __func__, shm_name.c_str());
 
     const size_t shmem_size = sizeof(std::atomic<int64_t>[2]);
     int shm_fd = -1;
@@ -262,7 +262,7 @@ static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
 
     shm_atomic_ptr = static_cast<std::atomic<int64_t>*>(mapped_mem);
     last_active_timestamp = shm_atomic_ptr[1].load(std::memory_order_relaxed); // Read index [1]
-    debug_log("DEBUG: %s: Read last_active %lld from shm %s", __func__, (long long)last_active_timestamp, shm_name.c_str());
+    debug_log("INFO: %s: Read last_active %lld from shm %s", __func__, (int64_t)last_active_timestamp, shm_name.c_str());
 
     errno = 0;
     if (munmap(mapped_mem, shmem_size) == -1) {
@@ -876,83 +876,85 @@ int main(int argc, char* argv[])
     bool was_previously_idle = false; // Track state changes
     int64_t effective_last_active_time_prev = 0;
     int64_t effective_last_active_time = 0;
-    bool using_event_detect_as_fallback = false;
+    bool using_event_detect_as_only_source = false;
 
     while (!g_shutdown_requested.load()) {
-        int64_t idle_seconds = 0; // Default to active
-        int64_t direct_idle_seconds = IdleDetect::GetIdleTimeSeconds();
+        int64_t idle_seconds = IdleDetect::GetIdleTimeSeconds();
 
-        if (direct_idle_seconds >= 0) {
-            // Successfully got idle time directly
-            idle_seconds = direct_idle_seconds;
-
-            using_event_detect_as_fallback = false;
-
-            debug_log("INFO: %s: Using direct idle time: %lld seconds.",
+        if (idle_seconds >= 0) {
+            debug_log("INFO: %s: idle time from GUI session: %lld seconds.",
                       __func__,
                       (int64_t)idle_seconds);
-        } else {
-            // Failed to get idle time directly, try fallback
-            if (direct_idle_seconds == -2 && !use_event_detect) {
-                debug_log("INFO: %s: Tty session. Overriding use_event_detect and using event_detect.",
-                          __func__);
-            } else {
-                debug_log("INFO: %s: Direct idle detection failed/unavailable.",
-                          __func__);
-            }
+        } else if (idle_seconds == -2 && !use_event_detect) {
+            debug_log("INFO: %s: Tty session. Overriding use_event_detect and using event_detect anyway.",
+                      __func__);
+            using_event_detect_as_only_source = true;
+        }
 
-            if (use_event_detect || direct_idle_seconds == -2) {
-                debug_log("INFO: %s: Attempting fallback using shared memory: %s", __func__, shmem_name.c_str());
-                int64_t shmem_timestamp = IdleDetect::ReadTimestampViaShmem(shmem_name);
+        // This is how tty idle is captured -- use_event_detect defaults to true and is overridden to true if this is
+        // a tty session regardless of the config setting, since tty information is in event_detect.
+        if (use_event_detect || using_event_detect_as_only_source) {
+            debug_log("INFO: %s: Attempting to use event_detect via shared memory: %s", __func__, shmem_name.c_str());
+            int64_t shmem_timestamp = IdleDetect::ReadTimestampViaShmem(shmem_name);
 
-                if (shmem_timestamp >= 0) { // Use >= 0 check, as 0 might be valid initial state
-                    int64_t current_time = GetUnixEpochTime();
-                    int64_t calculated_idle = current_time - shmem_timestamp;
-                    idle_seconds = (calculated_idle > 0) ? calculated_idle : 0; // Ensure non-negative
+            if (shmem_timestamp >= 0) { // Use >= 0 check, as 0 might be valid initial state
+                int64_t current_time = GetUnixEpochTime();
+                int64_t calculated_idle = current_time - shmem_timestamp;
+                calculated_idle = (calculated_idle > 0) ? calculated_idle : 0; // Ensure non-negative
 
-                    using_event_detect_as_fallback = true;
-
-                    debug_log("INFO: %s: Using fallback idle time from shmem: %lld seconds (current: %lld, shmem: %lld)",
-                              __func__,
-                              (long long)idle_seconds,
-                              (long long)current_time,
-                              (long long)shmem_timestamp);
+                // If idle_seconds is < 0, this indicates an error state from IdleDetect::GetIdleTimeSeconds(), or
+                // tty only session if -2, in which case the value of idle_seconds should not be used directly.
+                if (idle_seconds >= 0) {
+                    idle_seconds = std::min(idle_seconds, calculated_idle);
                 } else {
-                    // ReadTimestampViaShmem returns -1 on error
-                    debug_log("INFO: %s: Attempting fallback using event_detect file: %s",
-                              __func__,
-                              dat_file_path.string());
-
-                    int64_t file_timestamp = IdleDetect::ReadLastActiveTimeFile(dat_file_path);
-                    if (file_timestamp > 0) {
-                        int64_t current_time = GetUnixEpochTime();
-                        int64_t calculated_idle = current_time - file_timestamp;
-                        idle_seconds = (calculated_idle > 0) ? calculated_idle : 0; // Ensure non-negative
-
-                        using_event_detect_as_fallback = true;
-
-                        debug_log("INFO: %s: Using fallback idle time: %lld seconds (current: %lld, file: %lld)",
-                                  __func__,
-                                  (int64_t)idle_seconds,
-                                  (int64_t)current_time,
-                                  (int64_t)file_timestamp);
-                    } else {
-                        error_log("%s: Fallback failed: Could not read/parse valid timestamp from event_detect file. Assuming active.",
-                                  __func__);
-
-                        using_event_detect_as_fallback = false;
-
-                        idle_seconds = 0; // Assume active if fallback fails
-                    }
+                    idle_seconds = calculated_idle;
                 }
+
+                debug_log("INFO: %s: idle time including info from event_detect via shmem: %lld seconds "
+                          "(current: %lld, shmem: %lld)",
+                          __func__,
+                          (int64_t)idle_seconds,
+                          (int64_t)current_time,
+                          (int64_t)shmem_timestamp);
             } else {
-                debug_log("INFO: %s: Fallback disabled by config (use_event_detect=false). Assuming active.",
-                          __func__);
+                // ReadTimestampViaShmem returns -1 on error
+                debug_log("INFO: %s: Attempting to get idle informationi from event_detect via file: %s",
+                          __func__,
+                          dat_file_path.string());
 
-                using_event_detect_as_fallback = false;
+                int64_t file_timestamp = IdleDetect::ReadLastActiveTimeFile(dat_file_path);
+                if (file_timestamp > 0) {
+                    int64_t current_time = GetUnixEpochTime();
+                    int64_t calculated_idle = current_time - file_timestamp;
+                    calculated_idle = (calculated_idle > 0) ? calculated_idle : 0; // Ensure non-negative
 
-                idle_seconds = 0; // Assume active if direct fails and fallback disabled
+                    // If idle_seconds is < 0, this indicates an error state from IdleDetect::GetIdleTimeSeconds(), or
+                    // tty only session if -2, in which case the value of idle_seconds should not be used directly.
+                    if (idle_seconds >= 0) {
+                        idle_seconds = std::min(idle_seconds, calculated_idle);
+                    } else {
+                        idle_seconds = calculated_idle;
+                    }
+
+                    debug_log("INFO: %s: idle time including info from event_detect via file: %lld seconds "
+                              "(current: %lld, file: %lld)",
+                              __func__,
+                              (int64_t)idle_seconds,
+                              (int64_t)current_time,
+                              (int64_t)file_timestamp);
+                } else {
+                    error_log("%s: Getting idle_info from event_detect failed: Could not read/parse valid timestamp "
+                              "from event_detect file.",
+                              __func__);
+                }
             }
+        }
+
+        if (idle_seconds < 0) {
+            error_log("%s: Idle time could not be determined from any available source. Assuming active.",
+                      __func__);
+
+            idle_seconds = 0;
         }
 
         // --- State Calculation & Actions (using effective idle_seconds) ---
@@ -990,12 +992,12 @@ int main(int argc, char* argv[])
         }
 
         // --- Send Pipe Notification if not currently idle and should update event detect and
-        // effective last active time has changed. Note if using_event_detect_as_fallback is true, then
+        // effective last active time has changed. Note if using_event_detect_as_only_source is true, then
         // the pipe message should not be sent as that would be circular and a waste of bandwidth on the
         // pipe. ---
         effective_last_active_time = GetUnixEpochTime() - idle_seconds;
 
-        if (!is_currently_idle && should_update_event_detect && using_event_detect_as_fallback == false
+        if (!is_currently_idle && should_update_event_detect && using_event_detect_as_only_source == false
             && (effective_last_active_time != effective_last_active_time_prev)) {
             debug_log("INFO: %s: Sending active notification to pipe.", __func__);
 

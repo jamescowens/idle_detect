@@ -1,36 +1,58 @@
 #!/bin/bash
 
 # Installation script for event_detect and idle_detect services
-# Run this script with sudo: sudo ./install.sh
+# Usage: sudo ./install.sh [--prefix=PREFIX] [--cxx-compiler=COMPILER_PATH]
+#   PREFIX defaults to /usr/local
+#   COMPILER_PATH defaults to CMake's auto-detection
 
 # Exit immediately if a command exits with a non-zero status.
 set -e
 
+# --- Configuration & Argument Parsing ---
 INSTALL_PREFIX="/usr/local"
+USER_CXX_COMPILER="" # Default: let CMake find/use its default C++ compiler
 
-# Allow overriding via --prefix= argument
+# Parse arguments (--prefix and --cxx-compiler)
 for arg in "$@"; do
   case $arg in
     --prefix=*)
     INSTALL_PREFIX="${arg#*=}"
-    shift # Remove --prefix=... from processing
+    shift # Remove from list
+    ;;
+    --cxx-compiler=*)
+    USER_CXX_COMPILER="${arg#*=}"
+    shift # Remove from list
+    ;;
+    *)
+    # Handle other arguments or ignore them
     ;;
   esac
 done
 
-# --- Configuration ---
 BUILD_DIR="build/cmake"
 SYSTEM_CONFIG_DIR="/etc"
 USER_SERVICE_DIR_TEMPLATE=".config/systemd/user" # Relative to user home
-USER_CONFIG_DIR_TEMPLATE=".config"             # Relative to user home
+USER_CONFIG_DIR_TEMPLATE=".config"               # Relative to user home
 SERVICE_USER="event_detect"
 SERVICE_GROUP="event_detect"
-# Explicitly set compilers if needed (otherwise CMake might pick defaults)
-# Adjust these paths if necessary!
-CXX_COMPILER="/usr/bin/g++-14"
-C_COMPILER="/usr/bin/gcc-14"
-CMAKE_CMD="cmake ../../ -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX} -DCMAKE_CXX_COMPILER=${CXX_COMPILER} -DCMAKE_C_COMPILER=${C_COMPILER}"
-# --- End Configuration ---
+
+# --- Construct CMake Command ---
+# Base command with install prefix
+CMAKE_BASE_CMD="cmake ../../ -DCMAKE_INSTALL_PREFIX=${INSTALL_PREFIX_ARG}"
+# Add C++ compiler flag ONLY if user specified one
+CMAKE_CONFIGURE_FLAGS=""
+if [ -n "$USER_CXX_COMPILER" ]; then
+    if [ ! -x "$USER_CXX_COMPILER" ]; then
+        echo "ERROR: Specified C++ compiler not found or not executable: ${USER_CXX_COMPILER}"
+        exit 1
+    fi
+    echo "INFO: Using specified C++ compiler: ${USER_CXX_COMPILER}"
+    CMAKE_CONFIGURE_FLAGS="-DCMAKE_CXX_COMPILER=${USER_CXX_COMPILER}"
+else
+    echo "INFO: Using default C++ compiler found by CMake (ensure it's C++17 compliant!)."
+fi
+
+CMAKE_FULL_CMD="${CMAKE_BASE_CMD} ${CMAKE_CONFIGURE_FLAGS}"
 
 # --- Check for sudo ---
 if [ "$(id -u)" -ne 0 ]; then
