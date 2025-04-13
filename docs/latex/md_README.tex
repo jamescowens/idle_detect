@@ -72,27 +72,10 @@ Fedora\+:
 \begin{DoxyEnumerate}
 \item git clone \href{https://github.com/jamescowens/idle_detect.git}{\tt https\+://github.\+com/jamescowens/idle\+\_\+detect.\+git} and change into the idle\+\_\+detect directory.
 \item Make sure you have installed the packages for the dependences listed above. The actual names will vary depending on the distribution.
-\item Compile the event\+\_\+detect C++ application with cmake\+:
-\begin{DoxyItemize}
-\item cd ./build/cmake
-\item cmake ../../ (note you may need the -\/\+D\+C\+M\+A\+K\+E\+\_\+\+C\+X\+X\+\_\+\+C\+O\+M\+P\+I\+L\+ER=$<$c++ compiler path$>$ -\/\+D\+C\+M\+A\+K\+E\+\_\+\+C\+\_\+\+C\+O\+M\+P\+I\+L\+ER=$<$c compiler path$>$ options to point to a C++-\/17 compliant compiler)
-\item cmake build .
-\end{DoxyItemize}
-\item Install executables and system-\/wide service with sudo cmake --install .
-\item Load the new service into systemd with sudo systemctl daemon-\/reload.
-\item Create new dedicated system user account for the event\+\_\+detect component.
-\begin{DoxyItemize}
-\item sudo groupadd --system event-\/detect
-\item sudo useradd --system -\/g event-\/detect -\/d / -\/s /sbin/nologin event-\/detect
-\item sudo usermod -\/aG input event-\/detect
-\item sudo usermod -\/aG tty event-\/detect
-\end{DoxyItemize}
-\item Modify event\+\_\+detect.\+conf to your liking with sudo nano /etc/event\+\_\+detect.conf.
-\item Install user level script and user level service with cmake --build . --target install\+\_\+user\+\_\+service. You may need to create $\sim$/.config/systemd/user directory first if it does not exist. Not all distributions create this by default.
-\item Modify idle\+\_\+detect.\+conf to your liking with nano $\sim$/.config/idle\+\_\+detect.\+conf
-\item Load the new user level service into systemd with systemctl --user daemon-\/reload
-\item sudo systemctl enable --now dc\+\_\+event\+\_\+detection. This enables and starts the pointing device and pts/tty event detection service.
-\item systemctl --user enable --now dc\+\_\+idle\+\_\+detection. This enables and starts the user mode component as a user level service.
+\item Compile and install the executables and system level service event\+\_\+detect and config file with sudo ./install.sh. Two arguments can be supplied to install.\+sh\+: --prefix=$<$prefix directory$>$ to change the installation prefix directory from the default of /usr/local/bin, and --cxx-\/compiler=$<$compiler path$>$ to specify the path of a C++-\/17 compliant compiler. Note that the cmake install script run by install.\+sh will do a compile test to ensure the chosen compiler supports the C++-\/17 features used in this code, as some compilers report C++-\/17 compatible and accept the flag, but in fact do not fully implement all parts of the C++-\/17 standard. Gcc-\/7 is a good example.
+\item Modify event\+\_\+detect.\+conf to your liking with sudo nano /etc/event\+\_\+detect.conf and if you changed the event\+\_\+detect.\+conf file, reload the service with sudo systemctl restart dc\+\_\+event\+\_\+detection.
+\item Install user level script and user level service with ./user\+\_\+install.sh (This is run as your regular user account, not sudo.)
+\item Modify idle\+\_\+detect.\+conf to your liking with nano $\sim$/.config/idle\+\_\+detect.\+conf and reload the service with systemctl --user restart dc\+\_\+idle\+\_\+detection.
 \item Check the status of both the services\+: sudo systemctl status dc\+\_\+event\+\_\+detection, and systemctl --user status dc\+\_\+idle\+\_\+detection, and make sure they are successfully running.
 \item Modify the dc\+\_\+pause and dc\+\_\+unpause scripts to your liking (they are currently set up to control B\+O\+I\+NC in its default installation).
 \end{DoxyEnumerate}
@@ -101,7 +84,7 @@ Fedora\+:
 \item sudo nano /usr/local/bin/dc\+\_\+unpause
 \end{DoxyItemize}
 \begin{DoxyEnumerate}
-\item If you change the event\+\_\+detect.\+conf file or the idle\+\_\+detect.\+conf files, then you currently need to restart the appropriate service to pick up the changes. Automatic change detection without restart will be added later.
+\item If you make subsequent changes to the event\+\_\+detect.\+conf file or the idle\+\_\+detect.\+conf files, then you currently need to restart the appropriate service to pick up the changes.
 \end{DoxyEnumerate}
 
 \subsubsection*{This is early beta level code and is currently subject to rapid change.}

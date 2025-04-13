@@ -22,7 +22,7 @@
  <tr style="height: 56px;">
   <td id="projectalign" style="padding-left: 0.5em;">
    <div id="projectname">idle_detect
-   &#160;<span id="projectnumber">0.7.5.0</span>
+   &#160;<span id="projectnumber">0.7.7.0</span>
    </div>
    <div id="projectbrief">Provides overall idle detection for a linux computer</div>
   </td>
@@ -120,27 +120,10 @@ $(function() {
 <ol type="1">
 <li>git clone <a href="https://github.com/jamescowens/idle_detect.git">https://github.com/jamescowens/idle_detect.git</a> and change into the idle_detect directory.</li>
 <li>Make sure you have installed the packages for the dependences listed above. The actual names will vary depending on the distribution.</li>
-<li>Compile the event_detect C++ application with cmake:<ul>
-<li>cd ./build/cmake</li>
-<li>cmake ../../ (note you may need the -DCMAKE_CXX_COMPILER=&lt;c++ compiler path&gt; -DCMAKE_C_COMPILER=&lt;c compiler path&gt; options to point to a C++-17 compliant compiler)</li>
-<li>cmake build .</li>
-</ul>
-</li>
-<li>Install executables and system-wide service with sudo cmake &ndash;install .</li>
-<li>Load the new service into systemd with sudo systemctl daemon-reload.</li>
-<li>Create new dedicated system user account for the event_detect component.<ul>
-<li>sudo groupadd &ndash;system event-detect</li>
-<li>sudo useradd &ndash;system -g event-detect -d / -s /sbin/nologin event-detect</li>
-<li>sudo usermod -aG input event-detect</li>
-<li>sudo usermod -aG tty event-detect</li>
-</ul>
-</li>
-<li>Modify event_detect.conf to your liking with sudo nano /etc/event_detect.conf.</li>
-<li>Install user level script and user level service with cmake &ndash;build . &ndash;target install_user_service. You may need to create ~/.config/systemd/user directory first if it does not exist. Not all distributions create this by default.</li>
-<li>Modify idle_detect.conf to your liking with nano ~/.config/idle_detect.conf</li>
-<li>Load the new user level service into systemd with systemctl &ndash;user daemon-reload</li>
-<li>sudo systemctl enable &ndash;now dc_event_detection. This enables and starts the pointing device and pts/tty event detection service.</li>
-<li>systemctl &ndash;user enable &ndash;now dc_idle_detection. This enables and starts the user mode component as a user level service.</li>
+<li>Compile and install the executables and system level service event_detect and config file with sudo ./install.sh. Two arguments can be supplied to install.sh: &ndash;prefix=&lt;prefix directory&gt; to change the installation prefix directory from the default of /usr/local/bin, and &ndash;cxx-compiler=&lt;compiler path&gt; to specify the path of a C++-17 compliant compiler. Note that the cmake install script run by install.sh will do a compile test to ensure the chosen compiler supports the C++-17 features used in this code, as some compilers report C++-17 compatible and accept the flag, but in fact do not fully implement all parts of the C++-17 standard. Gcc-7 is a good example.</li>
+<li>Modify event_detect.conf to your liking with sudo nano /etc/event_detect.conf and if you changed the event_detect.conf file, reload the service with sudo systemctl restart dc_event_detection.</li>
+<li>Install user level script and user level service with ./user_install.sh (This is run as your regular user account, not sudo.)</li>
+<li>Modify idle_detect.conf to your liking with nano ~/.config/idle_detect.conf and reload the service with systemctl &ndash;user restart dc_idle_detection.</li>
 <li>Check the status of both the services: sudo systemctl status dc_event_detection, and systemctl &ndash;user status dc_idle_detection, and make sure they are successfully running.</li>
 <li>Modify the dc_pause and dc_unpause scripts to your liking (they are currently set up to control BOINC in its default installation).</li>
 </ol>
@@ -149,7 +132,7 @@ $(function() {
 <li>sudo nano /usr/local/bin/dc_unpause</li>
 </ul>
 <ol type="1">
-<li>If you change the event_detect.conf file or the idle_detect.conf files, then you currently need to restart the appropriate service to pick up the changes. Automatic change detection without restart will be added later.</li>
+<li>If you make subsequent changes to the event_detect.conf file or the idle_detect.conf files, then you currently need to restart the appropriate service to pick up the changes.</li>
 </ol>
 <h3>This is early beta level code and is currently subject to rapid change.</h3>
 </div></div><!-- contents -->
