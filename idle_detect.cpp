@@ -413,7 +413,6 @@ static int64_t GetIdleTimeKdeDBus() {
     return idle_time_seconds;
 }
 
-// NEW Helper function using IsInhibited(flags) for GNOME Session Manager
 //!
 //! \brief This helper function checks for idle inhibited on Gnome sessions and works for both Gnome X and Wayland.
 //! \return
