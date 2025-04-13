@@ -18,26 +18,18 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-# --- Check for invoking user (needed for user service removal) ---
-if [ -z "$SUDO_USER" ]; then
-    echo "WARNING: \$SUDO_USER is not set. Skipping user-specific removal steps."
-    echo "         Please run user service removal manually as the target user:"
-    echo "         systemctl --user disable --now dc_idle_detection.service"
-    echo "         rm -f ~/.config/systemd/user/dc_idle_detection.service ~/.config/idle_detect.conf"
-    echo "         systemctl --user daemon-reload"
-    TARGET_USER_HOME="" # Mark as unknown
-else
-    TARGET_USER_HOME=$(getent passwd "$SUDO_USER" | cut -d: -f6)
-    if [ ! -d "$TARGET_USER_HOME" ]; then
-      echo "ERROR: Could not determine home directory for user '$SUDO_USER'. Cannot perform user uninstall steps."
-      exit 1
-    fi
-    USER_SERVICE_DIR="${TARGET_USER_HOME}/.config/systemd/user"
-    USER_CONFIG_DIR="${TARGET_USER_HOME}/.config"
-fi
-
-
-echo "--- Starting Uninstallation ---"
+echo "--- Starting System-Level Uninstallation ---"
+echo "*** IMPORTANT: Run './user_uninstall.sh' as the regular user FIRST ***"
+read -p "Have you run './user_uninstall.sh' as the regular user already? [y/N] " response
+case "$response" in
+    [yY][eE][sS]|[yY])
+        echo "Proceeding..."
+        ;;
+    *)
+        echo "Please run './user_uninstall.sh' as the user first. Aborting."
+        exit 1
+        ;;
+esac
 
 # --- Disable and Stop Services ---
 echo "INFO: Disabling and stopping system service 'dc_event_detection.service'..."
@@ -46,30 +38,6 @@ if systemctl is-active --quiet dc_event_detection.service; then
 else
     echo "INFO: System service not active."
     systemctl disable dc_event_detection.service || true # Try disabling even if not active
-fi
-
-if [ -n "$SUDO_USER" ] && [ -n "$TARGET_USER_HOME" ]; then
-    echo "INFO: Disabling and stopping user service 'dc_idle_detection.service' for user '$SUDO_USER'..."
-    # Run as the target user
-    if sudo -u "$SUDO_USER" systemctl --user is-active --quiet dc_idle_detection.service; then
-      sudo -u "$SUDO_USER" systemctl --user disable --now dc_idle_detection.service
-    else
-      echo "INFO: User service not active for $SUDO_USER."
-      # Try disabling anyway
-      sudo -u "$SUDO_USER" systemctl --user disable dc_idle_detection.service || true
-    fi
-else
-    echo "WARN: Skipping user service disable/stop due to missing \$SUDO_USER."
-fi
-
-# --- Remove User Files ---
-if [ -n "$SUDO_USER" ] && [ -n "$TARGET_USER_HOME" ]; then
-    echo "INFO: Removing user service and config files for user '$SUDO_USER'..."
-    rm -f "${USER_SERVICE_DIR}/dc_idle_detection.service"
-    rm -f "${USER_CONFIG_DIR}/idle_detect.conf" # Maybe ask user if they want to keep config?
-    # Attempt to remove directories if empty? Probably leave them.
-else
-    echo "WARN: Skipping user file removal due to missing \$SUDO_USER."
 fi
 
 # --- Run CMake Uninstall Script ---
@@ -93,25 +61,12 @@ if [ -d "$RUNTIME_DIR" ]; then
     rm -rf "$RUNTIME_DIR"
 fi
 
-# --- User/Group Removal (Optional - uncomment with caution) ---
-# echo "INFO: To remove user/group (use with caution):"
-# echo "      sudo userdel $SERVICE_USER"
-# echo "      sudo groupdel $SERVICE_GROUP"
-
-
 # --- Systemd Reload ---
 echo "INFO: Reloading systemd manager configuration..."
 systemctl daemon-reload
-if [ -n "$SUDO_USER" ] && [ -n "$TARGET_USER_HOME" ]; then
-    echo "INFO: Reloading systemd user manager configuration for user '$SUDO_USER'..."
-    sudo -u "$SUDO_USER" systemctl --user daemon-reload
-else
-    echo "WARN: Skipping user daemon-reload due to missing \$SUDO_USER."
-fi
 
 echo ""
 echo "--- Uninstallation Complete ---"
-echo "User/group '$SERVICE_USER'/'$SERVICE_GROUP' were NOT removed automatically."
 echo ""
 
 exit 0

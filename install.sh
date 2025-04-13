@@ -105,7 +105,6 @@ cd ../.. # Go back to project root
 
 # --- Install System Files ---
 echo "INFO: Installing system files (binaries, system service, system config)..."
-# This runs 'install(TARGETS...)' and 'install(FILES...)' from CMakeLists.txt
 # Install step uses the prefix configured during the cmake step implicitly
 if cmake --install "$BUILD_DIR" ; then
     echo "INFO: System files installed successfully."
@@ -139,56 +138,19 @@ echo "INFO: Adding user '$SERVICE_USER' to 'input' and 'tty' groups..."
 usermod -aG input "$SERVICE_USER" || echo "WARN: Failed or not needed to add $SERVICE_USER to input group."
 usermod -aG tty "$SERVICE_USER" || echo "WARN: Failed or not needed to add $SERVICE_USER to tty group."
 
-# --- Install User Files ---
-echo "INFO: Installing user configuration and service files for user '$SUDO_USER'..."
-# Create target directories if they don't exist, owned by the user
-echo "INFO: Creating user directories (if needed)..."
-mkdir -p "$USER_SERVICE_DIR"
-chown "$SUDO_USER":"$(id -gn $SUDO_USER)" "$USER_CONFIG_DIR" || true # Allow failure if dir exists with diff owner?
-chown "$SUDO_USER":"$(id -gn $SUDO_USER)" "$USER_CONFIG_DIR/systemd" || true
-chown "$SUDO_USER":"$(id -gn $SUDO_USER)" "$USER_SERVICE_DIR" || true
-
-echo "INFO: Copying user files..."
-# Copy user service file
-cp ./dc_idle_detection.service "${USER_SERVICE_DIR}/dc_idle_detection.service"
-chown "$SUDO_USER":"$(id -gn $SUDO_USER)" "${USER_SERVICE_DIR}/dc_idle_detection.service"
-# Copy default user config file (don't overwrite if exists?)
-if [ ! -f "${USER_CONFIG_DIR}/idle_detect.conf" ]; then
-    cp ./idle_detect.conf "${USER_CONFIG_DIR}/idle_detect.conf"
-    chown "$SUDO_USER":"$(id -gn $SUDO_USER)" "${USER_CONFIG_DIR}/idle_detect.conf"
-    echo "INFO: Copied default config to ${USER_CONFIG_DIR}/idle_detect.conf"
-else
-    echo "INFO: User config ${USER_CONFIG_DIR}/idle_detect.conf already exists, not overwriting."
-fi
-
-# --- Systemd Reload (User) ---
-echo "INFO: Reloading systemd user manager configuration for user '$SUDO_USER'..."
-# Run as the target user
-sudo -u "$SUDO_USER" systemctl --user daemon-reload
-
 # --- Enable and Start Services ---
 echo "INFO: Enabling and starting system service 'dc_event_detection.service'..."
 systemctl enable --now dc_event_detection.service
 
-echo "INFO: Enabling and starting user service 'dc_idle_detection.service' for user '$SUDO_USER'..."
-# Run as the target user
-sudo -u "$SUDO_USER" systemctl --user enable --now dc_idle_detection.service
-
 # --- Final Instructions ---
 echo ""
-echo "--- Installation Complete ---"
-echo "Please check the status of the services:"
-echo "  sudo systemctl status dc_event_detection.service"
-echo "  systemctl --user status dc_idle_detection.service (run as user '$SUDO_USER')"
+echo "--- System-Level Installation Complete ---"
+echo "*** IMPORTANT: Now run './user_install.sh' as the regular user ***"
+echo "    (e.g., exit sudo session, then run './user_install.sh')"
 echo ""
 echo "You may want to customize configuration files:"
 echo "  System config: sudo nano ${SYSTEM_CONFIG_DIR}/event_detect.conf"
-echo "  User config:   nano ${USER_CONFIG_DIR}/idle_detect.conf (run as user '$SUDO_USER')"
-echo "  Helper scripts (installed in ${INSTALL_PREFIX}/bin): dc_pause, dc_unpause"
-echo ""
-echo "Remember to restart services after changing config files:"
-echo "  sudo systemctl restart dc_event_detection.service"
-echo "  systemctl --user restart dc_idle_detection.service (run as user '$SUDO_USER')"
+echo "  Helper scripts (installed in ${INSTALL_PREFIX_ARG}/bin): dc_pause, dc_unpause"
 echo ""
 
 exit 0
