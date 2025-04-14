@@ -43,6 +43,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Recommended: Turn off compiler extensions for stricter standard compliance check
 set(CMAKE_CXX_EXTENSIONS OFF)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic -fPIE -fstack-protector-strong")
 
 # --- Check for required C++17 features (<filesystem>, <variant>, <atomic>) ---
 include(CheckCXXSourceCompiles) # Include the necessary module
@@ -188,31 +189,34 @@ install(FILES "event_detect.conf" DESTINATION ${INSTALL_CONFIG_DIR})
 # Install system service (root ownership)
 install(FILES "dc_event_detection.service" DESTINATION ${INSTALL_SYSTEM_SERVICE_DIR})
 
-# --- Install Doxygen Documentation ---
-# Assumes Doxygen runs first or manually, generating docs in ${CMAKE_CURRENT_BINARY_DIR}/docs
-# Define where Doxygen output is expected relative to the build dir
-set(DOXYGEN_OUTPUT_DIR "${CMAKE_CURRENT_BINARY_DIR}/docs")
+# --- Install Pre-Generated Doxygen Documentation ---
+# Assumes documentation exists in ./docs/ relative to CMakeLists.txt
 
-# Install Man Pages (if they exist)
-if(EXISTS "${DOXYGEN_OUTPUT_DIR}/man/man3") # Check if man3 dir was created
-  install(DIRECTORY ${DOXYGEN_OUTPUT_DIR}/man/man3/ # Source: Install contents of man3
-          DESTINATION ${CMAKE_INSTALL_MANDIR}/man3/  # Destination: standard man3 dir
-          FILES_MATCHING PATTERN "*.3"             # Only install *.3 files
-          COMPONENT Documentation                  # Optional: component for selective install
-  )
-  message(STATUS "Man pages scheduled for installation to ${CMAKE_INSTALL_MANDIR}/man3")
+# Install Man Pages (if the source directory exists)
+set(DOXYGEN_MAN_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/docs/man/man3")
+if(EXISTS "${DOXYGEN_MAN_SOURCE_DIR}")
+    install(DIRECTORY ${DOXYGEN_MAN_SOURCE_DIR}/ # Copy contents of man3/
+            DESTINATION ${CMAKE_INSTALL_MANDIR}/man3/  # Install into <prefix>/share/man/man3/
+            COMPONENT Documentation                  # <<< FIX: COMPONENT comes BEFORE FILES_MATCHING
+            FILES_MATCHING PATTERN "*.3"             # <<< FIX: FILES_MATCHING comes AFTER COMPONENT
+            # OPTIONAL # REMOVED OPTIONAL as per previous step, source should exist
+    )
+    message(STATUS "Man pages from ${DOXYGEN_MAN_SOURCE_DIR} scheduled for installation to ${CMAKE_INSTALL_MANDIR}/man3")
 else()
-   message(STATUS "Man pages not found in ${DOXYGEN_OUTPUT_DIR}/man/man3 - Skipping man page installation.")
-   # Optionally add a CMake option to enable/disable doc generation/installation
+     message(WARNING "Man page source directory not found: ${DOXYGEN_MAN_SOURCE_DIR}")
 endif()
 
-# Install HTML Docs
-if(EXISTS "${DOXYGEN_OUTPUT_DIR}/html")
-  install(DIRECTORY ${DOXYGEN_OUTPUT_DIR}/html/
-          DESTINATION ${CMAKE_INSTALL_DOCDIR}/html # Standard doc dir + /html
-          COMPONENT Documentation
-  )
-  message(STATUS "HTML docs scheduled for installation to ${CMAKE_INSTALL_DOCDIR}/html")
+# Install HTML Docs (if the source directory exists)
+# This block was likely already correct, but ensure COMPONENT is before any potential PATTERN/REGEX
+set(DOXYGEN_HTML_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/docs/html")
+if(EXISTS "${DOXYGEN_HTML_SOURCE_DIR}")
+    install(DIRECTORY ${DOXYGEN_HTML_SOURCE_DIR}/ # Copy contents of html/
+            DESTINATION ${CMAKE_INSTALL_DOCDIR}/html # Install into <prefix>/share/doc/<proj>/html/
+            COMPONENT Documentation # Optional
+    )
+    message(STATUS "HTML docs from ${DOXYGEN_HTML_SOURCE_DIR} scheduled for installation to ${CMAKE_INSTALL_DOCDIR}/html")
+else()
+    message(WARNING "HTML docs source directory not found: ${DOXYGEN_HTML_SOURCE_DIR}")
 endif()
 
 # Uninstall target
