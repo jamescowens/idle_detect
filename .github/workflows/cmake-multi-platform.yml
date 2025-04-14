@@ -1,0 +1,87 @@
+# .github/workflows/cmake-multi-platform.yml
+
+name: CMake Build on Linux (GCC & Clang)
+
+on:
+  push:
+    # Add 'development' to the list of branches for push events
+    branches: [ "master", "development" ]
+  pull_request:
+    # Add 'development' to the list of branches for pull_request events
+    branches: [ "master", "development" ]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        build_type: [Release]
+        compiler: [gcc, clang] # Use short names for easier reference
+
+        # Define compiler specifics per matrix entry
+        include:
+          - compiler: gcc
+            c_compiler: gcc
+            cpp_compiler: g++
+          - compiler: clang
+            c_compiler: clang
+            cpp_compiler: clang++
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # ---- Installation Step ----
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update -y
+        sudo apt-get install -y --no-install-recommends \
+          build-essential \
+          cmake \
+          ninja-build \
+          libevdev-dev \
+          libxss-dev \
+          libdbus-1-dev \
+          libglib2.0-dev
+        echo "--- Verifying Compiler Setup ---"
+        echo "Selected C Compiler for CMake: ${{ matrix.c_compiler }}"
+        echo "Selected C++ Compiler for CMake: ${{ matrix.cpp_compiler }}"
+
+        echo "Checking if selected compilers exist in PATH:"
+        which ${{ matrix.c_compiler }} || echo "${{ matrix.c_compiler }} not found in PATH!"
+        which ${{ matrix.cpp_compiler }} || echo "${{ matrix.cpp_compiler }} not found in PATH!"
+
+        echo "Checking C++ compiler version:"
+        ${{ matrix.cpp_compiler }} --version || echo "Failed to get version for ${{ matrix.cpp_compiler }}"
+        echo "--------------------------------"
+
+    - name: Set reusable strings
+      id: strings
+      shell: bash
+      run: |
+        echo "build-output-dir=${{ github.workspace }}/build" >> "$GITHUB_OUTPUT"
+        echo "Using build directory: ${{ github.workspace }}/build"
+
+    - name: Configure CMake
+      # Set environment variables for CMake to pick up the correct compilers
+      env:
+        CC: ${{ matrix.c_compiler }}
+        CXX: ${{ matrix.cpp_compiler }}
+      run: |
+        cmake -B ${{ steps.strings.outputs.build-output-dir }} \
+              -S ${{ github.workspace }} \
+              -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+              -G Ninja # Specify Ninja generator
+
+    - name: Build
+      run: cmake --build ${{ steps.strings.outputs.build-output-dir }} --config ${{ matrix.build_type }} --verbose
+
+    - name: Test
+      working-directory: ${{ steps.strings.outputs.build-output-dir }}
+      # Execute tests defined by the CMake configuration.
+      # CTest defaults to Release config unless otherwise specified,
+      # but being explicit with --build-config doesn't hurt.
+      run: ctest --build-config ${{ matrix.build_type }} --output-on-failure -V # Added -V for verbose test output
