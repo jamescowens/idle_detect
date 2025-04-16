@@ -171,7 +171,7 @@ target_link_libraries(idle_detect PRIVATE
 target_link_libraries(read_shmem_timestamps PRIVATE rt)
 
 # Installation paths (parameterized)
-set(INSTALL_BIN_DIR "${CMAKE_INSTALL_PREFIX}/bin" CACHE PATH "Installation directory for binaries")
+set(INSTALL_BIN_DIR "${CMAKE_INSTALL_BINDIR}" CACHE PATH "Installation directory for binaries")
 set(INSTALL_CONFIG_DIR "/etc" CACHE PATH "Installation directory for configuration files")
 set(INSTALL_SYSTEM_SERVICE_DIR "/etc/systemd/system" CACHE PATH "Installation directory for the system level dc_event_detection service")
 set(INSTALL_USER_CONFIG_DIR "$ENV{HOME}/.config" CACHE PATH "Installation directory for the user level idle_detect.conf")
