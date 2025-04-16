@@ -80,20 +80,6 @@ SharedMemoryTimestampExporter g_shmem_exporter(SHMEM_NAME_CONFIG);
 //!
 std::atomic<bool> g_shm_initialized_successfully = false;
 
-// Note this is to check that the data structures are the same between the std::atomic version of in64_t and the
-// raw version, because some DC platforms do not have access to std::atomic on their side, and so will read these
-// raw. Note that the chances of a torn read is very low, and on the write side, we are guaranteeing atomic writes
-// by the use of std::atomic.
-static_assert(sizeof(std::atomic<int64_t>) == sizeof(int64_t),
-              "Size mismatch between atomic<int64_t> and int64_t");
-static_assert(alignof(std::atomic<int64_t>) == alignof(int64_t),
-              "Alignment mismatch between atomic<int64_t> and int64_t");
-// Check the array specifically
-static_assert(sizeof(std::atomic<int64_t>[2]) == sizeof(int64_t[2]),
-              "Size mismatch between atomic<int64_t>[2] and int64_t[2]");
-static_assert(alignof(std::atomic<int64_t>[2]) == alignof(int64_t[2]),
-              "Alignment mismatch between atomic<int64_t>[2] and int64_t[2]");
-
 // Class Monitor
 
 Monitor::Monitor()
@@ -976,6 +962,9 @@ bool SharedMemoryTimestampExporter::CreateOrOpen(mode_t mode) {
     debug_log("INFO: %s: Initializing shared memory segment %s for atomic int64_t[2]", __func__, m_shm_name.c_str());
 
     Cleanup(); // Ensure clean state
+
+    std::unique_lock<std::mutex> lock(mtx_shmem);
+
     m_is_creator = false;
 
     // 1. Create or open RW
@@ -1028,12 +1017,11 @@ bool SharedMemoryTimestampExporter::CreateOrOpen(mode_t mode) {
     }
 
     // 5. Store pointer, initialize if we created/resized it
-    m_mapped_ptr = static_cast<std::atomic<int64_t>*>(mapped_mem);
+    m_mapped_ptr = static_cast<int64_t*>(mapped_mem);
     if (m_is_creator) {
-        int64_t initial_time = GetUnixEpochTime(); // Assumes GetUnixEpochTime() is available
-        // Initialize both elements atomically
-        m_mapped_ptr[0].store(initial_time, std::memory_order_relaxed); // update_time
-        m_mapped_ptr[1].store(initial_time, std::memory_order_relaxed); // last_active_time
+        int64_t initial_time = GetUnixEpochTime();
+        m_mapped_ptr[0] = initial_time; // update_time
+        m_mapped_ptr[1] = initial_time; // last_active_time
         debug_log("INFO: %s: Shared memory segment %s initialized. update=%lld, last_active=%lld",
                   __func__, m_shm_name.c_str(), (long long)initial_time, (long long)initial_time);
     } else {
@@ -1045,18 +1033,16 @@ bool SharedMemoryTimestampExporter::CreateOrOpen(mode_t mode) {
 }
 
 bool SharedMemoryTimestampExporter::UpdateTimestamps(int64_t update_time, int64_t last_active_time) {
+    std::unique_lock<std::mutex> lock(mtx_shmem);
+
     if (!m_is_initialized.load() || m_mapped_ptr == nullptr) {
-        // Log periodically? Avoid flooding logs.
-        // static std::atomic<int> s_log_counter = 0;
-        // if (s_log_counter++ % 60 == 0) // Log once a minute maybe
-        //    error_log("ERROR: %s: Cannot update timestamp, shared memory not initialized.", __func__);
         return false;
     }
     // Use relaxed memory order: assumes readers don't need strict ordering
     // relative to other non-atomic operations in this thread. Atomicity
     // of the store itself is guaranteed.
-    m_mapped_ptr[0].store(update_time, std::memory_order_relaxed);      // Store update_time at index 0
-    m_mapped_ptr[1].store(last_active_time, std::memory_order_relaxed); // Store last_active_time at index 1
+    m_mapped_ptr[0] = update_time;      // Store update_time at index 0
+    m_mapped_ptr[1] = last_active_time; // Store last_active_time at index 1
     return true;
 }
 
@@ -1065,6 +1051,8 @@ bool SharedMemoryTimestampExporter::IsInitialized() const {
 }
 
 void SharedMemoryTimestampExporter::Cleanup() { // Renamed from Close
+    std::unique_lock<std::mutex> lock(mtx_shmem);
+
     if (m_mapped_ptr != nullptr) {
         debug_log("DEBUG: %s: Unmapping shared memory %s...", __func__, m_shm_name.c_str());
         if (munmap(m_mapped_ptr, m_size) == -1) { // <-- Use correct size
@@ -1084,6 +1072,8 @@ void SharedMemoryTimestampExporter::Cleanup() { // Renamed from Close
 }
 
 bool SharedMemoryTimestampExporter::UnlinkSegment() {
+    std::unique_lock<std::mutex> lock(mtx_shmem);
+
     debug_log("INFO: %s: Requesting unlink for shared memory %s...", __func__, m_shm_name.c_str());
     errno = 0;
     if (shm_unlink(m_shm_name.c_str()) == -1) {

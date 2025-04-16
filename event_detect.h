@@ -411,7 +411,7 @@ private:
 
 /**
  * @brief Manages a POSIX shared memory segment for exporting timestamps.
- * Stores an array of two atomic int64_t: {update_time, last_active_time}.
+ * Stores an array of two int64_t: {update_time, last_active_time}.
  * Handles creation, mapping, updating, and cleanup via RAII.
  */
 class SharedMemoryTimestampExporter {
@@ -435,7 +435,7 @@ public:
 
     /**
      * @brief Creates (if necessary) and opens the shared memory segment,
-     * sets its size (to sizeof(atomic<int64_t>[2])), and maps it for writing.
+     * sets its size (to sizeof(int64_t[2])), and maps it for writing.
      * Must be called before UpdateTimestamps or IsInitialized.
      * @param mode Permissions (e.g., 0666 or 0660) to use if creating the segment.
      * @return True on success, false on any failure (shm_open, ftruncate, mmap).
@@ -443,7 +443,7 @@ public:
     bool CreateOrOpen(mode_t mode = 0666);
 
     /**
-     * @brief Atomically updates both timestamps in the mapped shared memory.
+     * @brief Updates both timestamps in the mapped shared memory.
      * @param update_time The timestamp of the current update cycle.
      * @param last_active_time The calculated overall last active time.
      * @return True if updated successfully, false if not initialized or pointer is invalid.
@@ -470,10 +470,19 @@ private:
      */
     void Cleanup();
 
+    //!
+    //! \brief This protects against multiple threads in the event_detect process from simultaneously accessing
+    //! and writing to the shared memory segment. It does NOT protect from another process encountering a torn
+    //! read. I would prefer to use a pthread_mutex_t in the shmem data structure and manege the mutex across
+    //! the writer and reader, but the BOINC architect does not believe this is necessary in practice given the small
+    //! size and low frequency of writing and reading.
+    //!
+    std::mutex mtx_shmem;
+
     std::string m_shm_name;
     int m_shm_fd;
-    std::atomic<int64_t>* m_mapped_ptr; // Pointer to the start of the atomic int64_t[2] array
-    const size_t m_size;               // Size of the atomic int64_t[2] array
+    int64_t* m_mapped_ptr;             // Pointer to the start of the int64_t[2] array
+    const size_t m_size;               // Size of the int64_t[2] array
     bool m_is_creator;                 // Did this instance create/resize the segment?
     std::atomic<bool> m_is_initialized;
 };

@@ -5,7 +5,6 @@
  */
 
 #include <string>
-#include <atomic>
 #include <cstdint>
 #include <cstring>   // For strerror
 #include <iostream>  // Keep for final std::cout output
@@ -22,7 +21,7 @@
 
 // Define constants for the shared memory layout
 const char* DEFAULT_SHMEM_NAME = "/idle_detect_shmem";
-const size_t SHMEM_SIZE = sizeof(std::atomic<int64_t>[2]); // Size of the array
+const size_t SHMEM_SIZE = sizeof(int64_t[2]); // Size of the array
 
 int main(int argc, char* argv[]) {
     // --- Argument Parsing ---
@@ -53,7 +52,7 @@ int main(int argc, char* argv[]) {
     // --- Read Shared Memory ---
     int shm_fd = -1;
     void* mapped_mem = MAP_FAILED;
-    std::atomic<int64_t>* shm_atomic_ptr = nullptr;
+    int64_t* shm_ptr = nullptr;
     int64_t update_time = -1;
     int64_t last_active_time = -1;
     bool read_success = false;
@@ -77,21 +76,20 @@ int main(int argc, char* argv[]) {
     }
 
     // --- Access Data ---
-    shm_atomic_ptr = static_cast<std::atomic<int64_t>*>(mapped_mem);
-    // Atomically load both values from the array
-    update_time = shm_atomic_ptr[0].load(std::memory_order_relaxed);
-    last_active_time = shm_atomic_ptr[1].load(std::memory_order_relaxed);
+    shm_ptr = static_cast<int64_t*>(mapped_mem);
+    update_time = shm_ptr[0];
+    last_active_time = shm_ptr[1];
     read_success = true;
 
     // Unmap memory
     errno = 0;
-    if (munmap(mapped_mem, sizeof(std::atomic<int64_t>)) == -1) {
+    if (munmap(mapped_mem, SHMEM_SIZE) == -1) {
         log("WARN: %s: munmap failed for shm '%s': %s (%d)",
             __func__, shm_name, strerror(errno), errno);
         // Continue as we already have the value
     }
     mapped_mem = nullptr;
-    shm_atomic_ptr = nullptr;
+    shm_ptr = nullptr;
 
     // --- Unmap ---
     errno = 0;
