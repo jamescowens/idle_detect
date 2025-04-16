@@ -2,7 +2,7 @@
 \label{classEventDetect_1_1SharedMemoryTimestampExporter}\index{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter@{Event\+Detect\+::\+Shared\+Memory\+Timestamp\+Exporter}}
 
 
-Manages a P\+O\+S\+IX shared memory segment for exporting timestamps. Stores an array of two atomic int64\+\_\+t\+: \{update\+\_\+time, last\+\_\+active\+\_\+time\}. Handles creation, mapping, updating, and cleanup via R\+A\+II.  
+Manages a P\+O\+S\+IX shared memory segment for exporting timestamps. Stores an array of two int64\+\_\+t\+: \{update\+\_\+time, last\+\_\+active\+\_\+time\}. Handles creation, mapping, updating, and cleanup via R\+A\+II.  
 
 
 
@@ -30,9 +30,9 @@ Manages a P\+O\+S\+IX shared memory segment for exporting timestamps. Stores an 
 \mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter}{Shared\+Memory\+Timestamp\+Exporter}} \& {\bfseries operator=} (\mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter}{Shared\+Memory\+Timestamp\+Exporter}} \&\&)=delete
 \item 
 bool \mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter_ad1fe3658105dcec5df31c8859d843cc5}{Create\+Or\+Open}} (mode\+\_\+t mode=0666)
-\begin{DoxyCompactList}\small\item\em Creates (if necessary) and opens the shared memory segment, sets its size (to sizeof(atomic$<$int64\+\_\+t$>$\mbox{[}2\mbox{]})), and maps it for writing. Must be called before Update\+Timestamps or Is\+Initialized. \end{DoxyCompactList}\item 
+\begin{DoxyCompactList}\small\item\em Creates (if necessary) and opens the shared memory segment, sets its size (to sizeof(int64\+\_\+t\mbox{[}2\mbox{]})), and maps it for writing. Must be called before Update\+Timestamps or Is\+Initialized. \end{DoxyCompactList}\item 
 bool \mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter_af3f039d814ed24dde56b1d525d340a34}{Update\+Timestamps}} (int64\+\_\+t update\+\_\+time, int64\+\_\+t last\+\_\+active\+\_\+time)
-\begin{DoxyCompactList}\small\item\em Atomically updates both timestamps in the mapped shared memory. \end{DoxyCompactList}\item 
+\begin{DoxyCompactList}\small\item\em Updates both timestamps in the mapped shared memory. \end{DoxyCompactList}\item 
 bool \mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter_a3e058d7e830a8ae6bb59dfa7a7673a5c}{Is\+Initialized}} () const
 \begin{DoxyCompactList}\small\item\em Checks if the shared memory was successfully initialized (opened and mapped). \end{DoxyCompactList}\item 
 bool \mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter_a7aab6c44488a85d6272606b2f733f2bc}{Unlink\+Segment}} ()
@@ -46,14 +46,17 @@ void \mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter_a5710546
 \subsection*{Private Attributes}
 \begin{DoxyCompactItemize}
 \item 
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a72130d04dc2f356a4dae835174cbc5ae}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a72130d04dc2f356a4dae835174cbc5ae}} 
+std\+::mutex \mbox{\hyperlink{classEventDetect_1_1SharedMemoryTimestampExporter_a72130d04dc2f356a4dae835174cbc5ae}{mtx\+\_\+shmem}}
+\begin{DoxyCompactList}\small\item\em This protects against multiple threads in the event\+\_\+detect process from simultaneously accessing and writing to the shared memory segment. It does N\+OT protect from another process encountering a torn read. I would prefer to use a pthread\+\_\+mutex\+\_\+t in the shmem data structure and manege the mutex across the writer and reader, but the B\+O\+I\+NC architect does not believe this is necessary in practice given the small size and low frequency of writing and reading. \end{DoxyCompactList}\item 
 \mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a0ad48e2017a4d1092d798d51292a4c19}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a0ad48e2017a4d1092d798d51292a4c19}} 
 std\+::string {\bfseries m\+\_\+shm\+\_\+name}
 \item 
 \mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a78c29a6554cbf4aadba4f356351874f0}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a78c29a6554cbf4aadba4f356351874f0}} 
 int {\bfseries m\+\_\+shm\+\_\+fd}
 \item 
-\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a22ce3bdb2600e4d2eaae196fdec16a63}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a22ce3bdb2600e4d2eaae196fdec16a63}} 
-std\+::atomic$<$ int64\+\_\+t $>$ $\ast$ {\bfseries m\+\_\+mapped\+\_\+ptr}
+\mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_ae421bd2ad07ce4f853f9a057e750bac7}\label{classEventDetect_1_1SharedMemoryTimestampExporter_ae421bd2ad07ce4f853f9a057e750bac7}} 
+int64\+\_\+t $\ast$ {\bfseries m\+\_\+mapped\+\_\+ptr}
 \item 
 \mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a05b8f56830e36ec0565a6bd604cba15a}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a05b8f56830e36ec0565a6bd604cba15a}} 
 const size\+\_\+t {\bfseries m\+\_\+size}
@@ -67,7 +70,7 @@ std\+::atomic$<$ bool $>$ {\bfseries m\+\_\+is\+\_\+initialized}
 
 
 \subsection{Detailed Description}
-Manages a P\+O\+S\+IX shared memory segment for exporting timestamps. Stores an array of two atomic int64\+\_\+t\+: \{update\+\_\+time, last\+\_\+active\+\_\+time\}. Handles creation, mapping, updating, and cleanup via R\+A\+II. 
+Manages a P\+O\+S\+IX shared memory segment for exporting timestamps. Stores an array of two int64\+\_\+t\+: \{update\+\_\+time, last\+\_\+active\+\_\+time\}. Handles creation, mapping, updating, and cleanup via R\+A\+II. 
 
 \subsection{Constructor \& Destructor Documentation}
 \mbox{\Hypertarget{classEventDetect_1_1SharedMemoryTimestampExporter_a29afd93305dd7dfb30b9448ba9e45cd1}\label{classEventDetect_1_1SharedMemoryTimestampExporter_a29afd93305dd7dfb30b9448ba9e45cd1}} 
@@ -96,7 +99,7 @@ Construct with the desired shared memory name.
 
 
 
-Creates (if necessary) and opens the shared memory segment, sets its size (to sizeof(atomic$<$int64\+\_\+t$>$\mbox{[}2\mbox{]})), and maps it for writing. Must be called before Update\+Timestamps or Is\+Initialized. 
+Creates (if necessary) and opens the shared memory segment, sets its size (to sizeof(int64\+\_\+t\mbox{[}2\mbox{]})), and maps it for writing. Must be called before Update\+Timestamps or Is\+Initialized. 
 
 
 \begin{DoxyParams}{Parameters}
@@ -142,7 +145,7 @@ True if unlink succeeded or segment already gone, false on error.
 
 
 
-Atomically updates both timestamps in the mapped shared memory. 
+Updates both timestamps in the mapped shared memory. 
 
 
 \begin{DoxyParams}{Parameters}

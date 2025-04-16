@@ -22,7 +22,7 @@
  <tr style="height: 56px;">
   <td id="projectalign" style="padding-left: 0.5em;">
    <div id="projectname">idle_detect
-   &#160;<span id="projectnumber">0.7.10.0</span>
+   &#160;<span id="projectnumber">0.7.11.0</span>
    </div>
    <div id="projectbrief">Provides overall idle detection for a linux computer</div>
   </td>
@@ -77,7 +77,7 @@ $(function() {
 </div><!--header-->
 <div class="contents">
 
-<p>Manages a POSIX shared memory segment for exporting timestamps. Stores an array of two atomic int64_t: {update_time, last_active_time}. Handles creation, mapping, updating, and cleanup via RAII.  
+<p>Manages a POSIX shared memory segment for exporting timestamps. Stores an array of two int64_t: {update_time, last_active_time}. Handles creation, mapping, updating, and cleanup via RAII.  
  <a href="classEventDetect_1_1SharedMemoryTimestampExporter.html#details">More...</a></p>
 
 <p><code>#include &lt;<a class="el" href="event__detect_8h_source.html">event_detect.h</a>&gt;</code></p>
@@ -104,10 +104,10 @@ Public Member Functions</h2></td></tr>
 <a class="el" href="classEventDetect_1_1SharedMemoryTimestampExporter.html">SharedMemoryTimestampExporter</a> &amp;&#160;</td><td class="memItemRight" valign="bottom"><b>operator=</b> (<a class="el" href="classEventDetect_1_1SharedMemoryTimestampExporter.html">SharedMemoryTimestampExporter</a> &amp;&amp;)=delete</td></tr>
 <tr class="separator:a76ece0e36a546fc701e2c188f2a6ef1a"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:ad1fe3658105dcec5df31c8859d843cc5"><td class="memItemLeft" align="right" valign="top">bool&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classEventDetect_1_1SharedMemoryTimestampExporter.html#ad1fe3658105dcec5df31c8859d843cc5">CreateOrOpen</a> (mode_t mode=0666)</td></tr>
-<tr class="memdesc:ad1fe3658105dcec5df31c8859d843cc5"><td class="mdescLeft">&#160;</td><td class="mdescRight">Creates (if necessary) and opens the shared memory segment, sets its size (to sizeof(atomic&lt;int64_t&gt;[2])), and maps it for writing. Must be called before UpdateTimestamps or IsInitialized.  <a href="#ad1fe3658105dcec5df31c8859d843cc5">More...</a><br /></td></tr>
+<tr class="memdesc:ad1fe3658105dcec5df31c8859d843cc5"><td class="mdescLeft">&#160;</td><td class="mdescRight">Creates (if necessary) and opens the shared memory segment, sets its size (to sizeof(int64_t[2])), and maps it for writing. Must be called before UpdateTimestamps or IsInitialized.  <a href="#ad1fe3658105dcec5df31c8859d843cc5">More...</a><br /></td></tr>
 <tr class="separator:ad1fe3658105dcec5df31c8859d843cc5"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:af3f039d814ed24dde56b1d525d340a34"><td class="memItemLeft" align="right" valign="top">bool&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classEventDetect_1_1SharedMemoryTimestampExporter.html#af3f039d814ed24dde56b1d525d340a34">UpdateTimestamps</a> (int64_t update_time, int64_t last_active_time)</td></tr>
-<tr class="memdesc:af3f039d814ed24dde56b1d525d340a34"><td class="mdescLeft">&#160;</td><td class="mdescRight">Atomically updates both timestamps in the mapped shared memory.  <a href="#af3f039d814ed24dde56b1d525d340a34">More...</a><br /></td></tr>
+<tr class="memdesc:af3f039d814ed24dde56b1d525d340a34"><td class="mdescLeft">&#160;</td><td class="mdescRight">Updates both timestamps in the mapped shared memory.  <a href="#af3f039d814ed24dde56b1d525d340a34">More...</a><br /></td></tr>
 <tr class="separator:af3f039d814ed24dde56b1d525d340a34"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:a3e058d7e830a8ae6bb59dfa7a7673a5c"><td class="memItemLeft" align="right" valign="top">bool&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classEventDetect_1_1SharedMemoryTimestampExporter.html#a3e058d7e830a8ae6bb59dfa7a7673a5c">IsInitialized</a> () const</td></tr>
 <tr class="memdesc:a3e058d7e830a8ae6bb59dfa7a7673a5c"><td class="mdescLeft">&#160;</td><td class="mdescRight">Checks if the shared memory was successfully initialized (opened and mapped).  <a href="#a3e058d7e830a8ae6bb59dfa7a7673a5c">More...</a><br /></td></tr>
@@ -125,15 +125,19 @@ void&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="clas
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 class="groupheader"><a name="pri-attribs"></a>
 Private Attributes</h2></td></tr>
+<tr class="memitem:a72130d04dc2f356a4dae835174cbc5ae"><td class="memItemLeft" align="right" valign="top"><a id="a72130d04dc2f356a4dae835174cbc5ae"></a>
+std::mutex&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classEventDetect_1_1SharedMemoryTimestampExporter.html#a72130d04dc2f356a4dae835174cbc5ae">mtx_shmem</a></td></tr>
+<tr class="memdesc:a72130d04dc2f356a4dae835174cbc5ae"><td class="mdescLeft">&#160;</td><td class="mdescRight">This protects against multiple threads in the event_detect process from simultaneously accessing and writing to the shared memory segment. It does NOT protect from another process encountering a torn read. I would prefer to use a pthread_mutex_t in the shmem data structure and manege the mutex across the writer and reader, but the BOINC architect does not believe this is necessary in practice given the small size and low frequency of writing and reading. <br /></td></tr>
+<tr class="separator:a72130d04dc2f356a4dae835174cbc5ae"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:a0ad48e2017a4d1092d798d51292a4c19"><td class="memItemLeft" align="right" valign="top"><a id="a0ad48e2017a4d1092d798d51292a4c19"></a>
 std::string&#160;</td><td class="memItemRight" valign="bottom"><b>m_shm_name</b></td></tr>
 <tr class="separator:a0ad48e2017a4d1092d798d51292a4c19"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:a78c29a6554cbf4aadba4f356351874f0"><td class="memItemLeft" align="right" valign="top"><a id="a78c29a6554cbf4aadba4f356351874f0"></a>
 int&#160;</td><td class="memItemRight" valign="bottom"><b>m_shm_fd</b></td></tr>
 <tr class="separator:a78c29a6554cbf4aadba4f356351874f0"><td class="memSeparator" colspan="2">&#160;</td></tr>
-<tr class="memitem:a22ce3bdb2600e4d2eaae196fdec16a63"><td class="memItemLeft" align="right" valign="top"><a id="a22ce3bdb2600e4d2eaae196fdec16a63"></a>
-std::atomic&lt; int64_t &gt; *&#160;</td><td class="memItemRight" valign="bottom"><b>m_mapped_ptr</b></td></tr>
-<tr class="separator:a22ce3bdb2600e4d2eaae196fdec16a63"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:ae421bd2ad07ce4f853f9a057e750bac7"><td class="memItemLeft" align="right" valign="top"><a id="ae421bd2ad07ce4f853f9a057e750bac7"></a>
+int64_t *&#160;</td><td class="memItemRight" valign="bottom"><b>m_mapped_ptr</b></td></tr>
+<tr class="separator:ae421bd2ad07ce4f853f9a057e750bac7"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:a05b8f56830e36ec0565a6bd604cba15a"><td class="memItemLeft" align="right" valign="top"><a id="a05b8f56830e36ec0565a6bd604cba15a"></a>
 const size_t&#160;</td><td class="memItemRight" valign="bottom"><b>m_size</b></td></tr>
 <tr class="separator:a05b8f56830e36ec0565a6bd604cba15a"><td class="memSeparator" colspan="2">&#160;</td></tr>
@@ -145,7 +149,7 @@ std::atomic&lt; bool &gt;&#160;</td><td class="memItemRight" valign="bottom"><b>
 <tr class="separator:a17214ef7c5a2e0c2b1b4b86529b471f9"><td class="memSeparator" colspan="2">&#160;</td></tr>
 </table>
 <a name="details" id="details"></a><h2 class="groupheader">Detailed Description</h2>
-<div class="textblock"><p>Manages a POSIX shared memory segment for exporting timestamps. Stores an array of two atomic int64_t: {update_time, last_active_time}. Handles creation, mapping, updating, and cleanup via RAII. </p>
+<div class="textblock"><p>Manages a POSIX shared memory segment for exporting timestamps. Stores an array of two int64_t: {update_time, last_active_time}. Handles creation, mapping, updating, and cleanup via RAII. </p>
 </div><h2 class="groupheader">Constructor &amp; Destructor Documentation</h2>
 <a id="a29afd93305dd7dfb30b9448ba9e45cd1"></a>
 <h2 class="memtitle"><span class="permalink"><a href="#a29afd93305dd7dfb30b9448ba9e45cd1">&#9670;&nbsp;</a></span>SharedMemoryTimestampExporter()</h2>
@@ -198,7 +202,7 @@ std::atomic&lt; bool &gt;&#160;</td><td class="memItemRight" valign="bottom"><b>
       </table>
 </div><div class="memdoc">
 
-<p>Creates (if necessary) and opens the shared memory segment, sets its size (to sizeof(atomic&lt;int64_t&gt;[2])), and maps it for writing. Must be called before UpdateTimestamps or IsInitialized. </p>
+<p>Creates (if necessary) and opens the shared memory segment, sets its size (to sizeof(int64_t[2])), and maps it for writing. Must be called before UpdateTimestamps or IsInitialized. </p>
 <dl class="params"><dt>Parameters</dt><dd>
   <table class="params">
     <tr><td class="paramname">mode</td><td>Permissions (e.g., 0666 or 0660) to use if creating the segment. </td></tr>
@@ -283,7 +287,7 @@ Here is the call graph for this function:</div>
       </table>
 </div><div class="memdoc">
 
-<p>Atomically updates both timestamps in the mapped shared memory. </p>
+<p>Updates both timestamps in the mapped shared memory. </p>
 <dl class="params"><dt>Parameters</dt><dd>
   <table class="params">
     <tr><td class="paramname">update_time</td><td>The timestamp of the current update cycle. </td></tr>

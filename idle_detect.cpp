@@ -235,10 +235,10 @@ static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
     }
     debug_log("INFO: %s: Attempting to read timestamp from shm: %s", __func__, shm_name.c_str());
 
-    const size_t shmem_size = sizeof(std::atomic<int64_t>[2]);
+    const size_t shmem_size = sizeof(int64_t[2]);
     int shm_fd = -1;
     void* mapped_mem = MAP_FAILED;
-    std::atomic<int64_t>* shm_atomic_ptr = nullptr;
+    int64_t* shm_ptr = nullptr;
     int64_t last_active_timestamp = -1;
 
     errno = 0;
@@ -260,8 +260,8 @@ static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
         return -1;
     }
 
-    shm_atomic_ptr = static_cast<std::atomic<int64_t>*>(mapped_mem);
-    last_active_timestamp = shm_atomic_ptr[1].load(std::memory_order_relaxed); // Read index [1]
+    shm_ptr = static_cast<int64_t*>(mapped_mem);
+    last_active_timestamp = shm_ptr[1]; // Read index [1]
     debug_log("INFO: %s: Read last_active %lld from shm %s", __func__, (int64_t)last_active_timestamp, shm_name.c_str());
 
     errno = 0;
