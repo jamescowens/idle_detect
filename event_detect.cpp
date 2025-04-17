@@ -173,10 +173,17 @@ void Monitor::EventActivityMonitorThread()
         int64_t current_last_active = m_last_active_time.load();
         int64_t update_time = GetUnixEpochTime();
 
-        debug_log("INFO: %s: loop: overall last_active time = %lld: %s",
+        if (g_idle_detect_monitor.GetState() == IdleDetectMonitor::State::FORCED_IDLE) {
+            current_last_active = 0;
+        } else if (g_idle_detect_monitor.GetState() == IdleDetectMonitor::State::FORCED_ACTIVE) {
+            current_last_active = update_time;
+        }
+
+        debug_log("INFO: %s: loop: overall last_active time %lld: update time %s, state %s",
                   __func__,
                   current_last_active,
-                  FormatISO8601DateTime(current_last_active));
+                  FormatISO8601DateTime(current_last_active),
+                  g_idle_detect_monitor.StateToString());
 
         if (g_shm_initialized_successfully.load(std::memory_order_relaxed)) {
             if (!g_shmem_exporter.UpdateTimestamps(update_time, current_last_active)) {
@@ -616,6 +623,7 @@ TtyMonitor::Tty::Tty(const fs::path& tty_device_path)
 IdleDetectMonitor::IdleDetectMonitor()
     : m_interrupt_idle_detect_monitor(false)
     , m_last_idle_detect_active_time(0)
+    , m_state(UNKNOWN)
 {}
 
 void IdleDetectMonitor::IdleDetectMonitorThread()
@@ -668,6 +676,7 @@ void IdleDetectMonitor::IdleDetectMonitorThread()
     const int poll_timeout_ms = 100;
 
     m_initialized = true;
+    m_state = NORMAL;
 
     int64_t last_idle_detect_active_time = 0;
 
@@ -743,11 +752,20 @@ void IdleDetectMonitor::IdleDetectMonitorThread()
 
                                     // last_idle_detect_active_time MUST be monotonic. It cannot go backwards.
                                     m_last_idle_detect_active_time = std::max(m_last_idle_detect_active_time.load(),
-                                                                            last_idle_detect_active_time);
+                                                                              last_idle_detect_active_time);
 
-                                    debug_log("INFO: %s: Current idle detect monitor last active time %lld",
+                                    if (event.m_event_type == EventMessage::USER_UNFORCE) {
+                                        m_state = NORMAL;
+                                    } else if (event.m_event_type == EventMessage::USER_FORCE_IDLE) {
+                                        m_state = FORCED_IDLE;
+                                    } else if (event.m_event_type == EventMessage::USER_FORCE_ACTIVE) {
+                                        m_state = FORCED_ACTIVE;
+                                    }
+
+                                    debug_log("INFO: %s: Current idle detect monitor last active time %lld, state %s",
                                               __func__,
-                                              m_last_idle_detect_active_time);
+                                              m_last_idle_detect_active_time,
+                                              StateToString());
                                 } else {
                                     error_log("%s: Invalid event data received: %s",
                                               __func__,
@@ -815,6 +833,38 @@ bool IdleDetectMonitor::IsInitialized() const
 int64_t IdleDetectMonitor::GetLastIdleDetectActiveTime() const
 {
     return m_last_idle_detect_active_time.load();
+}
+
+IdleDetectMonitor::State IdleDetectMonitor::GetState() const
+{
+    return m_state.load();
+}
+
+std::string IdleDetectMonitor::StateToString(const State& status)
+{
+    std::string out;
+
+    switch (status) {
+        case UNKNOWN:
+            out = "UNKNOWN";
+            break;
+        case NORMAL:
+            out = "NORMAL";
+            break;
+        case FORCED_ACTIVE:
+            out = "FORCED_ACTIVE";
+            break;
+        case FORCED_IDLE:
+            out = "FORCED_IDLE";
+            break;
+    }
+
+    return out;
+}
+
+std::string IdleDetectMonitor::StateToString() const
+{
+    return StateToString(m_state);
 }
 
 // EventDetectConfig class

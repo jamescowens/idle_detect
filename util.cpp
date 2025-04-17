@@ -260,6 +260,12 @@ EventMessage::EventType EventMessage::EventTypeStringToEnum(const std::string& e
 {
     if (event_type_str == std::string {"USER_ACTIVE"}) {
         return USER_ACTIVE;
+    } else if (event_type_str == std::string {"USER_UNFORCE"}) {
+        return USER_UNFORCE;
+    } else if (event_type_str == std::string {"USER_FORCE_ACTIVE"}) {
+        return USER_FORCE_ACTIVE;
+    } else if (event_type_str == std::string {"USER_FORCE_IDLE"}) {
+        return USER_FORCE_IDLE;
     }
 
     return UNKNOWN;
@@ -287,6 +293,15 @@ std::string EventMessage::EventTypeToString(const EventType& event_type)
         break;
     case USER_ACTIVE:
         out = "USER_ACTIVE";
+        break;
+    case USER_UNFORCE:
+        out = "USER_UNFORCE";
+        break;
+    case USER_FORCE_ACTIVE:
+        out = "USER_FORCE_ACTIVE";
+        break;
+    case USER_FORCE_IDLE:
+        out = "USER_FORCE_IDLE";
         break;
     }
 

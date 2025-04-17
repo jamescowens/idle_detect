@@ -349,6 +349,13 @@ private:
 class IdleDetectMonitor
 {
 public:
+    enum State {
+        UNKNOWN,
+        NORMAL,
+        FORCED_ACTIVE,
+        FORCED_IDLE
+    };
+
     //!
     //! \brief Holds the actual idle_detect monitor thread.
     //!
@@ -385,6 +392,25 @@ public:
     //!
     int64_t GetLastIdleDetectActiveTime() const;
 
+    //!
+    //! \brief Returns the state of the idle monitor. This is NORMAL, FORCED_ACTIVE or FORCED_IDLE.
+    //! \return State enum value
+    //!
+    State GetState() const;
+
+    //!
+    //! \brief Returns the string representation of the input state enum value.
+    //! \param State enum state
+    //! \return string representation of the state
+    //!
+    static std::string StateToString(const State& state);
+
+    //!
+    //! \brief Returns the string representation of the idle monitor object state.
+    //! \return string represenation of the state
+    //!
+    std::string StateToString() const;
+
 private:
     //!
     //! \brief This is the mutex member that provides lock control for the tty monitor object. This is used to ensure the
@@ -401,6 +427,14 @@ private:
     //! \brief Atomic that holds the overall last active time across all of the monitored pts/ttys.
     //!
     std::atomic<int64_t> m_last_idle_detect_active_time;
+
+    //!
+    //! \brief Holds the current state of the idle monitor. NORMAL means idle detect follows the normal threshold (trigger) rules
+    //! for idle detection. FORCED_ACTIVE means the user has forced the system to be active and FORCED_IDLE means the user has
+    //! forced the system to be idle. The state is set by the event_detect process and is used to determine the ultimate
+    //! last active time.
+    //!
+    std::atomic<State> m_state;
 
     //!
     //! \brief This holds the flag as to whether the tty monitor has been initialized and is provided by the IsInitialized() public

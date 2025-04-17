@@ -299,7 +299,10 @@ public:
     //!
     enum EventType { // Note that if this enum is expanded, EventTypeToString must also be updated.
         UNKNOWN,
-        USER_ACTIVE
+        USER_ACTIVE,
+        USER_UNFORCE,
+        USER_FORCE_ACTIVE,
+        USER_FORCE_IDLE
     };
 
     //!
