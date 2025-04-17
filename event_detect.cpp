@@ -672,9 +672,6 @@ void IdleDetectMonitor::IdleDetectMonitorThread()
     int64_t last_idle_detect_active_time = 0;
 
     while (g_exit_code == 0) {
-        debug_log("INFO: %s: idle_detect monitor thread loop at top of iteration",
-                  __func__);
-
         std::unique_lock<std::mutex> lock(mtx_idle_detect_monitor_thread);
         cv_idle_detect_monitor_thread.wait_for(lock, std::chrono::milliseconds(100),
                                                []{ return g_idle_detect_monitor.m_interrupt_idle_detect_monitor.load(); });
