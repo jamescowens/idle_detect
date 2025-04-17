@@ -26,10 +26,10 @@ const size_t SHMEM_SIZE = sizeof(int64_t[2]); // Size of the array
 int main(int argc, char* argv[]) {
     // --- Argument Parsing ---
     if (argc < 2 || argc > 3) {
-        error_log("%s: Usage: %s <shmem_name> [raw|iso|hr]",
-                  __func__, (argc > 0 ? argv[0] : "read_shmem_timestamp"));
-        error_log("%s: shmem_name: Name of shared memory segment (e.g., /event_detect_last_active)", __func__);
-        error_log("%s: format (optional): 'raw' (default), 'iso' or 'hr' for human-readable UTC", __func__);
+        log("%s: Usage: %s <shmem_name> [raw|iso|hr]",
+                  (argc > 0 ? argv[0] : "read_shmem_timestamps"));
+        log("%s: shmem_name: Name of shared memory segment (e.g., /idle_detect_shmem)");
+        log("%s: format (optional): 'raw' (default), 'iso' or 'hr' for human-readable UTC");
         return 1;
     }
 
