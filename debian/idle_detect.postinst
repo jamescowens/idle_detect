@@ -1,0 +1,21 @@
+#!/bin/sh
+set -e
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ]; then
+    # Add user to groups (adduser handles idempotency)
+    echo "Adding user 'event_detect' to groups 'input', 'tty'..."
+    # Check if groups exist first? Some systems might not have 'input'.
+    adduser event_detect input || echo "Warning: Could not add user to input group (might not exist?)."
+    adduser event_detect tty || echo "Warning: Could not add user to tty group."
+
+    # Use dh-systemd helpers for enabling/starting
+    # These are called automatically by dh_systemd_enable/dh_systemd_start in debian/rules
+    # unless you use --no-enable or --no-start flags there.
+    # If helpers aren't used, manually enable here:
+    # echo "Enabling systemd service dc_event_detection.service..."
+    # systemctl enable dc_event_detection.service
+    # echo "Starting systemd service dc_event_detection.service..."
+    # systemctl start dc_event_detection.service || true # Ignore start error?
+fi
+# Include debhelper snippets (important!)
+#DEBHELPER#
+exit 0

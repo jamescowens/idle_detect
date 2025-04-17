@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+# Create group if it doesn't exist
+if ! getent group event_detect >/dev/null; then
+  echo "Adding system group 'event_detect'..."
+  addgroup --system event_detect
+fi
+# Create user if it doesn't exist
+if ! getent passwd event_detect >/dev/null; then
+  echo "Adding system user 'event_detect'..."
+  adduser --system --ingroup event_detect --no-create-home --home / --shell /sbin/nologin "Event Detect Service User" event_detect
+fi
+exit 0

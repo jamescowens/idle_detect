@@ -1,0 +1,37 @@
+Source: idle_detect
+Section: utils
+Priority: optional
+Maintainer: James C. Owens <jamesowens@optonline.net>
+# Specify build dependencies needed on Debian/Ubuntu build systems
+Build-Depends: debhelper-compat (= 13),
+               cmake (>= 3.15),
+               pkg-config,
+               g++ (>= 9), # Enforce C++17 compiler (GCC 9+ recommended for non-experimental <filesystem>)
+               libevdev-dev (>= 1.0),
+               libxss-dev (>= 1.1), # Note: Debian uses libxss-dev
+               libdbus-1-dev (>= 1.6),
+               libglib2.0-dev (>= 2.56), # Pulls in gobject, gio
+               libx11-dev,
+               systemd # Needed for systemd build helpers/paths if used in rules explicitly
+# Specify architecture, 'any' means it compiles per architecture
+Architecture: any
+
+Package: idle_detect
+# Runtime dependencies - shlibs:Depends handles shared libs, misc:Depends handles others
+# Add systemd explicitly as we install a service.
+Depends: ${shlibs:Depends}, ${misc:Depends}, systemd
+Description: System and User services to detect user idle time and activity
+ This package provides two services for monitoring user activity on Linux systems,
+ primarily intended for controlling background tasks like Distributed Computing
+ (e.g., BOINC).
+ .
+  * event_detect: A system service that monitors low-level input devices (mice),
+    TTY access times, and messages from idle_detect instances via a named pipe.
+    It provides an aggregated 'last active time' via shmem or file.
+  * idle_detect: A user service that detects graphical session idle time using
+    X11 (XScreenSaver), KDE D-Bus (ksmserver), or GNOME D-Bus (Mutter) methods,
+    accounting for application inhibitions where possible (currently KDE). It can
+    report activity to event_detect and optionally run commands on state changes.
+  .
+  Note: The user service component (idle_detect) requires manual setup via
+  the accompanying user_install.sh script after package installation.

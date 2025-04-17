@@ -1,0 +1,5 @@
+idle-detect (0.7.11-1) unstable; urgency=medium
+
+  * Initial Debian packaging draft.
+
+ -- James C. Owens <jamesowens@optonline.net>  Wed, 16 Apr 2025 22:30:00 -0400
