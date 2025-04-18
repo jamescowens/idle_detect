@@ -5,6 +5,7 @@
  */
 
 #include <idle_detect.h>
+#include <optional>
 #include <util.h> // Includes tinyformat.h, filesystem, etc.
 #include <release.h>
 
@@ -39,12 +40,27 @@
 //! Global config singleton for idle_detect
 IdleDetectConfig g_config;
 
+IdleDetect::IdleDetectControlMonitor g_idle_detect_control_monitor;
+
 //! Global flag for signal handling
 std::atomic<bool> g_shutdown_requested = false;
+
+//! Global flag for exit code
+std::atomic<int> g_exit_code;
 
 const int MAX_X_CONNECT_RETRIES = 6;  // e.g., 6 attempts
 const int X_RETRY_DELAY_MS = 500;   // e.g., 500ms between attempts (~3 sec total)
 
+//! \brief Function to safely get XDG_RUNTIME_DIR environment variable.
+std::optional<std::string> GetXdgRuntimeDir() {
+    return GetEnvVariable("XDG_RUNTIME_DIR");
+}
+
+void Shutdown(const int& exit_code)
+{
+    g_exit_code.store(exit_code);
+    g_shutdown_requested.store(true);
+}
 
 // IdleDetectConfig class
 
@@ -705,6 +721,259 @@ void ExecuteCommandBackground(const std::string& command) {
     }
 }
 
+IdleDetectControlMonitor::IdleDetectControlMonitor()
+    : m_interrupt_idle_detect_control_monitor(false)
+    , m_state(UNKNOWN)
+{}
+
+void IdleDetectControlMonitor::IdleDetectControlMonitorThread()
+{
+    debug_log("INFO: %s: started.",
+              __func__);
+
+    bool idle_detect_control_pipe_initialized = false;
+
+    // Path for user runtime directory (i.e. /run/user/UID)
+    std::optional<fs::path> xdg_runtime_dir = GetXdgRuntimeDir();
+    fs::path idle_detect_control_pipe_path;
+
+    // Create the named pipe if it doesn't exist (idempotent)
+    if (xdg_runtime_dir) {
+        idle_detect_control_pipe_path = xdg_runtime_dir.value() / "idle_detect_control_pipe";
+
+        // Create the named pipe if it doesn't exist (idempotent)
+        if (mkfifo(idle_detect_control_pipe_path.c_str(), 0600) == -1) {
+            if (errno != EEXIST) {
+                error_log("%s: Error creating named pipe: %s",
+                          __func__,
+                          strerror(errno));
+            }
+            idle_detect_control_pipe_initialized = true;
+        } else {
+            idle_detect_control_pipe_initialized = true;
+        }
+    }
+
+    if (!idle_detect_control_pipe_initialized) {
+        error_log("%s: Failed to create named pipe for idle_detect control. Exiting.",
+                  __func__);
+        return 1;
+    }
+
+    // Note the mode above combined with the umask does not always result in the right permissions,
+    // so we override with the correct ones.
+
+    fs::perms desired_perms = fs::perms::owner_read | fs::perms::owner_write;
+
+    std::error_code ec; // To capture potential errors
+
+    // Set the permissions, replacing existing ones (default behavior)
+    fs::permissions(idle_detect_control_pipe_path, desired_perms, fs::perm_options::replace, ec);
+
+    if (ec) {
+        // Handle the error if permissions couldn't be set
+        error_log("%s: Error setting permissions (0666) on named pipe %s: %s",
+                  __func__,
+                  idle_detect_control_pipe_path.string().c_str(),
+                  ec.message().c_str()); // Use the error_code's message
+        Shutdown(1);
+        return;
+    } else {
+        debug_log("%s: Successfully set permissions on %s to 0666.",
+                  __func__, idle_detect_control_pipe_path.string().c_str());
+    }
+
+    int fd = -1;
+    char buffer[256];
+    ssize_t bytes_read;
+    const int poll_timeout_ms = 100;
+
+    m_initialized = true;
+    m_state = NORMAL;
+
+    while (g_exit_code == 0) {
+        std::unique_lock<std::mutex> lock(mtx_idle_detect_control_monitor_thread);
+        cv_idle_detect_control_monitor_thread.wait_for(lock, std::chrono::milliseconds(100),
+                                                       []{ return g_idle_detect_control_monitor.m_interrupt_idle_detect_control_monitor.load(); });
+
+        if (g_idle_detect_control_monitor.m_interrupt_idle_detect_control_monitor) {
+            break;
+        }
+
+        lock.unlock();
+
+        // Only execute this if the pipe isn't already open in non-blocking mode.
+        if (fd == -1) {
+            fd = open(idle_detect_control_pipe_path.c_str(), O_RDONLY | O_NONBLOCK);
+            if (fd == -1) {
+                if (errno != ENXIO) { // No process has the pipe open for writing
+                    error_log("%s: Error opening named pipe for reading (non-blocking): %s",
+                              __func__,
+                              strerror(errno));
+                    // Consider a longer sleep here to avoid rapid retries on other errors
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                }
+                continue; // Try to open again in the next iteration
+            } else {
+                debug_log("INFO: %s: Successfully opened pipe for reading (non-blocking).",
+                          __func__);
+            }
+        }
+
+        if (fd != -1) {
+            struct pollfd fds[1];
+            fds[0].fd = fd;
+            fds[0].events = POLLIN;
+            fds[0].revents = 0;
+
+            int ret = poll(fds, 1, poll_timeout_ms);
+
+            if (ret > 0) {
+                if (fds[0].revents & POLLIN) {
+                    bytes_read = read(fd, buffer, sizeof(buffer) - 1);
+
+                    if (bytes_read > 0) {
+                        buffer[bytes_read] = '\0';
+                        std::string event_data(buffer);
+                        debug_log("INFO: %s: Received data: %s", __func__,
+                                  event_data);
+
+                        std::stringstream ss(event_data);
+                        std::string segment;
+                        std::vector<std::string> parts;
+                        while (std::getline(ss, segment, ':')) {
+                            parts.push_back(segment);
+                        }
+
+                        if (parts.size() == 2) {
+                            try {
+                                EventMessage event(TrimString(parts[0]), TrimString(parts[1]));
+
+                                debug_log("INFO: %s: event.m_timestamp = %lld, event.m_event_type = %s",
+                                          __func__,
+                                          event.m_timestamp,
+                                          event.EventTypeToString());
+
+                                if (event.IsValid()) {
+                                    last_idle_detect_active_time = event.m_timestamp;
+
+                                    debug_log("INFO: %s: Valid activity event received with timestamp %lld",
+                                              __func__,
+                                              last_idle_detect_active_time);
+
+                                    // last_idle_detect_active_time MUST be monotonic. It cannot go backwards.
+                                    m_last_idle_detect_active_time = std::max(m_last_idle_detect_active_time.load(),
+                                                                              last_idle_detect_active_time);
+
+                                    if (event.m_event_type == EventMessage::USER_UNFORCE) {
+                                        m_state = NORMAL;
+                                    } else if (event.m_event_type == EventMessage::USER_FORCE_IDLE) {
+                                        m_state = FORCED_IDLE;
+                                    } else if (event.m_event_type == EventMessage::USER_FORCE_ACTIVE) {
+                                        m_state = FORCED_ACTIVE;
+                                    }
+
+                                    debug_log("INFO: %s: Current idle detect monitor last active time %lld, state %s",
+                                              __func__,
+                                              m_last_idle_detect_active_time,
+                                              StateToString());
+                                } else {
+                                    error_log("%s: Invalid event data received: %s",
+                                              __func__,
+                                              event_data);
+                                }
+                            } catch (const std::invalid_argument& e) {
+                                error_log("%s: Error parsing timestamp: %s in data %s",
+                                          __func__,
+                                          e.what(),
+                                          event_data);
+                            } catch (const std::out_of_range& e) {
+                                error_log("%s: Timestamp out of range: %s in data %s",
+                                          __func__,
+                                          e.what(),
+                                          event_data);
+                            }
+                        } else if (bytes_read == 0) {
+                            // Pipe closed by writers, sleep a bit to avoid spinning
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        } else if (bytes_read < 0) {
+                            if (errno == EINTR) {
+                                // Interrupted by a signal, this is expected during shutdown
+                                debug_log("INFO: %s: Read interrupted by signal.",
+                                          __func__);
+                                break;
+                            } else {
+                                error_log("%s: Error reading from named pipe: %s",
+                                          __func__,
+                                          strerror(errno));
+                                break;
+                            }
+                        }
+                    }
+                } else if (ret < 0) {
+                    error_log("%s: Error in poll() for pipe read: %s",
+                              __func__,
+                              strerror(errno));
+
+                    g_exit_code = 1;
+                    break;
+                } // ret = 0 means poll timeed out. Allow while loop to iterate.
+            }
+        }
+    }
+
+    if (fd != -1) {
+        close(fd);
+    }
+
+    debug_log("INFO: %s: thread exiting.",
+              __func__);
+
+    // If g_exit_code was set to 1 above then the thread is in abnormal state at exit and the rest of the
+    // application needs to be shutdown.
+    if (g_exit_code == 1) {
+        Shutdown(1);
+    }
+}
+
+bool IdleDetectControlMonitor::IsInitialized() const
+{
+    return m_initialized.load();
+}
+
+
+IdleDetectControlMonitor::State IdleDetectControlMonitor::GetState() const
+{
+    return m_state.load();
+}
+
+std::string IdleDetectControlMonitor::StateToString(const State& status)
+{
+    std::string out;
+
+    switch (status) {
+    case UNKNOWN:
+        out = "UNKNOWN";
+        break;
+    case NORMAL:
+        out = "NORMAL";
+        break;
+    case FORCED_ACTIVE:
+        out = "FORCED_ACTIVE";
+        break;
+    case FORCED_IDLE:
+        out = "FORCED_IDLE";
+        break;
+    }
+
+    return out;
+}
+
+std::string IdleDetectControlMonitor::StateToString() const
+{
+    return StateToString(m_state);
+}
+
 } // namespace IdleDetect
 
 //!
@@ -818,7 +1087,7 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    fs::path pipe_path = event_data_path / "event_registration_pipe";
+    fs::path event_registration_pipe_path = event_data_path / "event_registration_pipe";
     fs::path dat_file_path = event_data_path / last_active_time_cpp_filename;
 
     // --- Signal Handling Setup ---
@@ -852,7 +1121,7 @@ int main(int argc, char* argv[])
     debug_log("INFO: %s: Update event_detect: %s, Pipe path: %s",
               __func__,
               should_update_event_detect ? "true" : "false",
-              pipe_path.string());
+              event_registration_pipe_path.string());
     debug_log("INFO: %s: Execute dc control scripts: %s",
               __func__,
               execute_dc_control_scripts ? "true" : "false");
@@ -1000,7 +1269,7 @@ int main(int argc, char* argv[])
             && (effective_last_active_time != effective_last_active_time_prev)) {
             debug_log("INFO: %s: Sending active notification to pipe.", __func__);
 
-            IdleDetect::SendPipeNotification(pipe_path, effective_last_active_time);
+            IdleDetect::SendPipeNotification(event_registration_pipe_path, effective_last_active_time);
 
             effective_last_active_time_prev = effective_last_active_time;
         }
