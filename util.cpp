@@ -179,7 +179,7 @@ std::vector<fs::path> FindDirEntriesWithWildcard(const fs::path& directory, cons
 //! \brief Function to safely get an environment variable as a std::string
 std::optional<std::string> GetEnvVariable(const std::string& var_name)
 {
-    // Get the environment variabl
+    // Get the environment variable
     const char* env_var_cstr = std::getenv(var_name.c_str());
 
     // Check if the variable exists
