@@ -22,7 +22,7 @@
  <tr style="height: 56px;">
   <td id="projectalign" style="padding-left: 0.5em;">
    <div id="projectname">idle_detect
-   &#160;<span id="projectnumber">0.7.12.0</span>
+   &#160;<span id="projectnumber">0.8.0.0</span>
    </div>
    <div id="projectbrief">Provides overall idle detection for a linux computer</div>
   </td>
@@ -68,7 +68,9 @@ $(function() {
 </div><!-- top -->
 <div class="header">
   <div class="summary">
+<a href="#pub-types">Public Types</a> &#124;
 <a href="#pub-methods">Public Member Functions</a> &#124;
+<a href="#pub-static-methods">Static Public Member Functions</a> &#124;
 <a href="#pub-attribs">Public Attributes</a> &#124;
 <a href="#pri-attribs">Private Attributes</a> &#124;
 <a href="classEventDetect_1_1IdleDetectMonitor-members.html">List of all members</a>  </div>
@@ -77,6 +79,15 @@ $(function() {
 </div><!--header-->
 <div class="contents">
 <table class="memberdecls">
+<tr class="heading"><td colspan="2"><h2 class="groupheader"><a name="pub-types"></a>
+Public Types</h2></td></tr>
+<tr class="memitem:a2fc7d8ccc92a76fdd7584318169cbc5f"><td class="memItemLeft" align="right" valign="top"><a id="a2fc7d8ccc92a76fdd7584318169cbc5f"></a>enum &#160;</td><td class="memItemRight" valign="bottom"><b>State</b> { <b>UNKNOWN</b>, 
+<b>NORMAL</b>, 
+<b>FORCED_ACTIVE</b>, 
+<b>FORCED_IDLE</b>
+ }</td></tr>
+<tr class="separator:a2fc7d8ccc92a76fdd7584318169cbc5f"><td class="memSeparator" colspan="2">&#160;</td></tr>
+</table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 class="groupheader"><a name="pub-methods"></a>
 Public Member Functions</h2></td></tr>
 <tr class="memitem:aed0b4d13a0d9d3416fae76835f094d90"><td class="memItemLeft" align="right" valign="top"><a id="aed0b4d13a0d9d3416fae76835f094d90"></a>
@@ -93,6 +104,18 @@ void&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="clas
 <tr class="memitem:acc4bec04aa1e47e5e7e7fae87cdf2b76"><td class="memItemLeft" align="right" valign="top">int64_t&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classEventDetect_1_1IdleDetectMonitor.html#acc4bec04aa1e47e5e7e7fae87cdf2b76">GetLastIdleDetectActiveTime</a> () const</td></tr>
 <tr class="memdesc:acc4bec04aa1e47e5e7e7fae87cdf2b76"><td class="mdescLeft">&#160;</td><td class="mdescRight">Returns the overall last active time of all of the message receipts from idle_detect instances.  <a href="#acc4bec04aa1e47e5e7e7fae87cdf2b76">More...</a><br /></td></tr>
 <tr class="separator:acc4bec04aa1e47e5e7e7fae87cdf2b76"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:a2f58fdfcded4906499db6f56dd4f036b"><td class="memItemLeft" align="right" valign="top">State&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classEventDetect_1_1IdleDetectMonitor.html#a2f58fdfcded4906499db6f56dd4f036b">GetState</a> () const</td></tr>
+<tr class="memdesc:a2f58fdfcded4906499db6f56dd4f036b"><td class="mdescLeft">&#160;</td><td class="mdescRight">Returns the state of the idle monitor. This is NORMAL, FORCED_ACTIVE or FORCED_IDLE.  <a href="#a2f58fdfcded4906499db6f56dd4f036b">More...</a><br /></td></tr>
+<tr class="separator:a2f58fdfcded4906499db6f56dd4f036b"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:a0bad0433a375a2fa4d0a0e8c088a9922"><td class="memItemLeft" align="right" valign="top">std::string&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classEventDetect_1_1IdleDetectMonitor.html#a0bad0433a375a2fa4d0a0e8c088a9922">StateToString</a> () const</td></tr>
+<tr class="memdesc:a0bad0433a375a2fa4d0a0e8c088a9922"><td class="mdescLeft">&#160;</td><td class="mdescRight">Returns the string representation of the idle monitor object state.  <a href="#a0bad0433a375a2fa4d0a0e8c088a9922">More...</a><br /></td></tr>
+<tr class="separator:a0bad0433a375a2fa4d0a0e8c088a9922"><td class="memSeparator" colspan="2">&#160;</td></tr>
+</table><table class="memberdecls">
+<tr class="heading"><td colspan="2"><h2 class="groupheader"><a name="pub-static-methods"></a>
+Static Public Member Functions</h2></td></tr>
+<tr class="memitem:a60029f382d471e20c530cf5f61d2f71c"><td class="memItemLeft" align="right" valign="top">static std::string&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classEventDetect_1_1IdleDetectMonitor.html#a60029f382d471e20c530cf5f61d2f71c">StateToString</a> (const State &amp;state)</td></tr>
+<tr class="memdesc:a60029f382d471e20c530cf5f61d2f71c"><td class="mdescLeft">&#160;</td><td class="mdescRight">Returns the string representation of the input state enum value.  <a href="#a60029f382d471e20c530cf5f61d2f71c">More...</a><br /></td></tr>
+<tr class="separator:a60029f382d471e20c530cf5f61d2f71c"><td class="memSeparator" colspan="2">&#160;</td></tr>
 </table><table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 class="groupheader"><a name="pub-attribs"></a>
 Public Attributes</h2></td></tr>
@@ -123,6 +146,10 @@ std::mutex&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href
 std::atomic&lt; int64_t &gt;&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classEventDetect_1_1IdleDetectMonitor.html#acc9798f26d29719e8dffae5ed358fa43">m_last_idle_detect_active_time</a></td></tr>
 <tr class="memdesc:acc9798f26d29719e8dffae5ed358fa43"><td class="mdescLeft">&#160;</td><td class="mdescRight">Atomic that holds the overall last active time across all of the monitored pts/ttys. <br /></td></tr>
 <tr class="separator:acc9798f26d29719e8dffae5ed358fa43"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:ae4ede844ecda97f5f6acd91a6dcc81f7"><td class="memItemLeft" align="right" valign="top"><a id="ae4ede844ecda97f5f6acd91a6dcc81f7"></a>
+std::atomic&lt; State &gt;&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classEventDetect_1_1IdleDetectMonitor.html#ae4ede844ecda97f5f6acd91a6dcc81f7">m_state</a></td></tr>
+<tr class="memdesc:ae4ede844ecda97f5f6acd91a6dcc81f7"><td class="mdescLeft">&#160;</td><td class="mdescRight">Holds the current state of the idle monitor. NORMAL means idle detect follows the normal threshold (trigger) rules for idle detection. FORCED_ACTIVE means the user has forced the system to be active and FORCED_IDLE means the user has forced the system to be idle. The state is set by the event_detect process and is used to determine the ultimate last active time. <br /></td></tr>
+<tr class="separator:ae4ede844ecda97f5f6acd91a6dcc81f7"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:a9247d67e3ace050925e119bfbb45dcc5"><td class="memItemLeft" align="right" valign="top"><a id="a9247d67e3ace050925e119bfbb45dcc5"></a>
 std::atomic&lt; bool &gt;&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classEventDetect_1_1IdleDetectMonitor.html#a9247d67e3ace050925e119bfbb45dcc5">m_initialized</a></td></tr>
 <tr class="memdesc:a9247d67e3ace050925e119bfbb45dcc5"><td class="mdescLeft">&#160;</td><td class="mdescRight">This holds the flag as to whether the tty monitor has been initialized and is provided by the <a class="el" href="classEventDetect_1_1IdleDetectMonitor.html#af945f0f33b8c0fe2c8ee33bd9ac83f12" title="Provides a flag to indicate whether the monitor has been initialized. This is used in main in the app...">IsInitialized()</a> public method. <br /></td></tr>
@@ -157,6 +184,32 @@ Here is the caller graph for this function:</div>
 
 </div>
 </div>
+<a id="a2f58fdfcded4906499db6f56dd4f036b"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#a2f58fdfcded4906499db6f56dd4f036b">&#9670;&nbsp;</a></span>GetState()</h2>
+
+<div class="memitem">
+<div class="memproto">
+      <table class="memname">
+        <tr>
+          <td class="memname">IdleDetectMonitor::State IdleDetectMonitor::GetState </td>
+          <td>(</td>
+          <td class="paramname"></td><td>)</td>
+          <td> const</td>
+        </tr>
+      </table>
+</div><div class="memdoc">
+
+<p>Returns the state of the idle monitor. This is NORMAL, FORCED_ACTIVE or FORCED_IDLE. </p>
+<dl class="section return"><dt>Returns</dt><dd>State enum value </dd></dl>
+<div class="dynheader">
+Here is the caller graph for this function:</div>
+<div class="dyncontent">
+<div class="center"><img src="classEventDetect_1_1IdleDetectMonitor_a2f58fdfcded4906499db6f56dd4f036b_icgraph.png" border="0" usemap="#classEventDetect_1_1IdleDetectMonitor_a2f58fdfcded4906499db6f56dd4f036b_icgraph" alt=""/></div>
+<!-- MAP 0 -->
+</div>
+
+</div>
+</div>
 <a id="af945f0f33b8c0fe2c8ee33bd9ac83f12"></a>
 <h2 class="memtitle"><span class="permalink"><a href="#af945f0f33b8c0fe2c8ee33bd9ac83f12">&#9670;&nbsp;</a></span>IsInitialized()</h2>
 
@@ -174,6 +227,73 @@ Here is the caller graph for this function:</div>
 
 <p>Provides a flag to indicate whether the monitor has been initialized. This is used in main in the application control paths. </p>
 <dl class="section return"><dt>Returns</dt><dd>boolean flag </dd></dl>
+
+</div>
+</div>
+<a id="a60029f382d471e20c530cf5f61d2f71c"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#a60029f382d471e20c530cf5f61d2f71c">&#9670;&nbsp;</a></span>StateToString() <span class="overload">[1/2]</span></h2>
+
+<div class="memitem">
+<div class="memproto">
+<table class="mlabels">
+  <tr>
+  <td class="mlabels-left">
+      <table class="memname">
+        <tr>
+          <td class="memname">std::string IdleDetectMonitor::StateToString </td>
+          <td>(</td>
+          <td class="paramtype">const State &amp;&#160;</td>
+          <td class="paramname"><em>state</em></td><td>)</td>
+          <td></td>
+        </tr>
+      </table>
+  </td>
+  <td class="mlabels-right">
+<span class="mlabels"><span class="mlabel">static</span></span>  </td>
+  </tr>
+</table>
+</div><div class="memdoc">
+
+<p>Returns the string representation of the input state enum value. </p>
+<dl class="params"><dt>Parameters</dt><dd>
+  <table class="params">
+    <tr><td class="paramname">State</td><td>enum state </td></tr>
+  </table>
+  </dd>
+</dl>
+<dl class="section return"><dt>Returns</dt><dd>string representation of the state </dd></dl>
+<div class="dynheader">
+Here is the caller graph for this function:</div>
+<div class="dyncontent">
+<div class="center"><img src="classEventDetect_1_1IdleDetectMonitor_a60029f382d471e20c530cf5f61d2f71c_icgraph.png" border="0" usemap="#classEventDetect_1_1IdleDetectMonitor_a60029f382d471e20c530cf5f61d2f71c_icgraph" alt=""/></div>
+<!-- MAP 1 -->
+</div>
+
+</div>
+</div>
+<a id="a0bad0433a375a2fa4d0a0e8c088a9922"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#a0bad0433a375a2fa4d0a0e8c088a9922">&#9670;&nbsp;</a></span>StateToString() <span class="overload">[2/2]</span></h2>
+
+<div class="memitem">
+<div class="memproto">
+      <table class="memname">
+        <tr>
+          <td class="memname">std::string IdleDetectMonitor::StateToString </td>
+          <td>(</td>
+          <td class="paramname"></td><td>)</td>
+          <td> const</td>
+        </tr>
+      </table>
+</div><div class="memdoc">
+
+<p>Returns the string representation of the idle monitor object state. </p>
+<dl class="section return"><dt>Returns</dt><dd>string represenation of the state </dd></dl>
+<div class="dynheader">
+Here is the caller graph for this function:</div>
+<div class="dyncontent">
+<div class="center"><img src="classEventDetect_1_1IdleDetectMonitor_a0bad0433a375a2fa4d0a0e8c088a9922_icgraph.png" border="0" usemap="#classEventDetect_1_1IdleDetectMonitor_a0bad0433a375a2fa4d0a0e8c088a9922_icgraph" alt=""/></div>
+<!-- MAP 2 -->
+</div>
 
 </div>
 </div>

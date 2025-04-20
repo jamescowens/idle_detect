@@ -1,4 +1,4 @@
-.TH "EventDetect::IdleDetectMonitor" 3 "Wed Apr 16 2025" "Version 0.7.12.0" "idle_detect" \" -*- nroff -*-
+.TH "EventDetect::IdleDetectMonitor" 3 "Sun Apr 20 2025" "Version 0.8.0.0" "idle_detect" \" -*- nroff -*-
 .ad l
 .nh
 .SH NAME
@@ -6,6 +6,13 @@ EventDetect::IdleDetectMonitor
 .SH SYNOPSIS
 .br
 .PP
+.SS "Public Types"
+
+.in +1c
+.ti -1c
+.RI "enum \fBState\fP { \fBUNKNOWN\fP, \fBNORMAL\fP, \fBFORCED_ACTIVE\fP, \fBFORCED_IDLE\fP }"
+.br
+.in -1c
 .SS "Public Member Functions"
 
 .in +1c
@@ -25,6 +32,22 @@ EventDetect::IdleDetectMonitor
 .RI "int64_t \fBGetLastIdleDetectActiveTime\fP () const"
 .br
 .RI "Returns the overall last active time of all of the message receipts from idle_detect instances\&. "
+.ti -1c
+.RI "State \fBGetState\fP () const"
+.br
+.RI "Returns the state of the idle monitor\&. This is NORMAL, FORCED_ACTIVE or FORCED_IDLE\&. "
+.ti -1c
+.RI "std::string \fBStateToString\fP () const"
+.br
+.RI "Returns the string representation of the idle monitor object state\&. "
+.in -1c
+.SS "Static Public Member Functions"
+
+.in +1c
+.ti -1c
+.RI "static std::string \fBStateToString\fP (const State &state)"
+.br
+.RI "Returns the string representation of the input state enum value\&. "
 .in -1c
 .SS "Public Attributes"
 
@@ -58,6 +81,10 @@ EventDetect::IdleDetectMonitor
 .br
 .RI "Atomic that holds the overall last active time across all of the monitored pts/ttys\&. "
 .ti -1c
+.RI "std::atomic< State > \fBm_state\fP"
+.br
+.RI "Holds the current state of the idle monitor\&. NORMAL means idle detect follows the normal threshold (trigger) rules for idle detection\&. FORCED_ACTIVE means the user has forced the system to be active and FORCED_IDLE means the user has forced the system to be idle\&. The state is set by the event_detect process and is used to determine the ultimate last active time\&. "
+.ti -1c
 .RI "std::atomic< bool > \fBm_initialized\fP"
 .br
 .RI "This holds the flag as to whether the tty monitor has been initialized and is provided by the \fBIsInitialized()\fP public method\&. "
@@ -75,6 +102,17 @@ Unix Epoch time in seconds
 .RE
 .PP
 
+.SS "IdleDetectMonitor::State IdleDetectMonitor::GetState () const"
+
+.PP
+Returns the state of the idle monitor\&. This is NORMAL, FORCED_ACTIVE or FORCED_IDLE\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+State enum value 
+.RE
+.PP
+
 .SS "bool IdleDetectMonitor::IsInitialized () const"
 
 .PP
@@ -83,6 +121,33 @@ Provides a flag to indicate whether the monitor has been initialized\&. This is 
 \fBReturns:\fP
 .RS 4
 boolean flag 
+.RE
+.PP
+
+.SS "std::string IdleDetectMonitor::StateToString (const State & state)\fC [static]\fP"
+
+.PP
+Returns the string representation of the input state enum value\&. 
+.PP
+\fBParameters:\fP
+.RS 4
+\fIState\fP enum state 
+.RE
+.PP
+\fBReturns:\fP
+.RS 4
+string representation of the state 
+.RE
+.PP
+
+.SS "std::string IdleDetectMonitor::StateToString () const"
+
+.PP
+Returns the string representation of the idle monitor object state\&. 
+.PP
+\fBReturns:\fP
+.RS 4
+string represenation of the state 
 .RE
 .PP
 

@@ -1,5 +1,15 @@
 \hypertarget{classEventDetect_1_1IdleDetectMonitor}{}\section{Event\+Detect\+:\+:Idle\+Detect\+Monitor Class Reference}
 \label{classEventDetect_1_1IdleDetectMonitor}\index{Event\+Detect\+::\+Idle\+Detect\+Monitor@{Event\+Detect\+::\+Idle\+Detect\+Monitor}}
+\subsection*{Public Types}
+\begin{DoxyCompactItemize}
+\item 
+\mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_a2fc7d8ccc92a76fdd7584318169cbc5f}\label{classEventDetect_1_1IdleDetectMonitor_a2fc7d8ccc92a76fdd7584318169cbc5f}} 
+enum {\bfseries State} \{ {\bfseries U\+N\+K\+N\+O\+WN}, 
+{\bfseries N\+O\+R\+M\+AL}, 
+{\bfseries F\+O\+R\+C\+E\+D\+\_\+\+A\+C\+T\+I\+VE}, 
+{\bfseries F\+O\+R\+C\+E\+D\+\_\+\+I\+D\+LE}
+ \}
+\end{DoxyCompactItemize}
 \subsection*{Public Member Functions}
 \begin{DoxyCompactItemize}
 \item 
@@ -12,7 +22,16 @@ void \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_a03e59f3ae8ea4e93677
 bool \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_af945f0f33b8c0fe2c8ee33bd9ac83f12}{Is\+Initialized}} () const
 \begin{DoxyCompactList}\small\item\em Provides a flag to indicate whether the monitor has been initialized. This is used in main in the application control paths. \end{DoxyCompactList}\item 
 int64\+\_\+t \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_acc4bec04aa1e47e5e7e7fae87cdf2b76}{Get\+Last\+Idle\+Detect\+Active\+Time}} () const
-\begin{DoxyCompactList}\small\item\em Returns the overall last active time of all of the message receipts from idle\+\_\+detect instances. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\begin{DoxyCompactList}\small\item\em Returns the overall last active time of all of the message receipts from idle\+\_\+detect instances. \end{DoxyCompactList}\item 
+State \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_a2f58fdfcded4906499db6f56dd4f036b}{Get\+State}} () const
+\begin{DoxyCompactList}\small\item\em Returns the state of the idle monitor. This is N\+O\+R\+M\+AL, F\+O\+R\+C\+E\+D\+\_\+\+A\+C\+T\+I\+VE or F\+O\+R\+C\+E\+D\+\_\+\+I\+D\+LE. \end{DoxyCompactList}\item 
+std\+::string \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_a0bad0433a375a2fa4d0a0e8c088a9922}{State\+To\+String}} () const
+\begin{DoxyCompactList}\small\item\em Returns the string representation of the idle monitor object state. \end{DoxyCompactList}\end{DoxyCompactItemize}
+\subsection*{Static Public Member Functions}
+\begin{DoxyCompactItemize}
+\item 
+static std\+::string \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_a60029f382d471e20c530cf5f61d2f71c}{State\+To\+String}} (const State \&state)
+\begin{DoxyCompactList}\small\item\em Returns the string representation of the input state enum value. \end{DoxyCompactList}\end{DoxyCompactItemize}
 \subsection*{Public Attributes}
 \begin{DoxyCompactItemize}
 \item 
@@ -37,6 +56,9 @@ std\+::mutex \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_abf3c0cc8748
 \mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_acc9798f26d29719e8dffae5ed358fa43}\label{classEventDetect_1_1IdleDetectMonitor_acc9798f26d29719e8dffae5ed358fa43}} 
 std\+::atomic$<$ int64\+\_\+t $>$ \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_acc9798f26d29719e8dffae5ed358fa43}{m\+\_\+last\+\_\+idle\+\_\+detect\+\_\+active\+\_\+time}}
 \begin{DoxyCompactList}\small\item\em Atomic that holds the overall last active time across all of the monitored pts/ttys. \end{DoxyCompactList}\item 
+\mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_ae4ede844ecda97f5f6acd91a6dcc81f7}\label{classEventDetect_1_1IdleDetectMonitor_ae4ede844ecda97f5f6acd91a6dcc81f7}} 
+std\+::atomic$<$ State $>$ \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_ae4ede844ecda97f5f6acd91a6dcc81f7}{m\+\_\+state}}
+\begin{DoxyCompactList}\small\item\em Holds the current state of the idle monitor. N\+O\+R\+M\+AL means idle detect follows the normal threshold (trigger) rules for idle detection. F\+O\+R\+C\+E\+D\+\_\+\+A\+C\+T\+I\+VE means the user has forced the system to be active and F\+O\+R\+C\+E\+D\+\_\+\+I\+D\+LE means the user has forced the system to be idle. The state is set by the event\+\_\+detect process and is used to determine the ultimate last active time. \end{DoxyCompactList}\item 
 \mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_a9247d67e3ace050925e119bfbb45dcc5}\label{classEventDetect_1_1IdleDetectMonitor_a9247d67e3ace050925e119bfbb45dcc5}} 
 std\+::atomic$<$ bool $>$ \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_a9247d67e3ace050925e119bfbb45dcc5}{m\+\_\+initialized}}
 \begin{DoxyCompactList}\small\item\em This holds the flag as to whether the tty monitor has been initialized and is provided by the \mbox{\hyperlink{classEventDetect_1_1IdleDetectMonitor_af945f0f33b8c0fe2c8ee33bd9ac83f12}{Is\+Initialized()}} public method. \end{DoxyCompactList}\end{DoxyCompactItemize}
@@ -58,6 +80,21 @@ Unix Epoch time in seconds
 \end{DoxyReturn}
 Here is the caller graph for this function\+:
 % FIG 0
+\mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_a2f58fdfcded4906499db6f56dd4f036b}\label{classEventDetect_1_1IdleDetectMonitor_a2f58fdfcded4906499db6f56dd4f036b}} 
+\index{Event\+Detect\+::\+Idle\+Detect\+Monitor@{Event\+Detect\+::\+Idle\+Detect\+Monitor}!Get\+State@{Get\+State}}
+\index{Get\+State@{Get\+State}!Event\+Detect\+::\+Idle\+Detect\+Monitor@{Event\+Detect\+::\+Idle\+Detect\+Monitor}}
+\subsubsection{\texorpdfstring{Get\+State()}{GetState()}}
+{\footnotesize\ttfamily Idle\+Detect\+Monitor\+::\+State Idle\+Detect\+Monitor\+::\+Get\+State (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption}) const}
+
+
+
+Returns the state of the idle monitor. This is N\+O\+R\+M\+AL, F\+O\+R\+C\+E\+D\+\_\+\+A\+C\+T\+I\+VE or F\+O\+R\+C\+E\+D\+\_\+\+I\+D\+LE. 
+
+\begin{DoxyReturn}{Returns}
+State enum value 
+\end{DoxyReturn}
+Here is the caller graph for this function\+:
+% FIG 1
 \mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_af945f0f33b8c0fe2c8ee33bd9ac83f12}\label{classEventDetect_1_1IdleDetectMonitor_af945f0f33b8c0fe2c8ee33bd9ac83f12}} 
 \index{Event\+Detect\+::\+Idle\+Detect\+Monitor@{Event\+Detect\+::\+Idle\+Detect\+Monitor}!Is\+Initialized@{Is\+Initialized}}
 \index{Is\+Initialized@{Is\+Initialized}!Event\+Detect\+::\+Idle\+Detect\+Monitor@{Event\+Detect\+::\+Idle\+Detect\+Monitor}}
@@ -71,6 +108,41 @@ Provides a flag to indicate whether the monitor has been initialized. This is us
 \begin{DoxyReturn}{Returns}
 boolean flag 
 \end{DoxyReturn}
+\mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_a60029f382d471e20c530cf5f61d2f71c}\label{classEventDetect_1_1IdleDetectMonitor_a60029f382d471e20c530cf5f61d2f71c}} 
+\index{Event\+Detect\+::\+Idle\+Detect\+Monitor@{Event\+Detect\+::\+Idle\+Detect\+Monitor}!State\+To\+String@{State\+To\+String}}
+\index{State\+To\+String@{State\+To\+String}!Event\+Detect\+::\+Idle\+Detect\+Monitor@{Event\+Detect\+::\+Idle\+Detect\+Monitor}}
+\subsubsection{\texorpdfstring{State\+To\+String()}{StateToString()}\hspace{0.1cm}{\footnotesize\ttfamily [1/2]}}
+{\footnotesize\ttfamily std\+::string Idle\+Detect\+Monitor\+::\+State\+To\+String (\begin{DoxyParamCaption}\item[{const State \&}]{state }\end{DoxyParamCaption})\hspace{0.3cm}{\ttfamily [static]}}
+
+
+
+Returns the string representation of the input state enum value. 
+
+
+\begin{DoxyParams}{Parameters}
+{\em State} & enum state \\
+\hline
+\end{DoxyParams}
+\begin{DoxyReturn}{Returns}
+string representation of the state 
+\end{DoxyReturn}
+Here is the caller graph for this function\+:
+% FIG 2
+\mbox{\Hypertarget{classEventDetect_1_1IdleDetectMonitor_a0bad0433a375a2fa4d0a0e8c088a9922}\label{classEventDetect_1_1IdleDetectMonitor_a0bad0433a375a2fa4d0a0e8c088a9922}} 
+\index{Event\+Detect\+::\+Idle\+Detect\+Monitor@{Event\+Detect\+::\+Idle\+Detect\+Monitor}!State\+To\+String@{State\+To\+String}}
+\index{State\+To\+String@{State\+To\+String}!Event\+Detect\+::\+Idle\+Detect\+Monitor@{Event\+Detect\+::\+Idle\+Detect\+Monitor}}
+\subsubsection{\texorpdfstring{State\+To\+String()}{StateToString()}\hspace{0.1cm}{\footnotesize\ttfamily [2/2]}}
+{\footnotesize\ttfamily std\+::string Idle\+Detect\+Monitor\+::\+State\+To\+String (\begin{DoxyParamCaption}{ }\end{DoxyParamCaption}) const}
+
+
+
+Returns the string representation of the idle monitor object state. 
+
+\begin{DoxyReturn}{Returns}
+string represenation of the state 
+\end{DoxyReturn}
+Here is the caller graph for this function\+:
+% FIG 3
 
 
 The documentation for this class was generated from the following files\+:\begin{DoxyCompactItemize}

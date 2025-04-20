@@ -9,6 +9,7 @@ var searchData=
   ['getlastactivetime',['GetLastActiveTime',['../classEventDetect_1_1Monitor.html#a8abba216129439752a569239173fea87',1,'EventDetect::Monitor']]],
   ['getlastidledetectactivetime',['GetLastIdleDetectActiveTime',['../classEventDetect_1_1IdleDetectMonitor.html#acc4bec04aa1e47e5e7e7fae87cdf2b76',1,'EventDetect::IdleDetectMonitor']]],
   ['getlastttyactivetime',['GetLastTtyActiveTime',['../classEventDetect_1_1TtyMonitor.html#aae27c11393b72229dc03cc4b29f15b80',1,'EventDetect::TtyMonitor']]],
+  ['getstate',['GetState',['../classEventDetect_1_1IdleDetectMonitor.html#a2f58fdfcded4906499db6f56dd4f036b',1,'EventDetect::IdleDetectMonitor::GetState()'],['../classIdleDetect_1_1IdleDetectControlMonitor.html#ae14c09e944758010c8eb0dfa101d9819',1,'IdleDetect::IdleDetectControlMonitor::GetState()']]],
   ['gettotaleventcount',['GetTotalEventCount',['../classEventDetect_1_1InputEventRecorders.html#aafd4194710ca37dee2cb8bd4cc5e50b0',1,'EventDetect::InputEventRecorders']]],
   ['getttydevices',['GetTtyDevices',['../classEventDetect_1_1TtyMonitor.html#aad86d815a645f6afd9168852d85ccf3c',1,'EventDetect::TtyMonitor']]]
 ];

@@ -1,4 +1,4 @@
-.TH "EventMessage" 3 "Wed Apr 16 2025" "Version 0.7.12.0" "idle_detect" \" -*- nroff -*-
+.TH "EventMessage" 3 "Sun Apr 20 2025" "Version 0.8.0.0" "idle_detect" \" -*- nroff -*-
 .ad l
 .nh
 .SH NAME
@@ -13,7 +13,7 @@ EventMessage \- The \fBEventMessage\fP class is a small class that encapsulates 
 
 .in +1c
 .ti -1c
-.RI "enum \fBEventType\fP { \fBUNKNOWN\fP, \fBUSER_ACTIVE\fP }"
+.RI "enum \fBEventType\fP { \fBUNKNOWN\fP, \fBUSER_ACTIVE\fP, \fBUSER_UNFORCE\fP, \fBUSER_FORCE_ACTIVE\fP, \fBUSER_FORCE_IDLE\fP }"
 .br
 .RI "The EventType enum defines event types for the \fBEventMessage\fP class\&. Currently there is only one event type in use, USER_ACTIVE\&. "
 .in -1c
@@ -24,6 +24,10 @@ EventMessage \- The \fBEventMessage\fP class is a small class that encapsulates 
 .RI "\fBEventMessage\fP ()"
 .br
 .RI "Constructs an 'empty' \fBEventMessage\fP with timestamp of 0 and EventType of UNKNOWN\&. "
+.ti -1c
+.RI "\fBEventMessage\fP (int64_t timestamp, \fBEventType\fP event_type)"
+.br
+.RI "Constructs an \fBEventMessage\fP from the provided parameters\&. "
 .ti -1c
 .RI "\fBEventMessage\fP (std::string timestamp_str, std::string event_type_str)"
 .br
@@ -76,6 +80,19 @@ The class stores these in their native format\&.
 A validation method and conversion to string format are provided\&. 
 .SH "Constructor & Destructor Documentation"
 .PP 
+.SS "EventMessage::EventMessage (int64_t timestamp, \fBEventType\fP event_type)"
+
+.PP
+Constructs an \fBEventMessage\fP from the provided parameters\&. 
+.PP
+\fBParameters:\fP
+.RS 4
+\fItimestamp\fP 
+.br
+\fIevent_type\fP 
+.RE
+.PP
+
 .SS "EventMessage::EventMessage (std::string timestamp_str, std::string event_type_str)"
 
 .PP

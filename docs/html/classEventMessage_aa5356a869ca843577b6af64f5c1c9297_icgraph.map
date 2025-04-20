@@ -1,3 +1,4 @@
 <map id="EventMessage::IsValid" name="EventMessage::IsValid">
-<area shape="rect" id="node2" href="$classEventDetect_1_1IdleDetectMonitor.html#a03e59f3ae8ea4e93677f6684556d408f" title="Method to instantiate the tty monitor thread. " alt="" coords="208,5,412,47"/>
+<area shape="rect" id="node2" href="$classEventDetect_1_1IdleDetectMonitor.html#a03e59f3ae8ea4e93677f6684556d408f" title="Method to instantiate the tty monitor thread. " alt="" coords="215,5,419,47"/>
+<area shape="rect" id="node3" href="$classIdleDetect_1_1IdleDetectControlMonitor.html#a5089a3655a159ccc3cb7b1c663c9cac3" title="Method to instantiate the tty monitor thread. " alt="" coords="208,71,427,127"/>
 </map>

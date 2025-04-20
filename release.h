@@ -11,8 +11,8 @@
 
 // release.h (Alternative)
 #define IDLE_DETECT_VERSION_MAJOR 0
-#define IDLE_DETECT_VERSION_MINOR 7
-#define IDLE_DETECT_VERSION_PATCH 12
+#define IDLE_DETECT_VERSION_MINOR 8
+#define IDLE_DETECT_VERSION_PATCH 0
 #define IDLE_DETECT_VERSION_TWEAK 0
 
 #define ID__STRINGIFY(x) #x
@@ -24,7 +24,7 @@ ID_STRINGIFY(IDLE_DETECT_VERSION_MAJOR) "." \
     ID_STRINGIFY(IDLE_DETECT_VERSION_PATCH) "." \
     ID_STRINGIFY(IDLE_DETECT_VERSION_TWEAK)
 
-const std::string g_version_datetime = "20250416";
+const std::string g_version_datetime = "20250420";
 
 const std::string g_version = std::string("version ") + std::string(IDLE_DETECT_VERSION_STRING) + " - " + g_version_datetime;
 

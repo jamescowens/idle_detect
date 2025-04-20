@@ -1,6 +1,7 @@
 var searchData=
 [
   ['idledetectconfig',['IdleDetectConfig',['../classIdleDetectConfig.html',1,'']]],
+  ['idledetectcontrolmonitor',['IdleDetectControlMonitor',['../classIdleDetect_1_1IdleDetectControlMonitor.html',1,'IdleDetect']]],
   ['idledetectmonitor',['IdleDetectMonitor',['../classEventDetect_1_1IdleDetectMonitor.html',1,'EventDetect']]],
   ['inputeventrecorders',['InputEventRecorders',['../classEventDetect_1_1InputEventRecorders.html',1,'EventDetect']]],
   ['is_5fconvertible',['is_convertible',['../structtinyformat_1_1detail_1_1is__convertible.html',1,'tinyformat::detail']]],

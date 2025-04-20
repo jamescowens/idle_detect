@@ -13,8 +13,13 @@ The \mbox{\hyperlink{classEventMessage}{Event\+Message}} class is a small class 
 \begin{DoxyCompactItemize}
 \item 
 \mbox{\Hypertarget{classEventMessage_a262da559aa416f176fdda72e8b5113ab}\label{classEventMessage_a262da559aa416f176fdda72e8b5113ab}} 
-enum \mbox{\hyperlink{classEventMessage_a262da559aa416f176fdda72e8b5113ab}{Event\+Type}} \{ {\bfseries U\+N\+K\+N\+O\+WN}, 
-{\bfseries U\+S\+E\+R\+\_\+\+A\+C\+T\+I\+VE}
+enum \mbox{\hyperlink{classEventMessage_a262da559aa416f176fdda72e8b5113ab}{Event\+Type}} \{ \newline
+{\bfseries U\+N\+K\+N\+O\+WN}, 
+{\bfseries U\+S\+E\+R\+\_\+\+A\+C\+T\+I\+VE}, 
+{\bfseries U\+S\+E\+R\+\_\+\+U\+N\+F\+O\+R\+CE}, 
+{\bfseries U\+S\+E\+R\+\_\+\+F\+O\+R\+C\+E\+\_\+\+A\+C\+T\+I\+VE}, 
+\newline
+{\bfseries U\+S\+E\+R\+\_\+\+F\+O\+R\+C\+E\+\_\+\+I\+D\+LE}
  \}
 \begin{DoxyCompactList}\small\item\em The Event\+Type enum defines event types for the \mbox{\hyperlink{classEventMessage}{Event\+Message}} class. Currently there is only one event type in use, U\+S\+E\+R\+\_\+\+A\+C\+T\+I\+VE. \end{DoxyCompactList}\end{DoxyCompactItemize}
 \subsection*{Public Member Functions}
@@ -23,6 +28,8 @@ enum \mbox{\hyperlink{classEventMessage_a262da559aa416f176fdda72e8b5113ab}{Event
 \mbox{\Hypertarget{classEventMessage_a1af65b34ed2337c476357d1e8c666308}\label{classEventMessage_a1af65b34ed2337c476357d1e8c666308}} 
 \mbox{\hyperlink{classEventMessage_a1af65b34ed2337c476357d1e8c666308}{Event\+Message}} ()
 \begin{DoxyCompactList}\small\item\em Constructs an \char`\"{}empty\char`\"{} \mbox{\hyperlink{classEventMessage}{Event\+Message}} with timestamp of 0 and Event\+Type of U\+N\+K\+N\+O\+WN. \end{DoxyCompactList}\item 
+\mbox{\hyperlink{classEventMessage_a2cf6e1e690c71c4151ba87102b15c86b}{Event\+Message}} (int64\+\_\+t timestamp, \mbox{\hyperlink{classEventMessage_a262da559aa416f176fdda72e8b5113ab}{Event\+Type}} event\+\_\+type)
+\begin{DoxyCompactList}\small\item\em Constructs an \mbox{\hyperlink{classEventMessage}{Event\+Message}} from the provided parameters. \end{DoxyCompactList}\item 
 \mbox{\hyperlink{classEventMessage_ae9314c9140aec416b1e403c2ec3dad25}{Event\+Message}} (std\+::string timestamp\+\_\+str, std\+::string event\+\_\+type\+\_\+str)
 \begin{DoxyCompactList}\small\item\em Constructs an \mbox{\hyperlink{classEventMessage}{Event\+Message}} from the provided strings. \end{DoxyCompactList}\item 
 std\+::string \mbox{\hyperlink{classEventMessage_a3dd4a7325fcc39e7cfdf2365422ae1c7}{Event\+Type\+To\+String}} ()
@@ -60,10 +67,27 @@ The class stores these in their native format.
 A validation method and conversion to string format are provided. 
 
 \subsection{Constructor \& Destructor Documentation}
+\mbox{\Hypertarget{classEventMessage_a2cf6e1e690c71c4151ba87102b15c86b}\label{classEventMessage_a2cf6e1e690c71c4151ba87102b15c86b}} 
+\index{Event\+Message@{Event\+Message}!Event\+Message@{Event\+Message}}
+\index{Event\+Message@{Event\+Message}!Event\+Message@{Event\+Message}}
+\subsubsection{\texorpdfstring{Event\+Message()}{EventMessage()}\hspace{0.1cm}{\footnotesize\ttfamily [1/2]}}
+{\footnotesize\ttfamily Event\+Message\+::\+Event\+Message (\begin{DoxyParamCaption}\item[{int64\+\_\+t}]{timestamp,  }\item[{\mbox{\hyperlink{classEventMessage_a262da559aa416f176fdda72e8b5113ab}{Event\+Type}}}]{event\+\_\+type }\end{DoxyParamCaption})}
+
+
+
+Constructs an \mbox{\hyperlink{classEventMessage}{Event\+Message}} from the provided parameters. 
+
+
+\begin{DoxyParams}{Parameters}
+{\em timestamp} & \\
+\hline
+{\em event\+\_\+type} & \\
+\hline
+\end{DoxyParams}
 \mbox{\Hypertarget{classEventMessage_ae9314c9140aec416b1e403c2ec3dad25}\label{classEventMessage_ae9314c9140aec416b1e403c2ec3dad25}} 
 \index{Event\+Message@{Event\+Message}!Event\+Message@{Event\+Message}}
 \index{Event\+Message@{Event\+Message}!Event\+Message@{Event\+Message}}
-\subsubsection{\texorpdfstring{Event\+Message()}{EventMessage()}}
+\subsubsection{\texorpdfstring{Event\+Message()}{EventMessage()}\hspace{0.1cm}{\footnotesize\ttfamily [2/2]}}
 {\footnotesize\ttfamily Event\+Message\+::\+Event\+Message (\begin{DoxyParamCaption}\item[{std\+::string}]{timestamp\+\_\+str,  }\item[{std\+::string}]{event\+\_\+type\+\_\+str }\end{DoxyParamCaption})}
 
 

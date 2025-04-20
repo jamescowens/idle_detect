@@ -22,7 +22,7 @@
  <tr style="height: 56px;">
   <td id="projectalign" style="padding-left: 0.5em;">
    <div id="projectname">idle_detect
-   &#160;<span id="projectnumber">0.7.12.0</span>
+   &#160;<span id="projectnumber">0.8.0.0</span>
    </div>
    <div id="projectbrief">Provides overall idle detection for a linux computer</div>
   </td>
@@ -82,8 +82,14 @@ $(function() {
 <table class="memberdecls">
 <tr class="heading"><td colspan="2"><h2 class="groupheader"><a name="pub-types"></a>
 Public Types</h2></td></tr>
-<tr class="memitem:a262da559aa416f176fdda72e8b5113ab"><td class="memItemLeft" align="right" valign="top"><a id="a262da559aa416f176fdda72e8b5113ab"></a>enum &#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classEventMessage.html#a262da559aa416f176fdda72e8b5113ab">EventType</a> { <b>UNKNOWN</b>, 
-<b>USER_ACTIVE</b>
+<tr class="memitem:a262da559aa416f176fdda72e8b5113ab"><td class="memItemLeft" align="right" valign="top"><a id="a262da559aa416f176fdda72e8b5113ab"></a>enum &#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classEventMessage.html#a262da559aa416f176fdda72e8b5113ab">EventType</a> { <br />
+&#160;&#160;<b>UNKNOWN</b>, 
+<b>USER_ACTIVE</b>, 
+<b>USER_UNFORCE</b>, 
+<b>USER_FORCE_ACTIVE</b>, 
+<br />
+&#160;&#160;<b>USER_FORCE_IDLE</b>
+<br />
  }</td></tr>
 <tr class="memdesc:a262da559aa416f176fdda72e8b5113ab"><td class="mdescLeft">&#160;</td><td class="mdescRight">The EventType enum defines event types for the <a class="el" href="classEventMessage.html" title="The EventMessage class is a small class that encapsulates the &quot;event message&quot;, which is a message sen...">EventMessage</a> class. Currently there is only one event type in use, USER_ACTIVE. <br /></td></tr>
 <tr class="separator:a262da559aa416f176fdda72e8b5113ab"><td class="memSeparator" colspan="2">&#160;</td></tr>
@@ -94,6 +100,9 @@ Public Member Functions</h2></td></tr>
 &#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classEventMessage.html#a1af65b34ed2337c476357d1e8c666308">EventMessage</a> ()</td></tr>
 <tr class="memdesc:a1af65b34ed2337c476357d1e8c666308"><td class="mdescLeft">&#160;</td><td class="mdescRight">Constructs an "empty" <a class="el" href="classEventMessage.html" title="The EventMessage class is a small class that encapsulates the &quot;event message&quot;, which is a message sen...">EventMessage</a> with timestamp of 0 and EventType of UNKNOWN. <br /></td></tr>
 <tr class="separator:a1af65b34ed2337c476357d1e8c666308"><td class="memSeparator" colspan="2">&#160;</td></tr>
+<tr class="memitem:a2cf6e1e690c71c4151ba87102b15c86b"><td class="memItemLeft" align="right" valign="top">&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classEventMessage.html#a2cf6e1e690c71c4151ba87102b15c86b">EventMessage</a> (int64_t timestamp, <a class="el" href="classEventMessage.html#a262da559aa416f176fdda72e8b5113ab">EventType</a> event_type)</td></tr>
+<tr class="memdesc:a2cf6e1e690c71c4151ba87102b15c86b"><td class="mdescLeft">&#160;</td><td class="mdescRight">Constructs an <a class="el" href="classEventMessage.html" title="The EventMessage class is a small class that encapsulates the &quot;event message&quot;, which is a message sen...">EventMessage</a> from the provided parameters.  <a href="#a2cf6e1e690c71c4151ba87102b15c86b">More...</a><br /></td></tr>
+<tr class="separator:a2cf6e1e690c71c4151ba87102b15c86b"><td class="memSeparator" colspan="2">&#160;</td></tr>
 <tr class="memitem:ae9314c9140aec416b1e403c2ec3dad25"><td class="memItemLeft" align="right" valign="top">&#160;</td><td class="memItemRight" valign="bottom"><a class="el" href="classEventMessage.html#ae9314c9140aec416b1e403c2ec3dad25">EventMessage</a> (std::string timestamp_str, std::string event_type_str)</td></tr>
 <tr class="memdesc:ae9314c9140aec416b1e403c2ec3dad25"><td class="mdescLeft">&#160;</td><td class="mdescRight">Constructs an <a class="el" href="classEventMessage.html" title="The EventMessage class is a small class that encapsulates the &quot;event message&quot;, which is a message sen...">EventMessage</a> from the provided strings.  <a href="#ae9314c9140aec416b1e403c2ec3dad25">More...</a><br /></td></tr>
 <tr class="separator:ae9314c9140aec416b1e403c2ec3dad25"><td class="memSeparator" colspan="2">&#160;</td></tr>
@@ -133,8 +142,45 @@ Private Member Functions</h2></td></tr>
 <p>The class stores these in their native format.</p>
 <p>A validation method and conversion to string format are provided. </p>
 </div><h2 class="groupheader">Constructor &amp; Destructor Documentation</h2>
+<a id="a2cf6e1e690c71c4151ba87102b15c86b"></a>
+<h2 class="memtitle"><span class="permalink"><a href="#a2cf6e1e690c71c4151ba87102b15c86b">&#9670;&nbsp;</a></span>EventMessage() <span class="overload">[1/2]</span></h2>
+
+<div class="memitem">
+<div class="memproto">
+      <table class="memname">
+        <tr>
+          <td class="memname">EventMessage::EventMessage </td>
+          <td>(</td>
+          <td class="paramtype">int64_t&#160;</td>
+          <td class="paramname"><em>timestamp</em>, </td>
+        </tr>
+        <tr>
+          <td class="paramkey"></td>
+          <td></td>
+          <td class="paramtype"><a class="el" href="classEventMessage.html#a262da559aa416f176fdda72e8b5113ab">EventType</a>&#160;</td>
+          <td class="paramname"><em>event_type</em>&#160;</td>
+        </tr>
+        <tr>
+          <td></td>
+          <td>)</td>
+          <td></td><td></td>
+        </tr>
+      </table>
+</div><div class="memdoc">
+
+<p>Constructs an <a class="el" href="classEventMessage.html" title="The EventMessage class is a small class that encapsulates the &quot;event message&quot;, which is a message sen...">EventMessage</a> from the provided parameters. </p>
+<dl class="params"><dt>Parameters</dt><dd>
+  <table class="params">
+    <tr><td class="paramname">timestamp</td><td></td></tr>
+    <tr><td class="paramname">event_type</td><td></td></tr>
+  </table>
+  </dd>
+</dl>
+
+</div>
+</div>
 <a id="ae9314c9140aec416b1e403c2ec3dad25"></a>
-<h2 class="memtitle"><span class="permalink"><a href="#ae9314c9140aec416b1e403c2ec3dad25">&#9670;&nbsp;</a></span>EventMessage()</h2>
+<h2 class="memtitle"><span class="permalink"><a href="#ae9314c9140aec416b1e403c2ec3dad25">&#9670;&nbsp;</a></span>EventMessage() <span class="overload">[2/2]</span></h2>
 
 <div class="memitem">
 <div class="memproto">
@@ -171,9 +217,7 @@ Private Member Functions</h2></td></tr>
 Here is the call graph for this function:</div>
 <div class="dyncontent">
 <div class="center"><img src="classEventMessage_ae9314c9140aec416b1e403c2ec3dad25_cgraph.png" border="0" usemap="#classEventMessage_ae9314c9140aec416b1e403c2ec3dad25_cgraph" alt=""/></div>
-<map name="classEventMessage_ae9314c9140aec416b1e403c2ec3dad25_cgraph" id="classEventMessage_ae9314c9140aec416b1e403c2ec3dad25_cgraph">
-<area shape="rect" id="node2" href="classEventMessage.html#aa4656857adf12d74bd0ba9c04e2ee539" title="This converts the event type string to the proper enum value. It is the converse of EventTypeToString..." alt="" coords="256,5,467,47"/>
-</map>
+<!-- MAP 0 -->
 </div>
 
 </div>
@@ -215,9 +259,7 @@ Here is the call graph for this function:</div>
 Here is the caller graph for this function:</div>
 <div class="dyncontent">
 <div class="center"><img src="classEventMessage_aa4656857adf12d74bd0ba9c04e2ee539_icgraph.png" border="0" usemap="#classEventMessage_aa4656857adf12d74bd0ba9c04e2ee539_icgraph" alt=""/></div>
-<map name="classEventMessage_aa4656857adf12d74bd0ba9c04e2ee539_icgraph" id="classEventMessage_aa4656857adf12d74bd0ba9c04e2ee539_icgraph">
-<area shape="rect" id="node2" href="classEventMessage.html#ae9314c9140aec416b1e403c2ec3dad25" title="Constructs an EventMessage from the provided strings. " alt="" coords="264,13,467,39"/>
-</map>
+<!-- MAP 1 -->
 </div>
 
 </div>
@@ -243,10 +285,7 @@ Here is the caller graph for this function:</div>
 Here is the caller graph for this function:</div>
 <div class="dyncontent">
 <div class="center"><img src="classEventMessage_a3dd4a7325fcc39e7cfdf2365422ae1c7_icgraph.png" border="0" usemap="#classEventMessage_a3dd4a7325fcc39e7cfdf2365422ae1c7_icgraph" alt=""/></div>
-<map name="classEventMessage_a3dd4a7325fcc39e7cfdf2365422ae1c7_icgraph" id="classEventMessage_a3dd4a7325fcc39e7cfdf2365422ae1c7_icgraph">
-<area shape="rect" id="node2" href="classEventDetect_1_1IdleDetectMonitor.html#a03e59f3ae8ea4e93677f6684556d408f" title="Method to instantiate the tty monitor thread. " alt="" coords="244,5,448,47"/>
-<area shape="rect" id="node3" href="classEventMessage.html#ae13342857432d5274f4d86ecc87cb613" title="Returns the string message format of the EventMessage object. This is meant to go on the pipe..." alt="" coords="264,71,428,98"/>
-</map>
+<!-- MAP 2 -->
 </div>
 
 </div>
@@ -307,9 +346,7 @@ Here is the caller graph for this function:</div>
 Here is the caller graph for this function:</div>
 <div class="dyncontent">
 <div class="center"><img src="classEventMessage_aa5356a869ca843577b6af64f5c1c9297_icgraph.png" border="0" usemap="#classEventMessage_aa5356a869ca843577b6af64f5c1c9297_icgraph" alt=""/></div>
-<map name="classEventMessage_aa5356a869ca843577b6af64f5c1c9297_icgraph" id="classEventMessage_aa5356a869ca843577b6af64f5c1c9297_icgraph">
-<area shape="rect" id="node2" href="classEventDetect_1_1IdleDetectMonitor.html#a03e59f3ae8ea4e93677f6684556d408f" title="Method to instantiate the tty monitor thread. " alt="" coords="208,5,412,47"/>
-</map>
+<!-- MAP 3 -->
 </div>
 
 </div>
@@ -335,9 +372,7 @@ Here is the caller graph for this function:</div>
 Here is the call graph for this function:</div>
 <div class="dyncontent">
 <div class="center"><img src="classEventMessage_ae13342857432d5274f4d86ecc87cb613_cgraph.png" border="0" usemap="#classEventMessage_ae13342857432d5274f4d86ecc87cb613_cgraph" alt=""/></div>
-<map name="classEventMessage_ae13342857432d5274f4d86ecc87cb613_cgraph" id="classEventMessage_ae13342857432d5274f4d86ecc87cb613_cgraph">
-<area shape="rect" id="node2" href="classEventMessage.html#a3dd4a7325fcc39e7cfdf2365422ae1c7" title="Converts m_event_type member variable in the EventMessage object to a string. " alt="" coords="217,5,408,47"/>
-</map>
+<!-- MAP 4 -->
 </div>
 
 </div>
