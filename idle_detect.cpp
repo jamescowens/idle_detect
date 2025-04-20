@@ -81,19 +81,6 @@ void IdleDetectConfig::ProcessArgs()
                   debug_arg);
     }
 
-    // initial_sleep
-
-    int initial_sleep = 0;
-
-    try {
-        initial_sleep = ParseStringToInt(GetArgString("initial_sleep", "0"));
-    } catch (std::exception& e) {
-        error_log("%s: startup_delay parameter in config file has invalid value: %s",
-                  __func__,
-                  e.what());
-    }
-
-    m_config.insert(std::make_pair("initial_sleep", initial_sleep));
 
     // event_count_files_path
 
@@ -1057,7 +1044,6 @@ int main(int argc, char* argv[])
     int check_interval_seconds = IdleDetect::DEFAULT_CHECK_INTERVAL_SECONDS;
     bool should_update_event_detect = true;
     fs::path event_data_path;
-    int initial_sleep = 0;
     bool execute_dc_control_scripts = true;
     std::string active_command;
     std::string idle_command;
@@ -1069,7 +1055,6 @@ int main(int argc, char* argv[])
         idle_threshold_seconds = std::get<int>(g_config.GetArg("inactivity_time_trigger"));
         should_update_event_detect = std::get<bool>(g_config.GetArg("update_event_detect"));
         event_data_path = std::get<fs::path>(g_config.GetArg("event_count_files_path"));
-        initial_sleep = std::get<int>(g_config.GetArg("initial_sleep"));
         active_command = std::get<std::string>(g_config.GetArg("active_command"));
         idle_command = std::get<std::string>(g_config.GetArg("idle_command"));
         execute_dc_control_scripts = std::get<bool>(g_config.GetArg("execute_dc_control_scripts"));
@@ -1130,14 +1115,6 @@ int main(int argc, char* argv[])
     debug_log("INFO: %s: Idle command: '%s'",
               __func__,
               idle_command);
-
-    if (initial_sleep > 0) {
-        log("INFO: %s: Waiting for %d seconds to start.",
-            __func__,
-            initial_sleep);
-
-        std::this_thread::sleep_for(std::chrono::seconds(initial_sleep));
-    }
 
     // --- Start Idle Detect Control Monitor Thread ---
     log("INFO: %s: Starting Idle Detect Control Monitor thread...", __func__);

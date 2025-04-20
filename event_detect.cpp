@@ -885,19 +885,6 @@ void EventDetectConfig::ProcessArgs()
                   debug_arg);
     }
 
-    // startup_delay
-
-    int startup_delay = 0;
-
-    try {
-        startup_delay = ParseStringToInt(GetArgString("startup_delay", "0"));
-    } catch (std::exception& e) {
-        error_log("%s: startup_delay parameter in config file has invalid value: %s",
-                  __func__,
-                  e.what());
-    }
-
-    m_config.insert(std::make_pair("startup_delay", startup_delay));
 
     // event_count_files_path
 
@@ -1427,16 +1414,6 @@ int main(int argc, char* argv[])
         // Create or overwrite the lockfile
         std::ofstream lockfile(data_dir_path / g_lockfile);
         lockfile << current_pid;
-    }
-
-    int startup_delay = std::get<int>(g_config.GetArg("startup_delay"));
-
-    if (startup_delay > 0) {
-        log("INFO: %s: Waiting for %u seconds to start.",
-            __func__,
-            startup_delay);
-
-        std::this_thread::sleep_for(std::chrono::seconds(startup_delay));
     }
 
     int sig = 0;
