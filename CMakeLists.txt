@@ -174,8 +174,10 @@ target_link_libraries(read_shmem_timestamps PRIVATE rt)
 set(INSTALL_BIN_DIR "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}" CACHE PATH "Installation directory for binaries")
 set(INSTALL_CONFIG_DIR "/etc" CACHE PATH "Installation directory for configuration files")
 set(INSTALL_SYSTEM_SERVICE_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/system" CACHE PATH "Installation directory for the system level dc_event_detection service")
+set(INSTALL_USER_SERVICE_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/user" CACHE PATH "Installation directory for the user level dc_idle_detection service")
+set(INSTALL_USER_SERVICE_PRESET_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/user-preset" CACHE PATH "Installation directory for the user level dc_idle_detection service preset to auto enable")
 set(INSTALL_USER_CONFIG_DIR "$ENV{HOME}/.config" CACHE PATH "Installation directory for the user level idle_detect.conf")
-set(INSTALL_USER_SERVICE_DIR "$ENV{HOME}/.config/systemd/user" CACHE PATH "Installation directory for the user level dc_idle_detection.service")
+set(INSTALL_CUSTOMIZABLE_USER_SERVICE_DIR "$ENV{HOME}/.config/systemd/user" CACHE PATH "Installation directory for a customizable user level dc_idle_detection.service")
 
 # Install the executable and scripts
 install(TARGETS event_detect idle_detect read_shmem_timestamps DESTINATION ${INSTALL_BIN_DIR})
@@ -188,6 +190,12 @@ install(FILES "event_detect.conf" DESTINATION ${INSTALL_CONFIG_DIR})
 
 # Install system service (root ownership)
 install(FILES "dc_event_detection.service" DESTINATION ${INSTALL_SYSTEM_SERVICE_DIR})
+
+# Install default user service
+install(FILES "dc_idle_detection.service" DESTINATION ${INSTALL_USER_SERVICE_DIR})
+
+# Install default user service auto enable preset file
+install(FILES "90-idle-detect.preset" DESTINATION ${INSTALL_USER_SERVICE_PRESET_DIR})
 
 # --- Install Pre-Generated Doxygen Documentation ---
 # Assumes documentation exists in ./docs/ relative to CMakeLists.txt
@@ -222,6 +230,8 @@ endif()
 # Uninstall target
 configure_file(uninstall.cmake.in uninstall.cmake @ONLY)
 
+# These below special targets are primarily useful for development purposes.
+
 # Install executables only
 add_custom_target(install_executables_only
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/event_detect" "${INSTALL_BIN_DIR}/event_detect"
@@ -242,17 +252,16 @@ add_custom_target(dc_control_scripts_only
     COMMENT "installing executables only"
 )
 
-# System service install target (root)
-add_custom_target(install_system_service
+# System and default user service install target (root)
+add_custom_target(install_system_services
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_event_detection.service" "${INSTALL_SYSTEM_SERVICE_DIR}/dc_event_detection.service"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_idle_detection.service" "${INSTALL_USER_SERVICE_DIR}/dc_idle_detection.service"
     COMMENT "Installing system-level service (root)"
 )
 
-# User-level service and config install (user)
+# Customizable user-level service and config install (user)
 add_custom_target(install_user_service
-    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_idle_detection.service" "$ENV{HOME}/.config/systemd/user/dc_idle_detection.service"
-    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/idle_detect.conf" "$ENV{HOME}/.config/idle_detect.conf"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_idle_detection.service" "${INSTALL_CUSTOMIZABLE_USER_SERVICE_DIR}/dc_idle_detection.service"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/idle_detect.conf" "${INSTALL_USER_CONFIG_DIR}/idle_detect.conf"
     COMMENT "Installing user-level service (user)"
 )
-
-
