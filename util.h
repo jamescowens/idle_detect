@@ -181,7 +181,7 @@ void error_log(const char* fmt, const Args&... args)
 std::vector<fs::path> FindDirEntriesWithWildcard(const fs::path& directory, const std::string& wildcard);
 
 //!
-//! \brief Safely get an enviroment variable value from the provided name
+//! \brief Safely get an environment variable value from the provided name
 //! \param std::string of the name of the variable to retrieve
 //! \return std::string of the value of the requested variable. std::nullopt if not found.
 //!
