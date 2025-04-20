@@ -12,6 +12,7 @@
 #include <atomic>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <tinyformat.h>
 #include <variant>
 #include <vector>
@@ -180,6 +181,13 @@ void error_log(const char* fmt, const Args&... args)
 std::vector<fs::path> FindDirEntriesWithWildcard(const fs::path& directory, const std::string& wildcard);
 
 //!
+//! \brief Safely get an enviroment variable value from the provided name
+//! \param std::string of the name of the variable to retrieve
+//! \return std::string of the value of the requested variable. std::nullopt if not found.
+//!
+std::optional<std::string> GetEnvVariable(const std::string& var_name);
+
+//!
 //! \brief The EventDetectException class is a customized exception handling class for the event_detect application.
 //!
 class EventIdleDetectException : public std::exception
@@ -309,6 +317,13 @@ public:
     //! \brief Constructs an "empty" EventMessage with timestamp of 0 and EventType of UNKNOWN.
     //!
     EventMessage();
+
+    //!
+    //! \brief Constructs an EventMessage from the provided parameters
+    //! \param timestamp
+    //! \param event_type
+    //!
+    EventMessage(int64_t timestamp, EventType event_type);
 
     //!
     //! \brief Constructs an EventMessage from the provided strings.
