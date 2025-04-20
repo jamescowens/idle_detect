@@ -176,6 +176,22 @@ std::vector<fs::path> FindDirEntriesWithWildcard(const fs::path& directory, cons
     return matching_entries;
 }
 
+//! \brief Function to safely get an environment variable as a std::string
+std::optional<std::string> GetEnvVariable(const std::string& var_name)
+{
+    // Get the environment variable
+    const char* env_var_cstr = std::getenv(var_name.c_str());
+
+    // Check if the variable exists
+    if (env_var_cstr == nullptr) {
+        // The environment variable is not set
+        return std::nullopt; // Indicate failure / not found
+    } else {
+        // The variable exists, return it as a std::string
+        return std::string(env_var_cstr);
+    }
+}
+
 // Class Config
 
 Config::Config()
@@ -270,6 +286,11 @@ EventMessage::EventType EventMessage::EventTypeStringToEnum(const std::string& e
 
     return UNKNOWN;
 }
+
+EventMessage::EventMessage(int64_t timestamp, EventType event_type)
+    : m_timestamp(timestamp)
+    , m_event_type(event_type)
+{}
 
 EventMessage::EventMessage(std::string timestamp_str, std::string event_type_str)
 {

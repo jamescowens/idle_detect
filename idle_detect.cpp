@@ -5,6 +5,7 @@
  */
 
 #include <idle_detect.h>
+#include <optional>
 #include <util.h> // Includes tinyformat.h, filesystem, etc.
 #include <release.h>
 
@@ -39,12 +40,28 @@
 //! Global config singleton for idle_detect
 IdleDetectConfig g_config;
 
+//! Global idle_detect event monitor singleton for state overrides
+IdleDetect::IdleDetectControlMonitor g_idle_detect_control_monitor;
+
 //! Global flag for signal handling
 std::atomic<bool> g_shutdown_requested = false;
+
+//! Global flag for exit code
+std::atomic<int> g_exit_code;
 
 const int MAX_X_CONNECT_RETRIES = 6;  // e.g., 6 attempts
 const int X_RETRY_DELAY_MS = 500;   // e.g., 500ms between attempts (~3 sec total)
 
+//! \brief Function to safely get XDG_RUNTIME_DIR environment variable.
+std::optional<std::string> GetXdgRuntimeDir() {
+    return GetEnvVariable("XDG_RUNTIME_DIR");
+}
+
+void Shutdown(const int& exit_code)
+{
+    g_exit_code.store(exit_code);
+    g_shutdown_requested.store(true);
+}
 
 // IdleDetectConfig class
 
@@ -278,16 +295,18 @@ static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
  * @param pipe_path The full path to the event_detect named pipe.
  * @param the last active time to send to event_detect
  */
-void SendPipeNotification(const std::filesystem::path& pipe_path, const int64_t& last_active_time) {
+void SendPipeNotification(const std::filesystem::path& pipe_path,
+                          const int64_t& last_active_time,
+                          const EventMessage::EventType& event_type = EventMessage::EventType::USER_ACTIVE) {
     // Construct the message payload using EventMessage format
-    EventMessage msg(::ToString(last_active_time), "USER_ACTIVE");
+    EventMessage msg(last_active_time, event_type);
     if (!msg.IsValid()) {
         error_log("%s: Failed to construct valid EventMessage.",
                   __func__);
         return;
     }
 
-    std::string message_str = msg.ToString() + "\n"; // Assuming ToString is a method, renamed
+    std::string message_str = msg.ToString() + "\n"; // Add newline for pipe message termination
 
     debug_log("INFO: %s: Attempting to send message: %s",
               __func__,
@@ -705,6 +724,254 @@ void ExecuteCommandBackground(const std::string& command) {
     }
 }
 
+IdleDetectControlMonitor::IdleDetectControlMonitor()
+    : m_interrupt_idle_detect_control_monitor(false)
+    , m_state(UNKNOWN)
+{}
+
+void IdleDetectControlMonitor::IdleDetectControlMonitorThread()
+{
+    debug_log("INFO: %s: started.",
+              __func__);
+
+    bool idle_detect_control_pipe_initialized = false;
+
+    // Path for user runtime directory (i.e. /run/user/UID)
+    std::optional<fs::path> xdg_runtime_dir = GetXdgRuntimeDir();
+    fs::path idle_detect_control_pipe_path;
+
+    // Create the named pipe if it doesn't exist (idempotent)
+    if (xdg_runtime_dir) {
+        idle_detect_control_pipe_path = xdg_runtime_dir.value() / "idle_detect_control_pipe";
+
+        // Create the named pipe if it doesn't exist (idempotent)
+        if (mkfifo(idle_detect_control_pipe_path.c_str(), 0600) == -1) {
+            if (errno != EEXIST) {
+                error_log("%s: Error creating named pipe: %s",
+                          __func__,
+                          strerror(errno));
+            }
+            idle_detect_control_pipe_initialized = true;
+        } else {
+            idle_detect_control_pipe_initialized = true;
+        }
+    }
+
+    if (!idle_detect_control_pipe_initialized) {
+        error_log("%s: Failed to create named pipe for idle_detect control. Exiting.",
+                  __func__);
+        Shutdown(1);
+        return;
+    }
+
+    // Note the mode above combined with the umask does not always result in the right permissions,
+    // so we override with the correct ones.
+
+    fs::perms desired_perms = fs::perms::owner_read | fs::perms::owner_write;
+
+    std::error_code ec; // To capture potential errors
+
+    // Set the permissions, replacing existing ones (default behavior)
+    fs::permissions(idle_detect_control_pipe_path, desired_perms, fs::perm_options::replace, ec);
+
+    if (ec) {
+        // Handle the error if permissions couldn't be set
+        error_log("%s: Error setting permissions (0600) on named pipe %s: %s",
+                  __func__,
+                  idle_detect_control_pipe_path.string().c_str(),
+                  ec.message().c_str()); // Use the error_code's message
+        Shutdown(1);
+        return;
+    } else {
+        debug_log("%s: Successfully set permissions on %s to 0600.",
+                  __func__, idle_detect_control_pipe_path.string().c_str());
+    }
+
+    int fd = -1;
+    char buffer[256];
+    ssize_t bytes_read;
+    const int poll_timeout_ms = 100;
+
+    m_initialized = true;
+    m_state = NORMAL;
+
+    while (g_exit_code == 0) {
+        std::unique_lock<std::mutex> lock(mtx_idle_detect_control_monitor_thread);
+        cv_idle_detect_control_monitor_thread.wait_for(lock, std::chrono::milliseconds(100),
+                                                       []{ return g_idle_detect_control_monitor.m_interrupt_idle_detect_control_monitor.load(); });
+
+        if (g_idle_detect_control_monitor.m_interrupt_idle_detect_control_monitor) {
+            break;
+        }
+
+        lock.unlock();
+
+        // Only execute this if the pipe isn't already open in non-blocking mode.
+        if (fd == -1) {
+            fd = open(idle_detect_control_pipe_path.c_str(), O_RDONLY | O_NONBLOCK);
+            if (fd == -1) {
+                if (errno != ENXIO) { // No process has the pipe open for writing
+                    error_log("%s: Error opening named pipe for reading (non-blocking): %s",
+                              __func__,
+                              strerror(errno));
+                    // Consider a longer sleep here to avoid rapid retries on other errors
+                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                }
+                continue; // Try to open again in the next iteration
+            } else {
+                debug_log("INFO: %s: Successfully opened pipe for reading (non-blocking).",
+                          __func__);
+            }
+        }
+
+        if (fd != -1) {
+            struct pollfd fds[1];
+            fds[0].fd = fd;
+            fds[0].events = POLLIN;
+            fds[0].revents = 0;
+
+            int ret = poll(fds, 1, poll_timeout_ms);
+
+            if (ret > 0) {
+                if (fds[0].revents & POLLIN) {
+                    bytes_read = read(fd, buffer, sizeof(buffer) - 1);
+
+                    if (bytes_read > 0) {
+                        buffer[bytes_read] = '\0';
+                        std::string event_data(buffer);
+                        debug_log("INFO: %s: Received data: %s", __func__,
+                                  event_data);
+
+                        std::stringstream ss(event_data);
+                        std::string segment;
+                        std::vector<std::string> parts;
+                        while (std::getline(ss, segment, ':')) {
+                            parts.push_back(segment);
+                        }
+
+                        if (parts.size() == 2) {
+                            try {
+                                EventMessage event(TrimString(parts[0]), TrimString(parts[1]));
+
+                                debug_log("INFO: %s: event.m_timestamp = %lld, event.m_event_type = %s",
+                                          __func__,
+                                          event.m_timestamp,
+                                          event.EventTypeToString());
+
+                                if (event.IsValid()) {
+                                    debug_log("INFO: %s: Valid override event received with timestamp %lld",
+                                              __func__,
+                                              event.m_timestamp);
+
+                                    if (event.m_event_type == EventMessage::USER_UNFORCE) {
+                                        m_state = NORMAL;
+                                    } else if (event.m_event_type == EventMessage::USER_FORCE_IDLE) {
+                                        m_state = FORCED_IDLE;
+                                    } else if (event.m_event_type == EventMessage::USER_FORCE_ACTIVE) {
+                                        m_state = FORCED_ACTIVE;
+                                    }
+
+                                    debug_log("INFO: %s: Current idle detect monitor override time %lld, state %s",
+                                              __func__,
+                                              event.m_timestamp,
+                                              StateToString());
+                                } else {
+                                    error_log("%s: Invalid event data received: %s",
+                                              __func__,
+                                              event_data);
+                                }
+                            } catch (const std::invalid_argument& e) {
+                                error_log("%s: Error parsing timestamp: %s in data %s",
+                                          __func__,
+                                          e.what(),
+                                          event_data);
+                            } catch (const std::out_of_range& e) {
+                                error_log("%s: Timestamp out of range: %s in data %s",
+                                          __func__,
+                                          e.what(),
+                                          event_data);
+                            }
+                        } else if (bytes_read == 0) {
+                            // Pipe closed by writers, sleep a bit to avoid spinning
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        } else if (bytes_read < 0) {
+                            if (errno == EINTR) {
+                                // Interrupted by a signal, this is expected during shutdown
+                                debug_log("INFO: %s: Read interrupted by signal.",
+                                          __func__);
+                                break;
+                            } else {
+                                error_log("%s: Error reading from named pipe: %s",
+                                          __func__,
+                                          strerror(errno));
+                                break;
+                            }
+                        }
+                    }
+                } else if (ret < 0) {
+                    error_log("%s: Error in poll() for pipe read: %s",
+                              __func__,
+                              strerror(errno));
+
+                    g_exit_code = 1;
+                    break;
+                } // ret = 0 means poll timeed out. Allow while loop to iterate.
+            }
+        }
+    }
+
+    if (fd != -1) {
+        close(fd);
+    }
+
+    debug_log("INFO: %s: thread exiting.",
+              __func__);
+
+    // If g_exit_code was set to 1 above then the thread is in abnormal state at exit and the rest of the
+    // application needs to be shutdown.
+    if (g_exit_code == 1) {
+        Shutdown(1);
+    }
+}
+
+bool IdleDetectControlMonitor::IsInitialized() const
+{
+    return m_initialized.load();
+}
+
+
+IdleDetectControlMonitor::State IdleDetectControlMonitor::GetState() const
+{
+    return m_state.load();
+}
+
+std::string IdleDetectControlMonitor::StateToString(const State& status)
+{
+    std::string out;
+
+    switch (status) {
+    case UNKNOWN:
+        out = "UNKNOWN";
+        break;
+    case NORMAL:
+        out = "NORMAL";
+        break;
+    case FORCED_ACTIVE:
+        out = "FORCED_ACTIVE";
+        break;
+    case FORCED_IDLE:
+        out = "FORCED_IDLE";
+        break;
+    }
+
+    return out;
+}
+
+std::string IdleDetectControlMonitor::StateToString() const
+{
+    return StateToString(m_state);
+}
+
 } // namespace IdleDetect
 
 //!
@@ -718,8 +985,9 @@ void HandleSignal(int signum) {
             __func__,
             signum);
         g_shutdown_requested.store(true);
-        // Optional: Notify main thread's condition variable if it were sleeping longer
-        // For a simple polling loop like below, setting the flag is sufficient.
+
+        g_idle_detect_control_monitor.m_interrupt_idle_detect_control_monitor.store(true);
+        g_idle_detect_control_monitor.cv_idle_detect_control_monitor_thread.notify_all();
     } else {
         log("INFO: %s: Received unexpected signal %d.",
             __func__,
@@ -818,7 +1086,7 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    fs::path pipe_path = event_data_path / "event_registration_pipe";
+    fs::path event_registration_pipe_path = event_data_path / "event_registration_pipe";
     fs::path dat_file_path = event_data_path / last_active_time_cpp_filename;
 
     // --- Signal Handling Setup ---
@@ -852,7 +1120,7 @@ int main(int argc, char* argv[])
     debug_log("INFO: %s: Update event_detect: %s, Pipe path: %s",
               __func__,
               should_update_event_detect ? "true" : "false",
-              pipe_path.string());
+              event_registration_pipe_path.string());
     debug_log("INFO: %s: Execute dc control scripts: %s",
               __func__,
               execute_dc_control_scripts ? "true" : "false");
@@ -871,8 +1139,40 @@ int main(int argc, char* argv[])
         std::this_thread::sleep_for(std::chrono::seconds(initial_sleep));
     }
 
+    // --- Start Idle Detect Control Monitor Thread ---
+    log("INFO: %s: Starting Idle Detect Control Monitor thread...", __func__);
+    // Reset interrupt flag *before* starting thread
+    g_idle_detect_control_monitor.m_interrupt_idle_detect_control_monitor.store(false);
+    bool control_monitor_started = false;
+    try {
+        // Launch the thread using the member function pointer and the global instance
+        g_idle_detect_control_monitor.m_idle_detect_control_monitor_thread =
+            std::thread(&IdleDetect::IdleDetectControlMonitor::IdleDetectControlMonitorThread,
+                        std::ref(g_idle_detect_control_monitor));
+        control_monitor_started = true; // Assume success if no exception
+        // Wait a very short time to allow pipe creation/initialization perhaps
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        if (!g_idle_detect_control_monitor.IsInitialized()) {
+            log("WARN: %s: Control monitor thread started but not initialized quickly.", __func__);
+        } else {
+            debug_log("DEBUG: %s: Control monitor thread started and initialized.", __func__);
+        }
+    } catch (const std::system_error& e) {
+        error_log("%s: Failed to start Idle Detect Control Monitor thread: %s. Exiting.", __func__, e.what());
+        // Stop other monitors if started (e.g., Wayland) before exiting
+        // if (wayland_monitor_started) { g_wayland_idle_monitor.Stop(); }
+        return 1;
+    } catch (...) {
+        error_log("%s: Unknown error starting Idle Detect Control Monitor thread. Exiting.", __func__);
+        // if (wayland_monitor_started) { g_wayland_idle_monitor.Stop(); }
+        return 1;
+    }
+
     // --- Main Loop ---
     bool was_previously_idle = false; // Track state changes
+    IdleDetect::IdleDetectControlMonitor::State previous_control_state = IdleDetect::IdleDetectControlMonitor::UNKNOWN;
+
+    //bool send_forced_idle = false;
     int64_t effective_last_active_time_prev = 0;
     int64_t effective_last_active_time = 0;
     bool using_event_detect_as_only_source = false;
@@ -958,6 +1258,20 @@ int main(int argc, char* argv[])
 
         // --- State Calculation & Actions (using effective idle_seconds) ---
         bool is_currently_idle = (idle_seconds >= idle_threshold_seconds);
+        IdleDetect::IdleDetectControlMonitor::State control_state = g_idle_detect_control_monitor.GetState();
+
+        debug_log("INFO: %s: Current control idle_detect control state: %s",
+                  __func__,
+                  g_idle_detect_control_monitor.StateToString());
+
+        // --- Check for forced idle/active state ---
+        if (control_state == IdleDetect::IdleDetectControlMonitor::FORCED_IDLE) {
+            if (!is_currently_idle) debug_log("INFO: %s: Overriding state to IDLE due to control monitor.", __func__);
+            is_currently_idle = true;
+        } else if (control_state == IdleDetect::IdleDetectControlMonitor::FORCED_ACTIVE) {
+            if (is_currently_idle) debug_log("INFO: %s: Overriding state to ACTIVE due to control monitor.", __func__);
+            is_currently_idle = false;
+        }
 
         debug_log("INFO: %s: Effective idle time: %lld seconds. State: %s",
                   __func__,
@@ -990,19 +1304,51 @@ int main(int argc, char* argv[])
             was_previously_idle = is_currently_idle; // Update previous state
         }
 
-        // --- Send Pipe Notification if not currently idle and should update event detect and
+        // Send Pipe Notification if not currently idle and should update event detect and
         // effective last active time has changed. Note if using_event_detect_as_only_source is true, then
         // the pipe message should not be sent as that would be circular and a waste of bandwidth on the
-        // pipe. ---
+        // pipe.
+        //
+        // With the addition of forced overrides, the message to propagate to event_detect must be sent when
+        // a change in override state occurs, regardless of the effective last active time.
         effective_last_active_time = GetUnixEpochTime() - idle_seconds;
 
-        if (!is_currently_idle && should_update_event_detect && using_event_detect_as_only_source == false
-            && (effective_last_active_time != effective_last_active_time_prev)) {
+        if ((!is_currently_idle
+             && should_update_event_detect
+             && using_event_detect_as_only_source == false
+             && (effective_last_active_time != effective_last_active_time_prev))
+            || control_state != previous_control_state) {
             debug_log("INFO: %s: Sending active notification to pipe.", __func__);
 
-            IdleDetect::SendPipeNotification(pipe_path, effective_last_active_time);
+            EventMessage::EventType event_type = EventMessage::USER_ACTIVE;
+
+            if (control_state != previous_control_state) {
+                switch(control_state) {
+                case IdleDetect::IdleDetectControlMonitor::NORMAL:
+                    event_type = EventMessage::USER_UNFORCE;
+                    break;
+                case IdleDetect::IdleDetectControlMonitor::FORCED_IDLE:
+                    event_type = EventMessage::USER_FORCE_IDLE;
+                    break;
+                case IdleDetect::IdleDetectControlMonitor::FORCED_ACTIVE:
+                    event_type = EventMessage::USER_FORCE_ACTIVE;
+                    break;
+                default:
+                    event_type = EventMessage::UNKNOWN;
+                    break;
+                }
+
+                previous_control_state = control_state;
+
+                debug_log("INFO: %s: Sending forced state notification to pipe: %s",
+                          __func__,
+                          IdleDetect::IdleDetectControlMonitor::StateToString(control_state));
+            }
+
+            IdleDetect::SendPipeNotification(event_registration_pipe_path, effective_last_active_time, event_type);
 
             effective_last_active_time_prev = effective_last_active_time;
+
         }
 
         // Sleep for the check interval, but check for shutdown periodically
@@ -1025,6 +1371,22 @@ int main(int argc, char* argv[])
     log("INFO: %s: Shutdown requested. Cleaning up...",
         __func__);
 
-    log("Idle Detect shutdown.");
-    return 0;
+    // --- Shutdown sequence ---
+
+    // --- Stop Idle Detect Control Monitor thread ---
+    if (control_monitor_started && g_idle_detect_control_monitor.m_idle_detect_control_monitor_thread.joinable()) {
+        log("INFO: %s: Stopping Idle Detect Control Monitor thread...", __func__);
+        // Flag should have been set by HandleSignal
+        g_idle_detect_control_monitor.m_interrupt_idle_detect_control_monitor.store(true);
+        g_idle_detect_control_monitor.cv_idle_detect_control_monitor_thread.notify_all();
+        try {
+            g_idle_detect_control_monitor.m_idle_detect_control_monitor_thread.join();
+            log("INFO: %s: Idle Detect Control Monitor thread stopped.", __func__);
+        } catch (const std::system_error& e) {
+            error_log("ERROR: %s: Error joining control monitor thread: %s", __func__, e.what());
+        }
+    }
+
+    log("Idle Detect shutdown complete.");
+    return g_exit_code.load();
 }

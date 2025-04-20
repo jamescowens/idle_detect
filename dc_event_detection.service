@@ -11,22 +11,12 @@ ExecStart=/usr/local/bin/event_detect /etc/event_detect.conf
 
 Restart=on-failure
 RestartSec=5s
-# Optional: Consider StartLimitIntervalSec=, StartLimitBurst= for rate limiting.
 
 RuntimeDirectory=event_detect
 RuntimeDirectoryMode=0755
 
-# Recommendation: Add User= and Group= for security. HIGHLY RECOMMENDED.
-# Create a dedicated system user/group (e.g., 'event-detect') first:
-#   sudo groupadd --system event-detect
-#   sudo useradd --system -g event-detect -d / -s /sbin/nologin event-detect
-# Add the user to groups needed for device access (check exact names on openSUSE):
-#   sudo usermod -aG input event-detect
-#   sudo usermod -aG tty event-detect # Or maybe 'dialout'? Check TTY permissions.
 User=event_detect
 Group=event_detect
-
-# --- Security Hardening Additions ---
 
 # Filesystem Access Control
 ProtectHome=true
