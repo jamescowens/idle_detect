@@ -737,8 +737,11 @@ void IdleDetectControlMonitor::IdleDetectControlMonitorThread()
                 error_log("%s: Error creating named pipe: %s",
                           __func__,
                           strerror(errno));
+                // idle_detect_control_pipe_initialized remains false from initialized value above.
+            } else {
+                // Pipe already exists, so we can proceed.
+                idle_detect_control_pipe_initialized = true;
             }
-            idle_detect_control_pipe_initialized = true;
         } else {
             idle_detect_control_pipe_initialized = true;
         }
