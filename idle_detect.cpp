@@ -1149,6 +1149,7 @@ int main(int argc, char* argv[])
     }
 
     // --- Main Loop ---
+    bool first_check = true;
     bool was_previously_idle = false; // Track state changes
     IdleDetect::IdleDetectControlMonitor::State previous_control_state = IdleDetect::IdleDetectControlMonitor::UNKNOWN;
 
@@ -1259,7 +1260,7 @@ int main(int argc, char* argv[])
                   is_currently_idle ? "Idle" : "Active");
 
         // --- Handle State Change for Commands ---
-        if (is_currently_idle != was_previously_idle) {
+        if (is_currently_idle != was_previously_idle || first_check) {
             if (is_currently_idle) {
                 // Became Idle
                 log("INFO: %s: User became idle (%llds >= %ds).",
@@ -1282,6 +1283,7 @@ int main(int argc, char* argv[])
             }
 
             was_previously_idle = is_currently_idle; // Update previous state
+            first_check = false; // Clear first check flag
         }
 
         // Send Pipe Notification if not currently idle and should update event detect and
