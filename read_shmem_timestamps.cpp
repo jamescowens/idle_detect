@@ -18,18 +18,26 @@
 
 // Include the project's utility header
 #include "util.h"
+#include "release.h"
 
 // Define constants for the shared memory layout
 const char* DEFAULT_SHMEM_NAME = "/idle_detect_shmem";
 const size_t SHMEM_SIZE = sizeof(int64_t[2]); // Size of the array
 
 int main(int argc, char* argv[]) {
+
     // --- Argument Parsing ---
     if (argc < 2 || argc > 3) {
-        log("%s: Usage: %s <shmem_name> [raw|iso|hr]",
+        g_log_timestamps.store(false); // Suppress timestamps for help
+
+        log("read_shmem_timestamps %s\n", g_version);
+
+        log("Usage: %s <shmem_name> [raw|iso|hr]",
                   (argc > 0 ? argv[0] : "read_shmem_timestamps"));
-        log("%s: shmem_name: Name of shared memory segment (e.g., /idle_detect_shmem)");
-        log("%s: format (optional): 'raw' (default), 'iso' or 'hr' for human-readable UTC");
+        log("shmem_name: Name of shared memory segment (e.g., /idle_detect_shmem)");
+        log("format (optional): 'raw' (default), 'iso' or 'hr' for human-readable UTC");
+
+        g_log_timestamps.store(true); // Restore timestamp setting
         return 1;
     }
 

@@ -111,6 +111,7 @@ set(SOURCES_IDLE_DETECT
 
 # Source file for read_shmem_timestamp
 set(SOURCES_READ_SHMEM_TIMESTAMPS
+    "release.h"
     "util.cpp"
     "read_shmem_timestamps.cpp"
 )
