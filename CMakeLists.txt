@@ -173,7 +173,15 @@ target_link_libraries(read_shmem_timestamps PRIVATE rt)
 
 # Installation paths (parameterized)
 set(INSTALL_BIN_DIR "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}" CACHE PATH "Installation directory for binaries")
-set(INSTALL_CONFIG_DIR "/etc" CACHE PATH "Installation directory for configuration files")
+
+if(EXISTS "${SYSCONF_INSTALL_DIR}")
+    set(INSTALL_CONFIG_DIR "${SYSCONF_INSTALL_DIR}" CACHE PATH "Installation directory for configuration files")
+else()
+    # Note this should probably be ${CMAKE_INSTALL_PREFIX}/... but this complicates the config file location logic in the service files and is not necessary. There is nothing wrong
+    # with a local (non-package) install putting a single config file in /etc.
+    set(INSTALL_CONFIG_DIR "/${CMAKE_INSTALL_SYSCONFDIR}" CACHE PATH "Installation directory for configuration files")
+endif()
+
 set(INSTALL_SYSTEM_SERVICE_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/system" CACHE PATH "Installation directory for the system level dc_event_detection service")
 set(INSTALL_USER_SERVICE_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/user" CACHE PATH "Installation directory for the user level dc_idle_detection service")
 set(INSTALL_USER_SERVICE_PRESET_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/user-preset" CACHE PATH "Installation directory for the user level dc_idle_detection service preset to auto enable")
@@ -199,7 +207,6 @@ install(FILES "dc_idle_detection.service" DESTINATION ${INSTALL_USER_SERVICE_DIR
 install(FILES "90-idle-detect.preset" DESTINATION ${INSTALL_USER_SERVICE_PRESET_DIR})
 
 # --- Install Pre-Generated Doxygen Documentation ---
-# Assumes documentation exists in ./docs/ relative to CMakeLists.txt
 
 # Install Man Pages (if the source directory exists)
 set(DOXYGEN_MAN_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/docs/man/man3")
