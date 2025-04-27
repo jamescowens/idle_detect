@@ -22,7 +22,7 @@
  <tr style="height: 56px;">
   <td id="projectalign" style="padding-left: 0.5em;">
    <div id="projectname">idle_detect
-   &#160;<span id="projectnumber">0.8.0.0</span>
+   &#160;<span id="projectnumber">0.8.1.0</span>
    </div>
    <div id="projectbrief">Provides overall idle detection for a linux computer</div>
   </td>
@@ -66,6 +66,12 @@ $(function() {
 &#160;
 
 <h3><a id="index_c"></a>- c -</h3><ul>
+<li>c_idle_notification_listener_ptr
+: <a class="el" href="classIdleDetect_1_1WaylandIdleMonitor.html#ad35f819742d0325618752417c4d7b998">IdleDetect::WaylandIdleMonitor</a>
+</li>
+<li>c_registry_listener_ptr
+: <a class="el" href="classIdleDetect_1_1WaylandIdleMonitor.html#aef661ab7251fdc2d03e8831874cba5d2">IdleDetect::WaylandIdleMonitor</a>
+</li>
 <li>cv_idle_detect_control_monitor_thread
 : <a class="el" href="classIdleDetect_1_1IdleDetectControlMonitor.html#ae632003bcf7b2fb3b53dc4c12bd50af7">IdleDetect::IdleDetectControlMonitor</a>
 </li>
@@ -91,6 +97,9 @@ $(function() {
 <li>m_config_in
 : <a class="el" href="classConfig.html#a81428eaba896a0033f0bcde5623168f2">Config</a>
 </li>
+<li>m_display
+: <a class="el" href="classIdleDetect_1_1WaylandIdleMonitor.html#af406db6aa2fe17e0bb75172e4be23ed4">IdleDetect::WaylandIdleMonitor</a>
+</li>
 <li>m_event_count
 : <a class="el" href="classEventDetect_1_1InputEventRecorders_1_1EventRecorder.html#a638aa037004cb9d79b97f89675714a95">EventDetect::InputEventRecorders::EventRecorder</a>
 </li>
@@ -112,11 +121,15 @@ $(function() {
 <li>m_idle_detect_monitor_thread
 : <a class="el" href="classEventDetect_1_1IdleDetectMonitor.html#a64c5c35a0464fd41d34f8186f73ec61f">EventDetect::IdleDetectMonitor</a>
 </li>
+<li>m_idle_notification
+: <a class="el" href="classIdleDetect_1_1WaylandIdleMonitor.html#ad8e760e2677e87ab186eca902549aab1">IdleDetect::WaylandIdleMonitor</a>
+</li>
 <li>m_initialized
 : <a class="el" href="classEventDetect_1_1IdleDetectMonitor.html#a9247d67e3ace050925e119bfbb45dcc5">EventDetect::IdleDetectMonitor</a>
 , <a class="el" href="classEventDetect_1_1Monitor.html#a875d2d618888fb23ad1cc4000f5ad320">EventDetect::Monitor</a>
 , <a class="el" href="classEventDetect_1_1TtyMonitor.html#a908ced0aaf053b25b2633e5cbe3f8ad7">EventDetect::TtyMonitor</a>
 , <a class="el" href="classIdleDetect_1_1IdleDetectControlMonitor.html#aa7364d2027f9894caab9d344ae930a12">IdleDetect::IdleDetectControlMonitor</a>
+, <a class="el" href="classIdleDetect_1_1WaylandIdleMonitor.html#a3729bbca0f650ca9badc2d9189c420c3">IdleDetect::WaylandIdleMonitor</a>
 </li>
 <li>m_interrupt_idle_detect_control_monitor
 : <a class="el" href="classIdleDetect_1_1IdleDetectControlMonitor.html#a3310546c2a000ab2f20b9211e33d255b">IdleDetect::IdleDetectControlMonitor</a>
@@ -126,6 +139,10 @@ $(function() {
 </li>
 <li>m_interrupt_monitor
 : <a class="el" href="classEventDetect_1_1Monitor.html#af9810df66ec16b2109994540b298024b">EventDetect::Monitor</a>
+, <a class="el" href="classIdleDetect_1_1WaylandIdleMonitor.html#a924a531011b8a25726ecd4e8879762c4">IdleDetect::WaylandIdleMonitor</a>
+</li>
+<li>m_interrupt_pipe_fd
+: <a class="el" href="classIdleDetect_1_1WaylandIdleMonitor.html#afe5fefee0154211f416a2e0ff125ca47">IdleDetect::WaylandIdleMonitor</a>
 </li>
 <li>m_interrupt_recorders
 : <a class="el" href="classEventDetect_1_1InputEventRecorders.html#ad6423bc9846cbd1bbfbda477d65ea76e">EventDetect::InputEventRecorders</a>
@@ -144,6 +161,10 @@ $(function() {
 </li>
 <li>m_monitor_thread
 : <a class="el" href="classEventDetect_1_1Monitor.html#aa132ddeed9eb332078dc32bfa3dd3f6d">EventDetect::Monitor</a>
+, <a class="el" href="classIdleDetect_1_1WaylandIdleMonitor.html#aba56bafa172e03a21e8fb8195c2d9f96">IdleDetect::WaylandIdleMonitor</a>
+</li>
+<li>m_notification_timeout_ms
+: <a class="el" href="classIdleDetect_1_1WaylandIdleMonitor.html#a471680752f08f0f61f8cb83d9c6fd404">IdleDetect::WaylandIdleMonitor</a>
 </li>
 <li>m_state
 : <a class="el" href="classEventDetect_1_1IdleDetectMonitor.html#ae4ede844ecda97f5f6acd91a6dcc81f7">EventDetect::IdleDetectMonitor</a>

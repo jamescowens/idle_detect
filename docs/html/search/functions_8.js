@@ -1,7 +1,7 @@
 var searchData=
 [
-  ['tostring',['ToString',['../classEventMessage.html#ae13342857432d5274f4d86ecc87cb613',1,'EventMessage']]],
-  ['tty',['Tty',['../classEventDetect_1_1TtyMonitor_1_1Tty.html#a178d55091f19e95e818db82979748a00',1,'EventDetect::TtyMonitor::Tty']]],
-  ['ttymonitor',['TtyMonitor',['../classEventDetect_1_1TtyMonitor.html#acb5eb49281a95f16f0b0dca502fa7625',1,'EventDetect::TtyMonitor']]],
-  ['ttymonitorthread',['TtyMonitorThread',['../classEventDetect_1_1TtyMonitor.html#a4960b659ae1e97aaab6581964e014703',1,'EventDetect::TtyMonitor']]]
+  ['sharedmemorytimestampexporter',['SharedMemoryTimestampExporter',['../classEventDetect_1_1SharedMemoryTimestampExporter.html#a29afd93305dd7dfb30b9448ba9e45cd1',1,'EventDetect::SharedMemoryTimestampExporter']]],
+  ['start',['Start',['../classIdleDetect_1_1WaylandIdleMonitor.html#a98215308462579369a7f422df4fa70c3',1,'IdleDetect::WaylandIdleMonitor']]],
+  ['statetostring',['StateToString',['../classEventDetect_1_1IdleDetectMonitor.html#a60029f382d471e20c530cf5f61d2f71c',1,'EventDetect::IdleDetectMonitor::StateToString(const State &amp;state)'],['../classEventDetect_1_1IdleDetectMonitor.html#a0bad0433a375a2fa4d0a0e8c088a9922',1,'EventDetect::IdleDetectMonitor::StateToString() const'],['../classIdleDetect_1_1IdleDetectControlMonitor.html#ad30aef3f420ea56b8ed596df37162c6b',1,'IdleDetect::IdleDetectControlMonitor::StateToString(const State &amp;state)'],['../classIdleDetect_1_1IdleDetectControlMonitor.html#a01e93b5bc4484c7d48283f86e040813f',1,'IdleDetect::IdleDetectControlMonitor::StateToString() const']]],
+  ['stop',['Stop',['../classIdleDetect_1_1WaylandIdleMonitor.html#a49a42dbf59a712b80d36afd2b8b54883',1,'IdleDetect::WaylandIdleMonitor']]]
 ];

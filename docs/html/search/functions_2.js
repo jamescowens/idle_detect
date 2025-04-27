@@ -6,6 +6,7 @@ var searchData=
   ['geteventdevicepath',['GetEventDevicePath',['../classEventDetect_1_1InputEventRecorders_1_1EventRecorder.html#a70c83db169bbe5172bb170ac5b22b70b',1,'EventDetect::InputEventRecorders::EventRecorder']]],
   ['geteventdevices',['GetEventDevices',['../classEventDetect_1_1Monitor.html#ae8da256174cfe6eab25421dc1d2673d7',1,'EventDetect::Monitor']]],
   ['geteventrecorders',['GetEventRecorders',['../classEventDetect_1_1InputEventRecorders.html#a33322b5f96196ac7cad264428d04aeda',1,'EventDetect::InputEventRecorders']]],
+  ['getidleseconds',['GetIdleSeconds',['../classIdleDetect_1_1WaylandIdleMonitor.html#aa045e81c775dee20b8af205972b57709',1,'IdleDetect::WaylandIdleMonitor']]],
   ['getlastactivetime',['GetLastActiveTime',['../classEventDetect_1_1Monitor.html#a8abba216129439752a569239173fea87',1,'EventDetect::Monitor']]],
   ['getlastidledetectactivetime',['GetLastIdleDetectActiveTime',['../classEventDetect_1_1IdleDetectMonitor.html#acc4bec04aa1e47e5e7e7fae87cdf2b76',1,'EventDetect::IdleDetectMonitor']]],
   ['getlastttyactivetime',['GetLastTtyActiveTime',['../classEventDetect_1_1TtyMonitor.html#aae27c11393b72229dc03cc4b29f15b80',1,'EventDetect::TtyMonitor']]],
