@@ -12,6 +12,13 @@
 #include <thread>
 #include <util.h>
 
+// Forward declare Wayland types
+struct wl_display;
+struct wl_registry;
+struct wl_seat;
+struct ext_idle_notifier_v1;
+struct ext_idle_notification_v1;
+
 namespace IdleDetect {
 // Function to get the user's idle time in seconds
 int64_t GetIdleTimeSeconds();
@@ -106,6 +113,104 @@ private:
     //!
     std::atomic<bool> m_initialized;
 };
+
+//!
+//! \brief The WaylandIdleMonitor class implements the ext_idle_notifier_v1 protocol to monitor idle state in Wayland.
+//! The intent is to properly handle idle detection in Wayland sessions other than KDE or GNOME. This class is a singleton and has
+//! one instantiated thread. It is used to monitor the idle state of the Wayland session.
+//!
+class WaylandIdleMonitor
+{
+public:
+    //! \brief Constructor
+    WaylandIdleMonitor();
+
+    //! \brief Destructor
+    ~WaylandIdleMonitor();
+
+    //! \brief Deleted copy and move constructors and assignment operators to prevent copying.
+    WaylandIdleMonitor(const WaylandIdleMonitor&) = delete;
+    WaylandIdleMonitor& operator=(const WaylandIdleMonitor&) = delete;
+    WaylandIdleMonitor(WaylandIdleMonitor&&) = delete;
+    WaylandIdleMonitor& operator=(WaylandIdleMonitor&&) = delete;
+
+    //! \brief Initializes the Wayland display and registry, and starts the idle notifier.
+    bool Start(int notification_timeout_ms);
+
+    //! \brief Stops the Wayland idle monitor and cleans up resources.
+    void Stop();
+
+    //! \brief Checks if the Wayland idle monitor is available.
+    bool IsAvailable() const;
+
+    //! \brief Provides the number of seconds the session has been idle via the ext_idle_notifier_v1 protocol.
+    int64_t GetIdleSeconds() const;
+
+    //! \brief Checks if the Wayland session is idle.
+    bool IsIdle() const;
+
+public: // Accessible to static C callbacks
+    wl_seat* m_seat;
+    ext_idle_notifier_v1* m_idle_notifier;
+    uint32_t m_seat_id;
+    uint32_t m_idle_notifier_id;
+    std::atomic<bool> m_is_idle;
+    std::atomic<int64_t> m_idle_start_time;
+
+private:
+    //! \brief The WaylandIdleMonitor thread that monitors the Wayland session for idle state changes.
+    std::thread m_monitor_thread;
+
+    //! \brief Mutex for thread synchronization
+    std::atomic<bool> m_interrupt_monitor;
+
+    //! \brief Pipe for thread interrupt handling
+    int m_interrupt_pipe_fd[2];
+
+    //! \brief Flag to indicate whether the monitor has been initialized.
+    std::atomic<bool> m_initialized;
+
+    //! \brief Wayland display and registry objects
+    wl_display* m_display;
+    wl_registry* m_registry;
+
+    //! \brief Idle notification object
+    ext_idle_notification_v1* m_idle_notification;
+
+    //! \brief Timeout for idle notification in milliseconds
+    int m_notification_timeout_ms;
+
+    //! \brief Private method to initialize Wayland and set up the idle notification.
+    bool InitializeWayland();
+
+    //! \brief Private method to clean up Wayland resources.
+    void CleanupWayland();
+
+    //! \brief Private method to create the idle notification object.
+    void CreateIdleNotification();
+
+    //! \brief Private method to run the Wayland event loop in a separate thread.
+    void WaylandMonitorThread();
+
+    //! \brief Private method to handle global events.
+    static void HandleGlobal(void *data, wl_registry *registry, uint32_t name, const char *interface, uint32_t version);
+
+    //! \brief Private method to handle global removal events.
+    static void HandleGlobalRemove(void *data, wl_registry *registry, uint32_t name);
+
+    //! \brief Private method to handle idle notification events.
+    static void HandleIdled(void *data, ext_idle_notification_v1 *notification);
+
+    //! \brief Private method to handle resumed events.
+    static void HandleResumed(void *data, ext_idle_notification_v1 *notification);
+
+    //! \brief Pointer to the registry listener struct for C linkage.
+    static const void* c_registry_listener_ptr;
+
+    //! \brief Pointer to the idle notification listener struct for C linkage.
+    static const void* c_idle_notification_listener_ptr;
+};
+
 } // namespace IdleDetect
 
 //!

@@ -45,7 +45,9 @@ jobs:
           libevdev-dev \
           libxss-dev \
           libdbus-1-dev \
-          libglib2.0-dev
+          libglib2.0-dev \
+          libwayland-dev \
+          wayland-protocols
         echo "--- Verifying Compiler Setup ---"
         echo "Selected C Compiler for CMake: ${{ matrix.c_compiler }}"
         echo "Selected C++ Compiler for CMake: ${{ matrix.cpp_compiler }}"
