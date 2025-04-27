@@ -20,7 +20,8 @@
 #include <system_error>// For std::error_code
 #include <csignal>     // For signal handling (sigaction etc)
 #include <variant>     // For std::get
-#include <cerrno>       // For errno
+#include <cerrno>      // For errno
+#include <future>      // For std::async in Stop() timeout
 
 // Platform Specific Libs
 #include <X11/Xlib.h>
@@ -32,6 +33,8 @@
 #include <sys/wait.h>  // Usually included by others
 #include <poll.h>      // For poll()
 #include <fcntl.h>     // For O_NONBLOCK, O_CLOEXEC
+#include <wayland-client.h>
+#include "ext-idle-notify-v1-protocol.h" // Generated header
 
 // D-Bus Libs (if needed for fallback)
 #include <gio/gio.h>
@@ -43,6 +46,9 @@ IdleDetectConfig g_config;
 //! Global idle_detect event monitor singleton for state overrides
 IdleDetect::IdleDetectControlMonitor g_idle_detect_control_monitor;
 
+//! Global idle_detect event monitor singleton for Wayland idle detection for non-KDE, non-GNOME sessions
+IdleDetect::WaylandIdleMonitor g_wayland_idle_monitor;
+
 //! Global flag for signal handling
 std::atomic<bool> g_shutdown_requested = false;
 
@@ -50,7 +56,7 @@ std::atomic<bool> g_shutdown_requested = false;
 std::atomic<int> g_exit_code;
 
 const int MAX_X_CONNECT_RETRIES = 6;  // e.g., 6 attempts
-const int X_RETRY_DELAY_MS = 500;   // e.g., 500ms between attempts (~3 sec total)
+const int X_RETRY_DELAY_MS = 500;     // e.g., 500ms between attempts (~3 sec total)
 
 //! \brief Function to safely get XDG_RUNTIME_DIR environment variable.
 std::optional<std::string> GetXdgRuntimeDir() {
@@ -654,13 +660,30 @@ int64_t GetIdleTimeSeconds() {
     } else if (IsWaylandSession()) { // Non-KDE Wayland (Try GNOME D-Bus for both idle time and inhibition)
         debug_log("INFO: %s: Non-KDE Wayland session. Checking GNOME D-Bus idle time and inhibition.", __func__);
 
-        if (CheckGnomeInhibition()) { // Check inhibition first - this returns false if call fails.
+        // 1. Try GNOME D-Bus inhibition check first
+        if (CheckGnomeInhibition()) { // This returns false if call fails.
             debug_log("INFO: %s: GNOME session is inhibited (Wayland), returning 0 idle seconds.", __func__);
 
             return 0; // Treat as active if inhibited
         } else {
-            // Not inhibited, get input idle time from Mutter
-            return GetIdleTimeWaylandGnomeViaDBus(); // Returns >= 0 on success, -1 on error
+            // 2. Not inhibited (or check failed), try GNOME Mutter D-Bus for idle time
+            debug_log("INFO: %s: No GNOME inhibition detected. Querying Mutter D-Bus idle time...", __func__);
+            int64_t gnome_input_idle = GetIdleTimeWaylandGnomeViaDBus(); // Returns >= 0 or -1
+            if (gnome_input_idle >= 0) {
+                // Successfully got input idle time from Mutter
+                debug_log("INFO: %s: Using GNOME D-Bus for idle time.", __func__);
+                return gnome_input_idle;
+            } else {
+                // 3. Mutter D-Bus failed (maybe not Gnome?), try standard Wayland protocol as last resort
+                debug_log("INFO: %s: GNOME D-Bus failed. Trying WaylandIdleMonitor (ext-idle-notify-v1)...", __func__);
+                if (g_wayland_idle_monitor.IsAvailable()) { // Check if Wayland monitor started successfully
+                    debug_log("INFO: %s: Using WaylandIdleMonitor as final Wayland fallback.", __func__);
+                    return g_wayland_idle_monitor.GetIdleSeconds(); // Get state from monitor thread
+                } else {
+                    error_log("ERROR: %s: No working idle detection method found for this Wayland session.", __func__);
+                    return -1; // Signal failure
+                }
+            }
         }
     } else {
         // Non-KDE X11 session
@@ -962,6 +985,491 @@ std::string IdleDetectControlMonitor::StateToString() const
     return StateToString(m_state);
 }
 
+// Forward declare the actual static listener structs (C-style linkage needed)
+extern "C" {
+extern const struct wl_registry_listener g_registry_listener;
+extern const struct ext_idle_notification_v1_listener g_idle_notification_listener;
+}
+
+// Initialize static pointers defined in the header
+const void* WaylandIdleMonitor::c_registry_listener_ptr = &g_registry_listener;
+const void* WaylandIdleMonitor::c_idle_notification_listener_ptr = &g_idle_notification_listener;
+
+// Constructor
+WaylandIdleMonitor::WaylandIdleMonitor() :
+    m_seat(nullptr),
+    m_idle_notifier(nullptr),
+    m_seat_id(0),
+    m_idle_notifier_id(0),
+    m_is_idle(false), // Start assuming active
+    m_idle_start_time(0),
+    m_interrupt_monitor(false),
+    m_initialized(false),
+    m_display(nullptr),
+    m_registry(nullptr),
+    m_idle_notification(nullptr),
+    m_notification_timeout_ms(0)
+{
+    m_interrupt_pipe_fd[0] = -1; // read end
+    m_interrupt_pipe_fd[1] = -1; // write end
+}
+
+// Destructor
+WaylandIdleMonitor::~WaylandIdleMonitor() {
+    Stop(); // Ensure resources are cleaned up
+}
+
+// Start method
+bool WaylandIdleMonitor::Start(int notification_timeout_ms) {
+    log("INFO: %s: Starting Wayland idle monitor.", __func__); // Use log for start/stop
+    if (m_initialized.load()) {
+        debug_log("INFO: %s: Monitor already initialized.", __func__);
+        return true; // Already running
+    }
+
+    m_notification_timeout_ms = notification_timeout_ms;
+
+    // Create pipe for interrupting poll() before initializing Wayland
+    // pipe2 is Linux-specific, use pipe() for broader POSIX if needed
+    if (pipe2(m_interrupt_pipe_fd, O_CLOEXEC | O_NONBLOCK) == -1) {
+        error_log("%s: Failed to create interrupt pipe: %s (%d)", __func__, strerror(errno), errno);
+        return false;
+    }
+
+    // Reset state flags
+    m_interrupt_monitor.store(false);
+    m_is_idle.store(false);
+    m_idle_start_time.store(0);
+
+    // Initialize Wayland connection, get initial state, and subscribe
+    // Includes retries internally now
+    if (!InitializeWayland()) {
+        error_log("%s: Failed to initialize Wayland or find required protocols after retries.", __func__);
+        CleanupWayland(); // Clean up pipe FDs and any partial Wayland state
+        m_initialized.store(false);
+        return false;
+    }
+
+    // Check again after InitializeWayland succeeded
+    if (!m_seat || !m_idle_notifier) {
+        error_log("%s: Required Wayland interfaces not bound even after InitializeWayland success (logic error?).", __func__);
+        CleanupWayland();
+        m_initialized.store(false);
+        return false;
+    }
+
+    // Create the specific idle notification request object
+    CreateIdleNotification();
+    if (!m_idle_notification) {
+        error_log("%s: Failed to create Wayland idle notification object.", __func__);
+        CleanupWayland();
+        m_initialized.store(false);
+        return false;
+    }
+
+    // If Wayland setup okay, start the thread to run the event loop
+    try {
+        m_monitor_thread = std::thread(&WaylandIdleMonitor::WaylandMonitorThread, this);
+    } catch (const std::system_error& e) {
+        error_log("%s: Failed to start Wayland monitor thread: %s", __func__, e.what());
+        CleanupWayland(); // Clean up Wayland resources if thread fails to start
+        m_initialized.store(false);
+        return false;
+    } catch (...) {
+        error_log("%s: Unknown error starting Wayland monitor thread.", __func__);
+        CleanupWayland();
+        m_initialized.store(false);
+        return false;
+    }
+
+    m_initialized.store(true); // Set initialized only after thread starts successfully
+    log("INFO: %s: Wayland idle monitor started successfully.", __func__);
+    return true;
+}
+
+// Stop method
+void WaylandIdleMonitor::Stop() {
+    log("INFO: %s: Stopping Wayland idle monitor...", __func__);
+
+    // Use exchange to prevent concurrent Stop calls and get previous state
+    if (m_interrupt_monitor.exchange(true)) {
+        debug_log("INFO: %s: Stop already in progress or completed.", __func__);
+        // Join attempt with timeout in case thread is stuck
+        if(m_monitor_thread.joinable() && m_monitor_thread.get_id() != std::this_thread::get_id()) {
+            auto future = std::async(std::launch::async, &std::thread::join, &m_monitor_thread);
+            if (future.wait_for(std::chrono::seconds(1)) == std::future_status::timeout) {
+                error_log("%s: Timed out waiting for Wayland thread join during concurrent stop.", __func__);
+            }
+        }
+        return;
+    }
+
+    // Signal the monitor thread to wake up from poll() by writing to the pipe
+    if (m_interrupt_pipe_fd[1] != -1) {
+        char buf = 'X'; // Data doesn't matter, just the event causing poll to wake
+        ssize_t written = write(m_interrupt_pipe_fd[1], &buf, 1);
+        if (written <= 0 && errno != EAGAIN) {
+            error_log("%s: Failed to write to interrupt pipe: %s (%d)", __func__, strerror(errno), errno);
+        } else {
+            debug_log("INFO: %s: Sent interrupt signal via pipe.", __func__);
+        }
+    } else {
+        error_log("WARN: %s: Interrupt pipe write fd invalid during Stop().", __func__);
+    }
+
+    // Join the thread (wait for it to finish)
+    if (m_monitor_thread.joinable() && m_monitor_thread.get_id() != std::this_thread::get_id()) {
+        debug_log("INFO: %s: Joining Wayland monitor thread...", __func__);
+        try {
+            m_monitor_thread.join();
+            debug_log("INFO: %s: Wayland monitor thread joined.", __func__);
+        } catch (const std::system_error& e) {
+            error_log("%s: Error joining Wayland monitor thread: %s", __func__, e.what());
+        }
+    } else if (m_monitor_thread.get_id() == std::this_thread::get_id()) {
+        error_log("WARN: %s: Stop() called from within the Wayland monitor thread!", __func__);
+    }
+
+    // Clean up Wayland resources *after* thread has stopped using them
+    CleanupWayland();
+
+    m_initialized.store(false); // Mark as no longer initialized
+    log("INFO: %s: Wayland idle monitor stopped.", __func__);
+}
+
+// InitializeWayland (with simplified retry logic focusing on connect and roundtrip check)
+bool WaylandIdleMonitor::InitializeWayland() {
+    const int MAX_INIT_RETRIES = 15; // Example retries
+    const int INIT_RETRY_DELAY_SECONDS = 2; // Example delay
+
+    for (int attempt = 1; attempt <= MAX_INIT_RETRIES; ++attempt) {
+        debug_log("INFO: %s: Wayland initialization attempt %d/%d...", __func__, attempt, MAX_INIT_RETRIES);
+
+        // Reset pointers for this attempt
+        CleanupWayland(); // Ensure clean slate before connection attempt
+
+        m_display = wl_display_connect(nullptr);
+        if (!m_display) {
+            error_log("%s: Failed to connect to Wayland display (attempt %d).", __func__, attempt);
+            // Go directly to sleep and retry
+        } else {
+            m_registry = wl_display_get_registry(m_display);
+            if (!m_registry) {
+                error_log("%s: Failed to get Wayland registry (attempt %d).", __func__, attempt);
+                wl_display_disconnect(m_display); m_display = nullptr;
+                // Go to sleep and retry
+            } else {
+                // Reset potential stale globals found from previous failed attempts
+                m_seat = nullptr; m_idle_notifier = nullptr;
+                m_seat_id = 0; m_idle_notifier_id = 0;
+
+                wl_registry_add_listener(m_registry, (const wl_registry_listener*)c_registry_listener_ptr, this);
+
+                // Perform roundtrips to get globals advertised
+                if (wl_display_roundtrip(m_display) != -1 && wl_display_roundtrip(m_display) != -1) {
+                    // Check if required globals were actually found and bound by the listener
+                    if (m_seat != nullptr && m_idle_notifier != nullptr) {
+                        debug_log("INFO: %s: Wayland connection and required globals found on attempt %d.", __func__, attempt);
+                        // Success! Don't cleanup, just return true.
+                        // Note: Registry listener remains attached.
+                        return true;
+                    } else {
+                        // Roundtrip succeeded but didn't get the needed globals yet
+                        error_log("%s: Wayland roundtrip ok, but required globals (wl_seat/ext_idle_notifier_v1) "
+                                  "not found (attempt %d).",
+                                  __func__,
+                                  attempt);
+                        // Clean up this attempt's resources before retrying
+                        wl_registry_destroy(m_registry); m_registry = nullptr;
+                        wl_display_disconnect(m_display); m_display = nullptr;
+                        // Go to sleep and retry
+                    }
+                } else {
+                    error_log("%s: Wayland display roundtrip failed (attempt %d).", __func__, attempt);
+                    // Clean up this attempt's resources
+                    if (m_registry) { wl_registry_destroy(m_registry); m_registry = nullptr; }
+                    wl_display_disconnect(m_display); m_display = nullptr;
+                    // Go to sleep and retry
+                }
+            } // end registry check
+        } // end display check
+
+        // --- Wait before retrying if not the last attempt ---
+        if (attempt < MAX_INIT_RETRIES) {
+            debug_log("INFO: %s: Waiting %d seconds before next Wayland init attempt...", __func__, INIT_RETRY_DELAY_SECONDS);
+            // Check for shutdown request to avoid waiting unnecessarily
+            for (int i = 0; i < INIT_RETRY_DELAY_SECONDS * 10; ++i) { // Check every 100ms
+                if (g_shutdown_requested.load()) {
+                    error_log("%s: Shutdown requested during Wayland init retry wait.", __func__);
+                    return false; // Abort initialization on shutdown request
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            }
+        }
+    } // end retry loop
+
+    error_log("%s: Failed to initialize Wayland after %d attempts.", __func__, MAX_INIT_RETRIES);
+    CleanupWayland(); // Final cleanup after all attempts fail
+    return false;
+}
+
+void WaylandIdleMonitor::CleanupWayland() {
+    // Only log if resources might actually exist
+    if (m_display || m_registry || m_seat || m_idle_notifier || m_idle_notification || m_interrupt_pipe_fd[0] != -1) {
+        debug_log("INFO: %s: Cleaning up Wayland resources.", __func__);
+    } else {
+        // Nothing to clean
+        return;
+    }
+
+    // Destroy specific notification first
+    if (m_idle_notification) {
+        ext_idle_notification_v1_destroy(m_idle_notification);
+        m_idle_notification = nullptr;
+    }
+    // Destroy/release globals
+    if (m_idle_notifier) { m_idle_notifier = nullptr; } // Global, no destroy in spec
+    if (m_seat) {
+        // Check version before calling release (available since v5)
+        if (wl_proxy_get_version((struct wl_proxy *)m_seat) >= WL_SEAT_RELEASE_SINCE_VERSION) {
+            wl_seat_release(m_seat);
+        }
+        // Even without release, we destroy the proxy reference below implicitly or explicitly?
+        // Wayland client library usually handles proxy destruction when display is disconnected/destroyed.
+        // Setting pointer to null is sufficient here.
+        m_seat = nullptr;
+    }
+    // Destroy registry
+    if (m_registry) { wl_registry_destroy(m_registry); m_registry = nullptr; }
+    // Disconnect display
+    if (m_display) {
+        wl_display_flush(m_display); // Flush remaining requests if possible
+        wl_display_disconnect(m_display);
+        m_display = nullptr;
+    }
+    // Close interrupt pipe FDs
+    if (m_interrupt_pipe_fd[0] != -1) { close(m_interrupt_pipe_fd[0]); m_interrupt_pipe_fd[0] = -1; }
+    if (m_interrupt_pipe_fd[1] != -1) { close(m_interrupt_pipe_fd[1]); m_interrupt_pipe_fd[1] = -1; }
+
+    // m_is_initialized is set in Stop() AFTER cleanup is done.
+}
+
+// CreateIdleNotification
+void WaylandIdleMonitor::CreateIdleNotification() {
+    if (!m_idle_notifier || !m_seat || m_idle_notification) {
+        debug_log("INFO: %s: Cannot create idle notification (missing deps or already exists).", __func__);
+        return;
+    }
+    m_idle_notification = ext_idle_notifier_v1_get_idle_notification(
+        m_idle_notifier, m_notification_timeout_ms, m_seat);
+
+    if (!m_idle_notification) {
+        error_log("%s: ext_idle_notifier_v1_get_idle_notification failed.", __func__);
+        return;
+    }
+    ext_idle_notification_v1_add_listener(m_idle_notification,
+                                          (const ext_idle_notification_v1_listener*)c_idle_notification_listener_ptr,
+                                          this);
+    // Reset state when creating notification
+    m_is_idle.store(false);
+    m_idle_start_time.store(0);
+
+    if (wl_display_flush(m_display) == -1) {
+        error_log("%s: wl_display_flush failed after adding notification listener.", __func__);
+    }
+    debug_log("INFO: %s: Created idle notification object (timeout %d ms).", __func__, m_notification_timeout_ms);
+}
+
+// WaylandMonitorThread (using poll)
+void WaylandIdleMonitor::WaylandMonitorThread() {
+    debug_log("INFO: %s: Wayland monitor thread started.", __func__);
+
+    if (!m_display || m_interrupt_pipe_fd[0] == -1) {
+        error_log("CRITICAL: %s: Wayland display or interrupt pipe not ready. Exiting thread.", __func__);
+        m_initialized.store(false); // Mark as failed
+        return;
+    }
+
+    struct pollfd fds[2];
+    fds[0].fd = wl_display_get_fd(m_display);
+    fds[0].events = POLLIN | POLLERR | POLLHUP;
+    fds[1].fd = m_interrupt_pipe_fd[0]; // Interrupt pipe read end
+    fds[1].events = POLLIN | POLLERR | POLLHUP;
+
+    int poll_ret;
+
+    while (!m_interrupt_monitor.load(std::memory_order_relaxed)) {
+        // Prepare read BEFORE blocking in poll
+        while (wl_display_prepare_read(m_display) != 0) {
+            // Dispatch pending events that arrived before prepare_read locked the queue
+            if (wl_display_dispatch_pending(m_display) == -1) {
+                error_log("%s: wl_display_dispatch_pending() failed in prepare loop. Exiting thread.", __func__);
+                goto thread_exit; // Use goto for central exit point? Or just return?
+            }
+        }
+
+        // Flush requests to ensure server gets listener setups etc. before we block
+        if (wl_display_flush(m_display) == -1 && errno != EAGAIN) {
+            error_log("%s: wl_display_flush() failed: %s (%d). Exiting thread.", __func__, strerror(errno), errno);
+            wl_display_cancel_read(m_display);
+            goto thread_exit;
+        }
+
+        // Block in poll() until Wayland FD has events OR interrupt pipe is written/closed
+        poll_ret = poll(fds, 2, -1); // No timeout
+
+        if (poll_ret < 0) {
+            if (errno == EINTR) { continue; } // Interrupted by unrelated signal
+            error_log("%s: poll() failed: %s (%d). Exiting thread.", __func__, strerror(errno), errno);
+            wl_display_cancel_read(m_display); // Need to cancel before error exit? Yes.
+            goto thread_exit;
+        }
+
+        // Check for interrupt first
+        if (fds[1].revents & (POLLIN | POLLERR | POLLHUP)) {
+            debug_log("INFO: %s: Interrupt or pipe error detected.", __func__);
+            if (fds[1].revents & POLLIN) { // Drain pipe if readable
+                char buf[8]; [[maybe_unused]] ssize_t drain = read(m_interrupt_pipe_fd[0], buf, sizeof(buf));
+            }
+            wl_display_cancel_read(m_display); // Cancel Wayland read preparation
+            break; // Exit loop on interrupt
+        }
+
+        // Check for Wayland events or errors on Wayland FD
+        if (fds[0].revents & (POLLERR | POLLHUP)) {
+            error_log("%s: Error/Hangup on Wayland display FD. Exiting thread.", __func__);
+            // Don't need to cancel read if FD is likely dead
+            goto thread_exit;
+        }
+
+        // If we woke up for Wayland FD, read events
+        if (fds[0].revents & POLLIN) {
+            if (wl_display_read_events(m_display) == -1) {
+                error_log("%s: wl_display_read_events() failed. Exiting thread.", __func__);
+                goto thread_exit;
+            }
+            // Dispatch the read events which trigger callbacks
+            if (wl_display_dispatch_pending(m_display) == -1) {
+                error_log("%s: wl_display_dispatch_pending() failed after read. Exiting thread.", __func__);
+                goto thread_exit;
+            }
+        } else {
+            // Woke up but not for Wayland FD (shouldn't happen with poll=-1 unless interrupted)
+            wl_display_cancel_read(m_display);
+        }
+
+        // Re-check interrupt flag after dispatching events
+        if (m_interrupt_monitor.load(std::memory_order_relaxed)) {
+            debug_log("INFO: %s: Interrupt detected after event dispatch.", __func__);
+            break;
+        }
+    } // end while
+
+thread_exit:
+    debug_log("INFO: %s: Wayland monitor thread exiting.", __func__);
+    // Cleanup of Wayland resources happens in Stop() or ~WaylandIdleMonitor()
+    // which is called after this thread is joined.
+}
+
+// IsAvailable getter
+bool WaylandIdleMonitor::IsAvailable() const {
+    return m_initialized.load();
+}
+
+// IsIdle getter
+bool WaylandIdleMonitor::IsIdle() const {
+    return m_is_idle.load(std::memory_order_relaxed);
+}
+
+// GetIdleSeconds getter
+int64_t WaylandIdleMonitor::GetIdleSeconds() const {
+    if (!m_initialized.load()) {
+        return -1; // Indicate not available rather than 0 (active)
+    }
+    if (m_is_idle.load(std::memory_order_relaxed)) {
+        int64_t start_time = m_idle_start_time.load(std::memory_order_relaxed);
+        int64_t current_time = GetUnixEpochTime(); // Assumed thread-safe
+        return (current_time > start_time) ? (current_time - start_time) : 0;
+    } else {
+        return 0; // Active
+    }
+}
+
+// --- Static Listener Implementations (C-linkage required) ---
+extern "C" {
+
+void WaylandIdleMonitor_HandleGlobal(void *data, wl_registry *registry, uint32_t name,
+                                     const char *interface, uint32_t version)
+{
+    WaylandIdleMonitor *monitor = static_cast<WaylandIdleMonitor*>(data);
+    debug_log("INFO: %s: Global: %s v%u (name %u)", __func__, interface, version, name);
+
+    if (strcmp(interface, wl_seat_interface.name) == 0) {
+        monitor->m_seat_id = name;
+        monitor->m_seat = static_cast<wl_seat*>(
+            wl_registry_bind(registry, name, &wl_seat_interface, std::min(version, 5u)) // Request v5 for release
+            );
+        debug_log("INFO: %s: Bound wl_seat (name %u) version %u.", __func__, name, wl_proxy_get_version((wl_proxy*)monitor->m_seat));
+    } else if (strcmp(interface, ext_idle_notifier_v1_interface.name) == 0) {
+        monitor->m_idle_notifier_id = name;
+        monitor->m_idle_notifier = static_cast<ext_idle_notifier_v1*>(
+            wl_registry_bind(registry, name, &ext_idle_notifier_v1_interface, std::min(version, 1u)) // Request v1 or v2? Start with 1.
+            );
+        debug_log("INFO: %s: Bound %s (name %u) version %u.",
+                  __func__,
+                  ext_idle_notifier_v1_interface.name,
+                  name,
+                  wl_proxy_get_version((wl_proxy*)monitor->m_idle_notifier));
+    }
+}
+
+void WaylandIdleMonitor_HandleGlobalRemove(void *data, wl_registry * /* registry */, uint32_t name)
+{
+    WaylandIdleMonitor *monitor = static_cast<WaylandIdleMonitor*>(data);
+    debug_log("INFO: %s: Wayland global removed: %u", __func__, name);
+    if (name == monitor->m_seat_id) {
+        error_log("WARN: %s: Monitored wl_seat (name %u) was removed!", __func__, name);
+        monitor->m_seat = nullptr; // Mark as gone, maybe trigger re-init?
+        monitor->m_seat_id = 0;
+    } else if (name == monitor->m_idle_notifier_id) {
+        error_log("WARN: %s: Idle notifier global (name %u) was removed!", __func__, name);
+        monitor->m_idle_notifier = nullptr; // Mark as gone
+        monitor->m_idle_notifier_id = 0;
+    }
+}
+
+void WaylandIdleMonitor_HandleIdled(void *data, ext_idle_notification_v1 * /* notification */)
+{
+    WaylandIdleMonitor *monitor = static_cast<WaylandIdleMonitor*>(data);
+    if (!monitor->m_is_idle.exchange(true, std::memory_order_relaxed)) { // Only update time on transition
+        monitor->m_idle_start_time.store(GetUnixEpochTime(), std::memory_order_relaxed);
+        debug_log("INFO: %s: Wayland Idle state entered at %lld", __func__, monitor->m_idle_start_time.load(std::memory_order_relaxed));
+    }
+}
+
+void WaylandIdleMonitor_HandleResumed(void *data, ext_idle_notification_v1 * /* notification */)
+{
+    WaylandIdleMonitor *monitor = static_cast<WaylandIdleMonitor*>(data);
+    if (monitor->m_is_idle.exchange(false, std::memory_order_relaxed)) { // Only update time on transition
+        monitor->m_idle_start_time.store(0, std::memory_order_relaxed);
+        debug_log("INFO: %s: Wayland Idle state exited (resumed).", __func__);
+    }
+}
+
+// Define the actual static listener structs using positional initialization
+const struct wl_registry_listener g_registry_listener = {
+    /* .global = */ WaylandIdleMonitor_HandleGlobal,
+    /* .global_remove = */ WaylandIdleMonitor_HandleGlobalRemove
+};
+
+const struct ext_idle_notification_v1_listener g_idle_notification_listener = {
+    /* .idled = */ WaylandIdleMonitor_HandleIdled,
+    /* .resumed = */ WaylandIdleMonitor_HandleResumed
+};
+
+} // extern "C"
+
+
 } // namespace IdleDetect
 
 //!
@@ -1135,7 +1643,7 @@ int main(int argc, char* argv[])
         if (!g_idle_detect_control_monitor.IsInitialized()) {
             log("WARN: %s: Control monitor thread started but not initialized quickly.", __func__);
         } else {
-            debug_log("DEBUG: %s: Control monitor thread started and initialized.", __func__);
+            debug_log("INFO: %s: Control monitor thread started and initialized.", __func__);
         }
     } catch (const std::system_error& e) {
         error_log("%s: Failed to start Idle Detect Control Monitor thread: %s. Exiting.", __func__, e.what());
@@ -1146,6 +1654,20 @@ int main(int argc, char* argv[])
         error_log("%s: Unknown error starting Idle Detect Control Monitor thread. Exiting.", __func__);
         // if (wayland_monitor_started) { g_wayland_idle_monitor.Stop(); }
         return 1;
+    }
+
+    // Start Wayland Monitor AFTER control monitor (if Wayland session)
+    bool wayland_monitor_started = false;
+    if (IdleDetect::IsWaylandSession()) {
+        int notification_timeout_ms = 1000;
+        debug_log("INFO: %s: Attempting Wayland idle monitor (timeout %dms)...", __func__, notification_timeout_ms);
+        if (g_wayland_idle_monitor.Start(notification_timeout_ms)) {
+            debug_log("INFO: %s: Wayland idle monitor started successfully.", __func__);
+            wayland_monitor_started = true; // Track success
+        } else {
+            error_log("%s: Failed to start Wayland idle monitor. Relying on D-Bus/X11 fallbacks.", __func__);
+            // Continue without it, GetIdleTimeSeconds will handle fallback
+        }
     }
 
     // --- Main Loop ---
@@ -1355,6 +1877,13 @@ int main(int argc, char* argv[])
 
     // --- Shutdown sequence ---
 
+    // --- Stop Wayland monitor ---
+    if (wayland_monitor_started) {
+        log("INFO: %s: Stopping Wayland idle monitor...", __func__);
+        g_wayland_idle_monitor.Stop(); // Stop calls interrupt pipe write + join
+        log("INFO: %s: Wayland idle monitor stopped.", __func__);
+    }
+
     // --- Stop Idle Detect Control Monitor thread ---
     if (control_monitor_started && g_idle_detect_control_monitor.m_idle_detect_control_monitor_thread.joinable()) {
         log("INFO: %s: Stopping Idle Detect Control Monitor thread...", __func__);
@@ -1365,7 +1894,7 @@ int main(int argc, char* argv[])
             g_idle_detect_control_monitor.m_idle_detect_control_monitor_thread.join();
             log("INFO: %s: Idle Detect Control Monitor thread stopped.", __func__);
         } catch (const std::system_error& e) {
-            error_log("ERROR: %s: Error joining control monitor thread: %s", __func__, e.what());
+            error_log("%s: Error joining control monitor thread: %s", __func__, e.what());
         }
     }
 
