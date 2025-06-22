@@ -1706,7 +1706,11 @@ int main(int argc, char* argv[])
 
                 // If idle_seconds is < 0, this indicates an error state from IdleDetect::GetIdleTimeSeconds(), or
                 // tty only session if -2, in which case the value of idle_seconds should not be used directly.
-                if (idle_seconds >= 0) {
+                // If idle_seconds is >= 0, it indicates a valid idle time from GUI session.
+                // If shmem_timestamp == 0, it indicates that force_idle was set via event_detect directly, and we should use the
+                // calculated idle time. This is important to capture force_idle injected directly into event_detect via a script
+                // from a service. Note this has the same effect as setting FORCED_IDLE in the control monitor.
+                if (idle_seconds >= 0 && shmem_timestamp > 0) {
                     idle_seconds = std::min(idle_seconds, calculated_idle);
                 } else {
                     idle_seconds = calculated_idle;
@@ -1720,7 +1724,7 @@ int main(int argc, char* argv[])
                           (int64_t)shmem_timestamp);
             } else {
                 // ReadTimestampViaShmem returns -1 on error
-                debug_log("INFO: %s: Attempting to get idle informationi from event_detect via file: %s",
+                debug_log("INFO: %s: Attempting to get idle information from event_detect via file: %s",
                           __func__,
                           dat_file_path.string());
 
@@ -1732,7 +1736,11 @@ int main(int argc, char* argv[])
 
                     // If idle_seconds is < 0, this indicates an error state from IdleDetect::GetIdleTimeSeconds(), or
                     // tty only session if -2, in which case the value of idle_seconds should not be used directly.
-                    if (idle_seconds >= 0) {
+                    // If idle_seconds is >= 0, it indicates a valid idle time from GUI session.
+                    // If file_timestamp == 0, it indicates that force_idle was set via event_detect directly, and we should use the
+                    // calculated idle time. This is important to capture force_idle injected directly into event_detect via a script
+                    // from a service. Note this has the same effect as setting FORCED_IDLE in the control monitor.
+                    if (idle_seconds >= 0 && file_timestamp > 0) {
                         idle_seconds = std::min(idle_seconds, calculated_idle);
                     } else {
                         idle_seconds = calculated_idle;
