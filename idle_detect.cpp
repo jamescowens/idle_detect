@@ -1833,17 +1833,21 @@ int main(int argc, char* argv[])
             debug_log("INFO: %s: Sending active notification to pipe.", __func__);
 
             EventMessage::EventType event_type = EventMessage::USER_ACTIVE;
+            int64_t event_timestamp = effective_last_active_time;
 
             if (control_state != previous_control_state) {
                 switch(control_state) {
                 case IdleDetect::IdleDetectControlMonitor::NORMAL:
                     event_type = EventMessage::USER_UNFORCE;
+                    event_timestamp = GetUnixEpochTime(); // Use current time for normal state
                     break;
                 case IdleDetect::IdleDetectControlMonitor::FORCED_IDLE:
                     event_type = EventMessage::USER_FORCE_IDLE;
+                    event_timestamp = GetUnixEpochTime(); // Use current time for forced idle state
                     break;
                 case IdleDetect::IdleDetectControlMonitor::FORCED_ACTIVE:
                     event_type = EventMessage::USER_FORCE_ACTIVE;
+                    event_timestamp = GetUnixEpochTime(); // Use current time for forced active state
                     break;
                 default:
                     event_type = EventMessage::UNKNOWN;
@@ -1857,7 +1861,7 @@ int main(int argc, char* argv[])
                           IdleDetect::IdleDetectControlMonitor::StateToString(control_state));
             }
 
-            IdleDetect::SendPipeNotification(event_registration_pipe_path, effective_last_active_time, event_type);
+            IdleDetect::SendPipeNotification(event_registration_pipe_path, event_timestamp, event_type);
 
             effective_last_active_time_prev = effective_last_active_time;
 
