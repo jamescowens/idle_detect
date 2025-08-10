@@ -29,8 +29,15 @@ This should be considered early beta code. It should run stably. Most corner cas
 Development work is occurring on the development branch, and releases are on master. I am currently doing periodic pre-release tags (i.e. 0.x) at significant development points.
 
 This code is licensed under the MIT license.
+## Installation procedure
 
-### Current dependencies (both library and development files - for compilation):
+### Packages
+For packages please see https://software.opensuse.org//download.html?project=home%3Ajamescowens&package=idle_detect.
+
+### Local compilation
+If a package is not available for your distribution, you can compile and install it locally.
+
+#### Current dependencies (both library and development files - for compilation):
  - libevdev
  - libXss
  - dbus-1
@@ -52,8 +59,6 @@ Fedora:
  - dbus-devel
  - glib2-devel
 
-### Installation procedure
-
 1. git clone https://github.com/jamescowens/idle_detect.git and change into the idle_detect directory.
 
 2. Make sure you have installed the packages for the dependencies listed above. The actual names will vary depending on the distribution.
@@ -74,4 +79,4 @@ Fedora:
 
 9. If you make subsequent changes to the event_detect.conf file or the idle_detect.conf files, then you currently need to restart the appropriate service to pick up the changes.
 
-### This is early beta level code and is currently subject to rapid change.
+### This is beta level code.
