@@ -238,6 +238,7 @@ else()
 endif()
 
 set(INSTALL_SYSTEM_SERVICE_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/system" CACHE PATH "Installation directory for the system level dc_event_detection service")
+set(INSTALL_SYSTEM_SERVICE_PRESET_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/system-preset" CACHE PATH "System service preset directory")
 set(INSTALL_USER_SERVICE_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/user" CACHE PATH "Installation directory for the user level dc_idle_detection service")
 set(INSTALL_USER_SERVICE_PRESET_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/user-preset" CACHE PATH "Installation directory for the user level dc_idle_detection service preset to auto enable")
 set(INSTALL_USER_CONFIG_DIR "$ENV{HOME}/.config" CACHE PATH "Installation directory for the user level idle_detect.conf")
@@ -259,6 +260,9 @@ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/event_detect.conf" DESTINATION ${INST
 
 # Install GENERATED system service file (root ownership)
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/dc_event_detection.service" DESTINATION ${INSTALL_SYSTEM_SERVICE_DIR})
+
+# Install system service auto-enable preset file
+install(FILES "90-event-detect.preset" DESTINATION ${INSTALL_SYSTEM_SERVICE_PRESET_DIR})
 
 # Install default user service
 install(FILES "${CMAKE_CURRENT_BINARY_DIR}/dc_idle_detection.service" DESTINATION ${INSTALL_USER_SERVICE_DIR})
