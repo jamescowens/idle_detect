@@ -7,7 +7,7 @@ Wants=systemd-udev-settle.service
 Type=simple
 ProtectHome=true
 
-ExecStart=/usr/local/bin/event_detect /etc/event_detect.conf
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/event_detect /etc/event_detect.conf
 
 Restart=on-failure
 RestartSec=5s

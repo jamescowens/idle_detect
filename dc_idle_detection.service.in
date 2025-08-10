@@ -4,7 +4,7 @@ After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/idle_detect_wrapper.sh %h/.config/idle_detect.conf
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/idle_detect_wrapper.sh
 Restart=on-failure
 RestartSec=5s
 ProtectSystem=strict

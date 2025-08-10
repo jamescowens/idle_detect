@@ -123,7 +123,7 @@ void Monitor::EventActivityMonitorThread()
         event_devices_size = GetEventDevices().size();
 
         if (m_initialized && event_devices_size != event_devices_size_prev) {
-            log("INFO: %s: Input event device count changed. Restarting recorder threads.",
+            normal_log("INFO: %s: Input event device count changed. Restarting recorder threads.",
                 __func__);
 
             pthread_kill(g_main_thread_id, SIGHUP);
@@ -1156,7 +1156,7 @@ void HandleSignals(int signum)
                   __func__);
         break;
     default:
-        log("WARNING: Unknown signal received.");
+        normal_log("WARNING: Unknown signal received.");
         break;
     }
 
@@ -1285,7 +1285,7 @@ void CleanUpFiles(int sig)
         try {
             fs::remove(file);
         } catch (FileSystemException& e) {
-            log("WARNING: %s: event data file could not be removed: %s",
+            normal_log("WARNING: %s: event data file could not be removed: %s",
                 __func__,
                 e.what());
         }
@@ -1299,7 +1299,7 @@ void CleanUpFiles(int sig)
         try {
             fs::remove(last_active_time_path);
         } catch (FileSystemException& e) {
-            log("WARNING: %s: last_active_time file could not be removed: %s",
+            normal_log("WARNING: %s: last_active_time file could not be removed: %s",
                 __func__,
                 e.what());
         }
@@ -1311,7 +1311,7 @@ void CleanUpFiles(int sig)
         try {
             fs::remove(pipe_path);
         } catch (FileSystemException& e) {
-            log("WARNING: %s: last_active_time file could not be removed: %s",
+            normal_log("WARNING: %s: last_active_time file could not be removed: %s",
                 __func__,
                 e.what());
         }
@@ -1369,11 +1369,11 @@ int main(int argc, char* argv[])
     fs::path config_file_path(argv[1]);
 
     if (fs::exists(config_file_path) && fs::is_regular_file(config_file_path)) {
-        log("INFO: %s: Using config from %s",
+        normal_log("INFO: %s: Using config from %s",
             __func__,
             config_file_path);
     } else {
-        log("WARNING: %s: Argument invalid for config file. Using defaults.",
+        normal_log("WARNING: %s: Argument invalid for config file. Using defaults.",
             __func__);
 
         config_file_path = "";
@@ -1443,7 +1443,7 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    log("INFO: %s: event_detect C++ program, %s, started, pid %i",
+    normal_log("INFO: %s: event_detect C++ program, %s, started, pid %i",
         __func__,
         g_version,
         current_pid);
@@ -1462,14 +1462,14 @@ int main(int argc, char* argv[])
 
     if (use_shared_memory) {
         if (g_shmem_exporter.CreateOrOpen(0664)) {
-            log("INFO: %s: Shared memory exporter initialized successfully (%s).", __func__, SHMEM_NAME_CONFIG);
+            normal_log("INFO: %s: Shared memory exporter initialized successfully (%s).", __func__, SHMEM_NAME_CONFIG);
             g_shm_initialized_successfully.store(true); // Set global flag
         } else {
             error_log("%s: Failed to initialize shared memory exporter. Shared memory export disabled.", __func__);
             // Continue without shared memory export
         }
     } else {
-        log("INFO: %s: Shared memory export disabled by configuration.", __func__);
+        normal_log("INFO: %s: Shared memory export disabled by configuration.", __func__);
     }
 
     try {
@@ -1545,7 +1545,7 @@ int main(int argc, char* argv[])
             HandleSignals(sig);
         }
 
-        log("INFO: %s: joining event activity worker threads",
+        normal_log("INFO: %s: joining event activity worker threads",
             __func__);
 
         // Wait for all recorder threads to finish (this blocks)
@@ -1560,7 +1560,7 @@ int main(int argc, char* argv[])
         }
 
         if (sig == SIGINT || sig == SIGTERM) {
-            log("INFO: %s: joining monitor threads",
+            normal_log("INFO: %s: joining monitor threads",
                 __func__);
 
             if (g_idle_detect_monitor.m_idle_detect_monitor_thread.joinable()) {

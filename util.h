@@ -136,7 +136,7 @@ template <typename... Args>
 //! \param fmt
 //! \param args
 //!
-void log(const char* fmt, const Args&... args)
+void normal_log(const char* fmt, const Args&... args)
 {
     std::cout << LogPrintStr(fmt, args...);
 }
@@ -150,7 +150,7 @@ template <typename... Args>
 void debug_log(const char* fmt, const Args&... args)
 {
     if (g_debug.load()) {
-        log(fmt, args...);
+        normal_log(fmt, args...);
     }
 }
 

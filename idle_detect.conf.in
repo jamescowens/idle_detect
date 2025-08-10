@@ -1,0 +1,9 @@
+debug=0
+use_event_detect=1
+use_xprintidle=1
+update_event_detect=1
+execute_dc_control_scripts=1
+shmem_name="/idle_detect_shmem"
+inactivity_time_trigger="300"
+active_command=@CMAKE_INSTALL_FULL_BINDIR@/dc_pause
+idle_command=@CMAKE_INSTALL_FULL_BINDIR@/dc_unpause

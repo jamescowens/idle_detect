@@ -134,6 +134,15 @@ pkg_check_modules(GLIB REQUIRED glib-2.0 gobject-2.0 gio-2.0)
 # For ext-idle-notify-v1 wayland interface
 pkg_check_modules(WAYLAND_CLIENT REQUIRED wayland-client)
 
+# --- Configure Files from Templates ---
+# This creates the final files in the build directory with paths filled in
+message(STATUS "Configuring service files and wrapper script with install paths...")
+configure_file(dc_event_detection.service.in ${CMAKE_CURRENT_BINARY_DIR}/dc_event_detection.service @ONLY)
+configure_file(dc_idle_detection.service.in ${CMAKE_CURRENT_BINARY_DIR}/dc_idle_detection.service @ONLY)
+configure_file(idle_detect_wrapper.sh.in ${CMAKE_CURRENT_BINARY_DIR}/idle_detect_wrapper.sh @ONLY)
+configure_file(event_detect.conf.in ${CMAKE_CURRENT_BINARY_DIR}/event_detect.conf @ONLY)
+configure_file(idle_detect.conf.in ${CMAKE_CURRENT_BINARY_DIR}/idle_detect.conf @ONLY)
+
 execute_process(
     COMMAND ${PKG_CONFIG_EXECUTABLE} --variable=pkgdatadir wayland-protocols
     OUTPUT_VARIABLE WaylandProtocols_DATADIR
@@ -236,18 +245,30 @@ set(INSTALL_CUSTOMIZABLE_USER_SERVICE_DIR "$ENV{HOME}/.config/systemd/user" CACH
 
 # Install the executable and scripts
 install(TARGETS event_detect idle_detect read_shmem_timestamps DESTINATION ${INSTALL_BIN_DIR})
-install(FILES "dc_pause" "dc_unpause" "idle_detect_wrapper.sh" "idle_detect_resources.sh" "force_state.sh"
+install(FILES "dc_pause" "dc_unpause" "idle_detect_resources.sh" "force_state.sh" "event_detect_control.sh"
+        PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ GROUP_EXECUTE GROUP_READ WORLD_EXECUTE WORLD_READ
+        DESTINATION ${INSTALL_BIN_DIR} )
+
+# Install GENERATED wrapper script
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/idle_detect_wrapper.sh
         PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ GROUP_EXECUTE GROUP_READ WORLD_EXECUTE WORLD_READ
         DESTINATION ${INSTALL_BIN_DIR} )
 
 # Install configuration file (system-wide)
-install(FILES "event_detect.conf" DESTINATION ${INSTALL_CONFIG_DIR})
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/event_detect.conf" DESTINATION ${INSTALL_CONFIG_DIR})
 
-# Install system service (root ownership)
-install(FILES "dc_event_detection.service" DESTINATION ${INSTALL_SYSTEM_SERVICE_DIR})
+# Install GENERATED system service file (root ownership)
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/dc_event_detection.service" DESTINATION ${INSTALL_SYSTEM_SERVICE_DIR})
 
 # Install default user service
-install(FILES "dc_idle_detection.service" DESTINATION ${INSTALL_USER_SERVICE_DIR})
+install(FILES "${CMAKE_CURRENT_BINARY_DIR}/dc_idle_detection.service" DESTINATION ${INSTALL_USER_SERVICE_DIR})
+
+# Install a default/template user config to /usr/share/...
+# This will be used by the idle_detect binary on first run to create the user's actual config.
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/idle_detect.conf
+        DESTINATION ${CMAKE_INSTALL_DATADIR}/idle_detect/
+        RENAME idle_detect.conf.default
+)
 
 # Install default user service auto enable preset file
 install(FILES "90-idle-detect.preset" DESTINATION ${INSTALL_USER_SERVICE_PRESET_DIR})
@@ -290,9 +311,10 @@ configure_file(uninstall.cmake.in uninstall.cmake @ONLY)
 add_custom_target(install_executables_only
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/event_detect" "${INSTALL_BIN_DIR}/event_detect"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/idle_detect" "${INSTALL_BIN_DIR}/idle_detect"
-    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/idle_detect_wrapper.sh" "${INSTALL_BIN_DIR}/idle_detect_wrapper.sh"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/idle_detect_wrapper.sh" "${INSTALL_BIN_DIR}/idle_detect_wrapper.sh"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/idle_detect_resources.sh" "${INSTALL_BIN_DIR}/idle_detect_resources.sh"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/force_state.sh" "${INSTALL_BIN_DIR}/force_state.sh"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/event_detect_control.sh" "${INSTALL_BIN_DIR}/event_detect_control.sh"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/read_shmem_timestamps" "${INSTALL_BIN_DIR}/read_shmem_timestamps"
 
     COMMENT "installing executables only"
@@ -308,14 +330,14 @@ add_custom_target(dc_control_scripts_only
 
 # System and default user service install target (root)
 add_custom_target(install_system_services
-    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_event_detection.service" "${INSTALL_SYSTEM_SERVICE_DIR}/dc_event_detection.service"
-    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_idle_detection.service" "${INSTALL_USER_SERVICE_DIR}/dc_idle_detection.service"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/dc_event_detection.service" "${INSTALL_SYSTEM_SERVICE_DIR}/dc_event_detection.service"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/dc_idle_detection.service" "${INSTALL_USER_SERVICE_DIR}/dc_idle_detection.service"
     COMMENT "Installing system-level service (root)"
 )
 
 # Customizable user-level service and config install (user)
 add_custom_target(install_user_service
-    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_idle_detection.service" "${INSTALL_CUSTOMIZABLE_USER_SERVICE_DIR}/dc_idle_detection.service"
-    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/idle_detect.conf" "${INSTALL_USER_CONFIG_DIR}/idle_detect.conf"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/dc_idle_detection.service" "${INSTALL_CUSTOMIZABLE_USER_SERVICE_DIR}/dc_idle_detection.service"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/idle_detect.conf" "${INSTALL_USER_CONFIG_DIR}/idle_detect.conf"
     COMMENT "Installing user-level service (user)"
 )

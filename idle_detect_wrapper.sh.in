@@ -6,7 +6,7 @@
 # Configuration
 MAX_WAIT_SECONDS=30 # Total time to wait (e.g., 30 seconds)
 WAIT_INTERVAL=2   # Time between checks (e.g., 2 seconds)
-CONFIG_FILE_ARG="$1" # Assume config file is the first argument
+CONFIG_FILE_ARG="$1" # Capture potential config file argument
 
 # Function to log messages (optional, adjust as needed)
 log_message() {
@@ -28,7 +28,10 @@ while [ $SECONDS_WAITED -lt $MAX_WAIT_SECONDS ]; do
     # Check if both conditions are met
     if [ -n "$DBUS_ADDR" ] && [ -n "$DISP_VAR" ]; then
         log_message "Found DBUS_SESSION_BUS_ADDRESS and DISPLAY/WAYLAND_DISPLAY."
-        log_message "DBUS_ADDR = $DBUS_ADDR, DISPLAY = $DISPLAY, WAYLAND_DISPLAY = $WAYLAND_DISPLAY"
+        # Correctly log the variables found by systemctl for accuracy
+        log_message " -> $(systemctl --user show-environment | grep '^DBUS_SESSION_BUS_ADDRESS=')"
+        log_message " -> $(systemctl --user show-environment | grep '^DISPLAY=')"
+        log_message " -> $(systemctl --user show-environment | grep '^WAYLAND_DISPLAY=')"
         ENV_READY=1
         break
     fi
@@ -48,11 +51,19 @@ if [ "$ENV_READY" -eq 0 ]; then
 fi
 
 # Environment seems ready, execute the main program
-log_message "Environment ready. Executing /usr/local/bin/idle_detect..."
-# Use exec to replace this script process with the idle_detect process
-# Pass the original config file argument
-exec /usr/local/bin/idle_detect "$CONFIG_FILE_ARG"
+log_message "Environment ready. Executing @CMAKE_INSTALL_FULL_BINDIR@/idle_detect..."
 
-# Exit with error if exec fails for some reason (shouldn't happen)
-log_message "ERROR: Failed to exec /usr/local/bin/idle_detect. Exiting."
+# Pass the config file argument ONLY if it was provided to the wrapper.
+if [ -n "$CONFIG_FILE_ARG" ]; then
+    log_message " (with specified config file: $CONFIG_FILE_ARG)"
+    # Use exec to replace this script process with the idle_detect process
+    exec @CMAKE_INSTALL_FULL_BINDIR@/idle_detect "$CONFIG_FILE_ARG"
+else
+    log_message " (with no config file specified, using default path logic)"
+    # Execute idle_detect with NO arguments
+    exec @CMAKE_INSTALL_FULL_BINDIR@/idle_detect
+fi
+
+# This part of the script is only reached if 'exec' itself fails.
+log_message "ERROR: Failed to exec @CMAKE_INSTALL_FULL_BINDIR@/idle_detect. Exiting."
 exit 1

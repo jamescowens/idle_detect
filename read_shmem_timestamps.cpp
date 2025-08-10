@@ -30,12 +30,12 @@ int main(int argc, char* argv[]) {
     if (argc < 2 || argc > 3) {
         g_log_timestamps.store(false); // Suppress timestamps for help
 
-        log("read_shmem_timestamps %s\n", g_version);
+        normal_log("read_shmem_timestamps %s\n", g_version);
 
-        log("Usage: %s <shmem_name> [raw|iso|hr]",
+        normal_log("Usage: %s <shmem_name> [raw|iso|hr]",
                   (argc > 0 ? argv[0] : "read_shmem_timestamps"));
-        log("shmem_name: Name of shared memory segment (e.g., /idle_detect_shmem)");
-        log("format (optional): 'raw' (default), 'iso' or 'hr' for human-readable UTC");
+        normal_log("shmem_name: Name of shared memory segment (e.g., /idle_detect_shmem)");
+        normal_log("format (optional): 'raw' (default), 'iso' or 'hr' for human-readable UTC");
 
         g_log_timestamps.store(true); // Restore timestamp setting
         return 1;
@@ -52,7 +52,7 @@ int main(int argc, char* argv[]) {
         if (format_lower == "iso" || format_lower == "hr") {
             human_readable = true;
         } else if (format_lower != "raw") {
-            log("WARN: %s: Unknown format '%s'. Defaulting to 'raw'.", __func__, argv[2]);
+            normal_log("WARN: %s: Unknown format '%s'. Defaulting to 'raw'.", __func__, argv[2]);
             // format remains "raw", human_readable remains false
         }
     }
@@ -92,7 +92,7 @@ int main(int argc, char* argv[]) {
     // Unmap memory
     errno = 0;
     if (munmap(mapped_mem, SHMEM_SIZE) == -1) {
-        log("WARN: %s: munmap failed for shm '%s': %s (%d)",
+        normal_log("WARN: %s: munmap failed for shm '%s': %s (%d)",
             __func__, shm_name, strerror(errno), errno);
         // Continue as we already have the value
     }
@@ -102,7 +102,7 @@ int main(int argc, char* argv[]) {
     // --- Unmap ---
     errno = 0;
     if (munmap(mapped_mem, SHMEM_SIZE) == -1) {
-        log("WARN: %s: munmap failed for shm '%s': %s (%d)", __func__, shm_name, strerror(errno), errno);
+        normal_log("WARN: %s: munmap failed for shm '%s': %s (%d)", __func__, shm_name, strerror(errno), errno);
         // Continue, we already read the data
     }
 

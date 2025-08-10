@@ -206,33 +206,35 @@ void Config::ReadAndUpdateConfig(const fs::path& config_file) {
         std::ifstream file(config_file);
 
         if (!file.is_open()) {
-            error_log("%s: Could not open the config file: %s",
+            error_log("%s: Could not open the config file: %s. Using internal defaults.",
                       __func__,
                       config_file);
-            return;
-        }
+        } else {
+            std::string line;
+            while (std::getline(file, line)) {
+                // Skip empty lines and lines starting with '#'
+                if (line.empty() || line[0] == '#') {
+                    continue;
+                }
 
-        std::string line;
-        while (std::getline(file, line)) {
-            // Skip empty lines and lines starting with '#'
-            if (line.empty() || line[0] == '#') {
-                continue;
+                std::vector line_elements = StringSplit(line, "=");
+
+                if (line_elements.size() != 2) {
+                    continue;
+                }
+
+                config.insert(std::make_pair(StripQuotes(TrimString(line_elements[0])),
+                                             StripQuotes(TrimString(line_elements[1]))));
             }
 
-            std::vector line_elements = StringSplit(line, "=");
+            file.close();
 
-            if (line_elements.size() != 2) {
-                continue;
-            }
-
-            config.insert(std::make_pair(StripQuotes(TrimString(line_elements[0])),
-                                         StripQuotes(TrimString(line_elements[1]))));
+            // Do this all at once so the result of the config read is essentially "atomic".
+            m_config_in.swap(config);
+            normal_log("INFO: %s: Successfully read config file: %s",
+                       __func__,
+                       config_file.string());
         }
-
-        file.close();
-
-        // Do this all at once so the result of the config read is essentially "atomic".
-        m_config_in.swap(config);
     } catch (FileSystemException& e) {
         error_log("%s: Reading config file failed, so defaults will be used: %s",
                   __func__,

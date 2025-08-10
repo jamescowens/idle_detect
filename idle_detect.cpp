@@ -22,6 +22,7 @@
 #include <variant>     // For std::get
 #include <cerrno>      // For errno
 #include <future>      // For std::async in Stop() timeout
+#include <filesystem> // Needed for first-run config copy logic
 
 // Platform Specific Libs
 #include <X11/Xlib.h>
@@ -276,7 +277,7 @@ static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
 
     errno = 0;
     if (munmap(mapped_mem, shmem_size) == -1) {
-        log("WARN: %s: munmap failed for shm '%s': %s (%d)", __func__, shm_name.c_str(), strerror(errno), errno);
+        normal_log("WARN: %s: munmap failed for shm '%s': %s (%d)", __func__, shm_name.c_str(), strerror(errno), errno);
     }
 
     return last_active_timestamp;
@@ -1021,7 +1022,7 @@ WaylandIdleMonitor::~WaylandIdleMonitor() {
 
 // Start method
 bool WaylandIdleMonitor::Start(int notification_timeout_ms) {
-    log("INFO: %s: Starting Wayland idle monitor.", __func__); // Use log for start/stop
+    normal_log("INFO: %s: Starting Wayland idle monitor.", __func__); // Use log for start/stop
     if (m_initialized.load()) {
         debug_log("INFO: %s: Monitor already initialized.", __func__);
         return true; // Already running
@@ -1083,13 +1084,13 @@ bool WaylandIdleMonitor::Start(int notification_timeout_ms) {
     }
 
     m_initialized.store(true); // Set initialized only after thread starts successfully
-    log("INFO: %s: Wayland idle monitor started successfully.", __func__);
+    normal_log("INFO: %s: Wayland idle monitor started successfully.", __func__);
     return true;
 }
 
 // Stop method
 void WaylandIdleMonitor::Stop() {
-    log("INFO: %s: Stopping Wayland idle monitor...", __func__);
+    normal_log("INFO: %s: Stopping Wayland idle monitor...", __func__);
 
     // Use exchange to prevent concurrent Stop calls and get previous state
     if (m_interrupt_monitor.exchange(true)) {
@@ -1134,7 +1135,7 @@ void WaylandIdleMonitor::Stop() {
     CleanupWayland();
 
     m_initialized.store(false); // Mark as no longer initialized
-    log("INFO: %s: Wayland idle monitor stopped.", __func__);
+    normal_log("INFO: %s: Wayland idle monitor stopped.", __func__);
 }
 
 // InitializeWayland (with simplified retry logic focusing on connect and roundtrip check)
@@ -1479,7 +1480,7 @@ const struct ext_idle_notification_v1_listener g_idle_notification_listener = {
 void HandleSignal(int signum) {
     if (signum == SIGINT || signum == SIGTERM) {
         // Use log() here as it's presumably safe enough during shutdown signal
-        log("INFO: %s: Received signal %d. Requesting shutdown.",
+        normal_log("INFO: %s: Received signal %d. Requesting shutdown.",
             __func__,
             signum);
         g_shutdown_requested.store(true);
@@ -1487,10 +1488,23 @@ void HandleSignal(int signum) {
         g_idle_detect_control_monitor.m_interrupt_idle_detect_control_monitor.store(true);
         g_idle_detect_control_monitor.cv_idle_detect_control_monitor_thread.notify_all();
     } else {
-        log("INFO: %s: Received unexpected signal %d.",
+        normal_log("INFO: %s: Received unexpected signal %d.",
             __func__,
             signum);
     }
+}
+
+// Helper function to get the user's config path
+// Returns empty path on error
+static fs::path GetUserConfigPath() {
+    // GetEnvVariable is in your util.h/cpp
+    std::optional<std::string> home_dir_opt = GetEnvVariable("HOME");
+    if (!home_dir_opt) {
+        error_log("ERROR: %s: HOME environment variable not set. Cannot determine user config path.", __func__);
+        return {}; // Return empty path
+    }
+    // Standard XDG config location
+    return fs::path(home_dir_opt.value()) / ".config" / "idle_detect.conf";
 }
 
 //!
@@ -1513,35 +1527,74 @@ int main(int argc, char* argv[])
         g_log_timestamps.store(true);
     }
 
-    // --- Configuration Loading ---
-    //
-    // We can safely use error_log and log before reading config.
-    if (argc != 2) {
-        error_log("%s: One argument must be specified for the location of the config file.",
-                  __func__);
+    fs::path config_file_to_load; // Will hold the final path to the config file
+
+    // --- Determine Config Path ---
+    if (argc == 1) {
+        // --- Case 1: No argument provided, use default user path ---
+        normal_log("INFO: %s: No config file specified, using default user path.", __func__);
+        config_file_to_load = GetUserConfigPath();
+        if (config_file_to_load.empty()) {
+            error_log("%s: HOME environment variable not set. Cannot determine default config path.", __func__);
+            return 1;
+        }
+
+        // --- First-Run User Config Setup (only for default path) ---
+        if (!fs::exists(config_file_to_load)) {
+            // Path to the system-wide default config installed by the package
+            fs::path default_config_template = "/usr/share/idle_detect/idle_detect.conf.default";
+
+            if (!fs::exists(default_config_template)) {
+                // The default template for a package install does not exist. Check locally installed path
+                default_config_template = "/usr/local/share/idle_detect/idle_detect.conf.default";
+            }
+
+            normal_log("INFO: %s: User config not found at '%s'. Creating from default template...",
+                       __func__,
+                       config_file_to_load.string());
+
+            if (fs::exists(default_config_template)) {
+                try {
+                    // Ensure parent directory (e.g., ~/.config) exists
+                    fs::create_directories(config_file_to_load.parent_path());
+                    // Copy the default file to the user's config location
+                    fs::copy_file(default_config_template, config_file_to_load);
+                    normal_log("INFO: %s: Successfully created user config file.", __func__);
+                } catch (const fs::filesystem_error& e) {
+                    error_log("%s: Failed to create user config from template: %s", __func__, e.what());
+                    return 1; // Exit if we can't create the user config
+                }
+            } else {
+                normal_log("WARN: %s: Default config template not found at '%s'. Proceeding with internal defaults.",
+                    __func__,
+                    default_config_template.string());
+                // Let the app continue; ReadAndUpdateConfig will handle the non-existent file
+            }
+        }
+    } else if (argc == 2) {
+        // --- Case 2: One argument provided, use it as the path ---
+        config_file_to_load = fs::path(argv[1]);
+        normal_log("INFO: %s: Using specified config file: %s", __func__, config_file_to_load.string());
+
+        // The first-run copy logic is skipped; we assume the user provided a valid file.
+        // Warn if it doesn't exist, as the app will run with only internal defaults.
+        if (!fs::exists(config_file_to_load)) {
+            normal_log("WARN: %s: Specified config file does not exist.", __func__);
+        }
+    } else {
+        // --- Case 3: Too many arguments, show usage and exit ---
+        error_log("%s: Too many arguments provided. Usage: %s [path_to_config_file]", __func__, argc > 0 ? argv[0] : "idle_detect");
         return 1;
     }
-    fs::path config_file_path(argv[1]);
-    if (fs::exists(config_file_path) && fs::is_regular_file(config_file_path)) {
-        log("INFO: %s: Using config from %s",
-                  __func__,
-                  config_file_path);
-    } else {
-        log("WARNING: %s: Argument invalid for config file \"%s\". Using defaults.",
-            __func__,
-            config_file_path.string());
 
-        config_file_path = "";
-    }
-
+    // --- Configuration Loading ---
+    // This block now uses the 'config_file_to_load' path determined above
     try {
-        // Assuming ReadAndUpdateConfig is PascalCase
-        g_config.ReadAndUpdateConfig(config_file_path);
+        g_config.ReadAndUpdateConfig(config_file_to_load);
     } catch (const std::exception& e) {
-        error_log("%s: Failed to read/process config: %s",
+        error_log("ERROR: %s: Failed to read/process config from '%s': %s",
                   __func__,
-                  e.what());
-
+                  config_file_to_load.string().c_str(), e.what());
         return 1;
     }
 
@@ -1604,7 +1657,7 @@ int main(int argc, char* argv[])
 
     pid_t current_pid = getpid();
 
-    log("INFO: %s: idle_detect C++ program, %s, started, pid %i",
+    normal_log("INFO: %s: idle_detect C++ program, %s, started, pid %i",
         __func__,
         g_version,
         current_pid);
@@ -1628,7 +1681,7 @@ int main(int argc, char* argv[])
               idle_command);
 
     // --- Start Idle Detect Control Monitor Thread ---
-    log("INFO: %s: Starting Idle Detect Control Monitor thread...", __func__);
+    normal_log("INFO: %s: Starting Idle Detect Control Monitor thread...", __func__);
     // Reset interrupt flag *before* starting thread
     g_idle_detect_control_monitor.m_interrupt_idle_detect_control_monitor.store(false);
     bool control_monitor_started = false;
@@ -1641,7 +1694,7 @@ int main(int argc, char* argv[])
         // Wait a very short time to allow pipe creation/initialization perhaps
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
         if (!g_idle_detect_control_monitor.IsInitialized()) {
-            log("WARN: %s: Control monitor thread started but not initialized quickly.", __func__);
+            normal_log("WARN: %s: Control monitor thread started but not initialized quickly.", __func__);
         } else {
             debug_log("INFO: %s: Control monitor thread started and initialized.", __func__);
         }
@@ -1793,7 +1846,7 @@ int main(int argc, char* argv[])
         if (is_currently_idle != was_previously_idle || first_check) {
             if (is_currently_idle) {
                 // Became Idle
-                log("INFO: %s: User became idle (%llds >= %ds).",
+                normal_log("INFO: %s: User became idle (%llds >= %ds).",
                     __func__,
                     (int64_t)idle_seconds, idle_threshold_seconds);
 
@@ -1802,7 +1855,7 @@ int main(int argc, char* argv[])
                 }
             } else {
                 // Became Active
-                log("INFO: %s: User became active (%llds < %ds).",
+                normal_log("INFO: %s: User became active (%llds < %ds).",
                     __func__,
                     (int64_t)idle_seconds,
                     idle_threshold_seconds);
@@ -1884,32 +1937,32 @@ int main(int argc, char* argv[])
         }
     } // End main loop
 
-    log("INFO: %s: Shutdown requested. Cleaning up...",
+    normal_log("INFO: %s: Shutdown requested. Cleaning up...",
         __func__);
 
     // --- Shutdown sequence ---
 
     // --- Stop Wayland monitor ---
     if (wayland_monitor_started) {
-        log("INFO: %s: Stopping Wayland idle monitor...", __func__);
+        normal_log("INFO: %s: Stopping Wayland idle monitor...", __func__);
         g_wayland_idle_monitor.Stop(); // Stop calls interrupt pipe write + join
-        log("INFO: %s: Wayland idle monitor stopped.", __func__);
+        normal_log("INFO: %s: Wayland idle monitor stopped.", __func__);
     }
 
     // --- Stop Idle Detect Control Monitor thread ---
     if (control_monitor_started && g_idle_detect_control_monitor.m_idle_detect_control_monitor_thread.joinable()) {
-        log("INFO: %s: Stopping Idle Detect Control Monitor thread...", __func__);
+        normal_log("INFO: %s: Stopping Idle Detect Control Monitor thread...", __func__);
         // Flag should have been set by HandleSignal
         g_idle_detect_control_monitor.m_interrupt_idle_detect_control_monitor.store(true);
         g_idle_detect_control_monitor.cv_idle_detect_control_monitor_thread.notify_all();
         try {
             g_idle_detect_control_monitor.m_idle_detect_control_monitor_thread.join();
-            log("INFO: %s: Idle Detect Control Monitor thread stopped.", __func__);
+            normal_log("INFO: %s: Idle Detect Control Monitor thread stopped.", __func__);
         } catch (const std::system_error& e) {
             error_log("%s: Error joining control monitor thread: %s", __func__, e.what());
         }
     }
 
-    log("Idle Detect shutdown complete.");
+    normal_log("Idle Detect shutdown complete.");
     return g_exit_code.load();
 }
