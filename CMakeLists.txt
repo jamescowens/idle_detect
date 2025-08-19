@@ -277,7 +277,7 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/idle_detect.conf
 )
 
 # Define the standard XDG autostart directory
-set(INSTALL_XDG_AUTOSTART_DIR "${CMAKE_INSTALL_SYSCONFDIR}/xdg/autostart" CACHE PATH "System-wide XDG autostart directory")
+set(INSTALL_XDG_AUTOSTART_DIR "/etc/xdg/autostart" CACHE PATH "System-wide XDG autostart directory")
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/idle-detect-autostart.desktop DESTINATION ${INSTALL_XDG_AUTOSTART_DIR})
 
 # Install default user service auto enable preset file
