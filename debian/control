@@ -11,8 +11,7 @@ Build-Depends: debhelper-compat (= 13),
                libxss-dev (>= 1.1), # Note: Debian uses libxss-dev
                libdbus-1-dev (>= 1.6),
                libglib2.0-dev (>= 2.56), # Pulls in gobject, gio
-               libx11-dev,
-               systemd # Needed for systemd build helpers/paths if used in rules explicitly
+               libx11-dev
 # Specify architecture, 'any' means it compiles per architecture
 Architecture: any
 
