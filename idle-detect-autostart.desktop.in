@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Idle Detect User Service Setup
+Comment=Ensures the user-level idle detection service is running
+# This will be replaced by CMake with the correct path
+Exec=@CMAKE_INSTALL_FULL_BINDIR@/idle-detect-user-setup.sh
+# Don't show this application in menus
+NoDisplay=true
+# Only run in supported desktop environments
+OnlyShowIn=KDE;GNOME;XFCE;MATE;Cinnamon;
+# Ensures it runs on login
+X-GNOME-Autostart-enabled=true

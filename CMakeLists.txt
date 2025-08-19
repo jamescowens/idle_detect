@@ -142,6 +142,8 @@ configure_file(dc_idle_detection.service.in ${CMAKE_CURRENT_BINARY_DIR}/dc_idle_
 configure_file(idle_detect_wrapper.sh.in ${CMAKE_CURRENT_BINARY_DIR}/idle_detect_wrapper.sh @ONLY)
 configure_file(event_detect.conf.in ${CMAKE_CURRENT_BINARY_DIR}/event_detect.conf @ONLY)
 configure_file(idle_detect.conf.in ${CMAKE_CURRENT_BINARY_DIR}/idle_detect.conf @ONLY)
+configure_file(idle-detect-autostart.desktop.in ${CMAKE_CURRENT_BINARY_DIR}/idle-detect-autostart.desktop @ONLY)
+
 
 execute_process(
     COMMAND ${PKG_CONFIG_EXECUTABLE} --variable=pkgdatadir wayland-protocols
@@ -246,7 +248,7 @@ set(INSTALL_CUSTOMIZABLE_USER_SERVICE_DIR "$ENV{HOME}/.config/systemd/user" CACH
 
 # Install the executable and scripts
 install(TARGETS event_detect idle_detect read_shmem_timestamps DESTINATION ${INSTALL_BIN_DIR})
-install(FILES "dc_pause" "dc_unpause" "idle_detect_resources.sh" "force_state.sh" "event_detect_control.sh"
+install(FILES "dc_pause" "dc_unpause" "idle_detect_resources.sh" "force_state.sh" "event_detect_control.sh idle-detect-user-setup.sh"
         PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ GROUP_EXECUTE GROUP_READ WORLD_EXECUTE WORLD_READ
         DESTINATION ${INSTALL_BIN_DIR} )
 
@@ -274,6 +276,10 @@ install(FILES ${CMAKE_CURRENT_BINARY_DIR}/idle_detect.conf
         RENAME idle_detect.conf.default
 )
 
+# Define the standard XDG autostart directory
+set(INSTALL_XDG_AUTOSTART_DIR "${CMAKE_INSTALL_SYSCONFDIR}/xdg/autostart" CACHE PATH "System-wide XDG autostart directory")
+install(FILES ${CMAKE_CURRENT_BINARY_DIR}/idle-detect-autostart.desktop DESTINATION ${INSTALL_XDG_AUTOSTART_DIR})
+
 # Install default user service auto enable preset file
 install(FILES "90-idle-detect.preset" DESTINATION ${INSTALL_USER_SERVICE_PRESET_DIR})
 
@@ -294,7 +300,6 @@ else()
 endif()
 
 # Install HTML Docs (if the source directory exists)
-# This block was likely already correct, but ensure COMPONENT is before any potential PATTERN/REGEX
 set(DOXYGEN_HTML_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/docs/html")
 if(EXISTS "${DOXYGEN_HTML_SOURCE_DIR}")
     install(DIRECTORY ${DOXYGEN_HTML_SOURCE_DIR}/ # Copy contents of html/
