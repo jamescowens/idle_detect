@@ -1,4 +1,4 @@
-.TH "md_README" 3 "Sun Apr 27 2025" "Version 0.8.1.0" "idle_detect" \" -*- nroff -*-
+.TH "md_README" 3 "Tue Aug 19 2025" "Version 0.8.3.0" "idle_detect" \" -*- nroff -*-
 .ad l
 .nh
 .SH NAME
@@ -47,7 +47,16 @@ This should be considered early beta code\&. It should run stably\&. Most corner
 .PP
 Development work is occurring on the development branch, and releases are on master\&. I am currently doing periodic pre-release tags (i\&.e\&. 0\&.x) at significant development points\&.
 .PP
-This code is licensed under the MIT license\&.
+This code is licensed under the MIT license\&. 
+.SS "Installation procedure"
+.PP
+.SS "Packages"
+.PP
+For packages please see https://software.opensuse.org//download.html?project=home%3Ajamescowens&package=idle_detect\&.
+.PP
+.SS "Local compilation"
+.PP
+If a package is not available for your distribution, you can compile and install it locally\&.
 .PP
 .SS "Current dependencies (both library and development files - for compilation):"
 .PP
@@ -89,10 +98,8 @@ dbus-devel
 glib2-devel
 .PP
 .PP
-.SS "Installation procedure"
-.PP
-.IP "1." 4
 git clone https://github.com/jamescowens/idle_detect.git and change into the idle_detect directory\&.
+.PP
 .IP "2." 4
 Make sure you have installed the packages for the dependencies listed above\&. The actual names will vary depending on the distribution\&.
 .IP "3." 4
@@ -117,5 +124,5 @@ sudo nano /usr/local/bin/dc_unpause
 If you make subsequent changes to the event_detect\&.conf file or the idle_detect\&.conf files, then you currently need to restart the appropriate service to pick up the changes\&.
 .PP
 .PP
-.SS "This is early beta level code and is currently subject to rapid change\&."
+.SS "This is beta level code\&."
 
