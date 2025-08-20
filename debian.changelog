@@ -2,4 +2,4 @@ idle-detect (0.8.3.0-1) unstable; urgency=medium
 
   * Initial Debian packaging draft.
 
- -- James C. Owens <jamesowens@optonline.net>  Wed, 16 Apr 2025 22:30:00 -0400
+ -- James C. Owens <jamesowens@optonline.net>  Wed, 20 Aug 2025 22:30:00 -0400

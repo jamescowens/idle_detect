@@ -1,0 +1,27 @@
+Source: idle_detect
+Section: utils
+Priority: optional
+Maintainer: James C. Owens <jamesowens@optonline.net>
+Build-Depends: debhelper-compat (= 13),
+               cmake (>= 3.15),
+               pkg-config,
+               g++ (>= 9),
+               libevdev-dev (>= 1.0),
+               libxss-dev (>= 1.1),
+               libdbus-1-dev (>= 1.6),
+               libglib2.0-dev (>= 2.56),
+               libx11-dev
+
+Package: idle_detect
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, systemd
+Description: System and User services to detect user idle time and activity
+ This package provides two services for monitoring user activity on Linux systems,
+ primarily intended for controlling background tasks like Distributed Computing
+ (e.g., BOINC).
+ .
+  * event_detect: A system service that monitors low-level input devices,
+    TTY access times, and messages from idle_detect instances.
+    It provides an aggregated 'last active time' via shmem or file.
+  * idle_detect: A user service that detects graphical session idle time using
+    platform-specific methods and can execute commands on state changes.
