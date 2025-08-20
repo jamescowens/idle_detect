@@ -7,11 +7,11 @@ Build-Depends: debhelper-compat (= 13),
                cmake (>= 3.15),
                pkg-config,
                g++ (>= 9), # Enforce C++17 compiler (GCC 9+ recommended for non-experimental <filesystem>)
-               libevdev-dev (>= 1.0),
-               libxss-dev (>= 1.1), # Note: Debian uses libxss-dev
-               libdbus-1-dev (>= 1.6),
-               libglib2.0-dev (>= 2.56), # Pulls in gobject, gio
-               libx11-dev
+#               libevdev-dev (>= 1.0),
+#               libxss-dev (>= 1.1), # Note: Debian uses libxss-dev
+#               libdbus-1-dev (>= 1.6),
+#               libglib2.0-dev (>= 2.56), # Pulls in gobject, gio
+#               libx11-dev
 # Specify architecture, 'any' means it compiles per architecture
 Architecture: any
 
