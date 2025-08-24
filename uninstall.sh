@@ -31,7 +31,8 @@ case "$response" in
         ;;
 esac
 
-# --- Disable and Stop Services ---
+
+# --- Disable and Stop System Service ---
 echo "INFO: Disabling and stopping system service 'dc_event_detection.service'..."
 if systemctl is-active --quiet dc_event_detection.service; then
     systemctl disable --now dc_event_detection.service
@@ -42,11 +43,10 @@ fi
 
 # --- Run CMake Uninstall Script ---
 # This removes files installed by 'cmake --install' based on install_manifest.txt
-# Requires the build directory to exist and contain uninstall.cmake
-UNINSTALL_SCRIPT="${BUILD_DIR}/uninstall.cmake" # BUILD_DIR needs to be set
+UNINSTALL_SCRIPT="${BUILD_DIR}/uninstall.cmake"
 if [ -f "$UNINSTALL_SCRIPT" ]; then
     echo "INFO: Running CMake uninstall script ($UNINSTALL_SCRIPT)..."
-    # This now executes the manifest reading logic
+    # This executes the manifest reading logic
     cmake -P "$UNINSTALL_SCRIPT"
 else
     echo "WARNING: CMake uninstall script not found at $UNINSTALL_SCRIPT."
@@ -54,7 +54,6 @@ else
 fi
 
 # --- Remove Runtime Directory ---
-# Systemd might remove this automatically if empty, but explicit remove is safer.
 RUNTIME_DIR="/run/event_detect"
 if [ -d "$RUNTIME_DIR" ]; then
     echo "INFO: Removing runtime directory $RUNTIME_DIR..."
@@ -64,6 +63,23 @@ fi
 # --- Systemd Reload ---
 echo "INFO: Reloading systemd manager configuration..."
 systemctl daemon-reload
+
+# --- User/Group Removal (Optional) ---
+echo ""
+read -p "Do you want to remove the system user '${SERVICE_USER}' and group '${SERVICE_GROUP}'? (This is for a complete purge) [y/N] " purge_response
+case "$purge_response" in
+    [yY][eE][sS]|[yY])
+        echo "INFO: Removing user '${SERVICE_USER}' and group '${SERVICE_GROUP}'..."
+        userdel "$SERVICE_USER" || echo "WARN: Could not remove user '${SERVICE_USER}' (might not exist)."
+        groupdel "$SERVICE_GROUP" || echo "WARN: Could not remove group '${SERVICE_GROUP}' (might not exist or user still belongs to it)."
+        ;;
+    *)
+        echo "INFO: Skipping removal of user and group."
+        echo "      To remove them manually later, run:"
+        echo "      sudo userdel $SERVICE_USER"
+        echo "      sudo groupdel $SERVICE_GROUP"
+        ;;
+esac
 
 echo ""
 echo "--- Uninstallation Complete ---"
