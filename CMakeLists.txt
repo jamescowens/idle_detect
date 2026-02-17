@@ -314,6 +314,40 @@ endif()
 # Uninstall target
 configure_file(uninstall.cmake.in uninstall.cmake @ONLY)
 
+# --- Testing ---
+option(BUILD_TESTING "Build tests" ON)
+
+if(BUILD_TESTING)
+    include(FetchContent)
+    FetchContent_Declare(
+        googletest
+        GIT_REPOSITORY https://github.com/google/googletest.git
+        GIT_TAG v1.15.2
+    )
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+
+    enable_testing()
+    include(GoogleTest)
+
+    add_executable(idle_detect_tests
+        tests/util_tests.cpp
+        tests/event_message_tests.cpp
+        tests/config_tests.cpp
+        util.cpp
+    )
+
+    target_include_directories(idle_detect_tests PRIVATE
+        "."
+    )
+
+    target_link_libraries(idle_detect_tests PRIVATE
+        GTest::gtest_main
+    )
+
+    gtest_discover_tests(idle_detect_tests)
+endif()
+
 # These below special targets are primarily useful for development purposes.
 
 # Install executables only
