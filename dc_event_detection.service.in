@@ -1,11 +1,10 @@
 [Unit]
 Description=DC Event Detection Service
-After=systemd-udev-settle.service
+After=systemd-udev-settle.service dev-shm.mount
 Wants=systemd-udev-settle.service
 
 [Service]
 Type=simple
-ProtectHome=true
 
 ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/event_detect /etc/event_detect.conf
 
@@ -21,6 +20,7 @@ Group=event_detect
 # Filesystem Access Control
 ProtectHome=true
 ProtectSystem=strict
+ReadWritePaths=/dev/shm
 PrivateTmp=yes
 ProtectKernelTunables=yes
 ProtectKernelModules=yes
