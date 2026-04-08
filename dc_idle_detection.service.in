@@ -8,6 +8,7 @@ ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/idle_detect_wrapper.sh
 Restart=on-failure
 RestartSec=5s
 ProtectSystem=strict
+ReadWritePaths=/run/event_detect
 NoNewPrivileges=yes
 
 [Install]

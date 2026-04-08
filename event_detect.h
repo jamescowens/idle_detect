@@ -176,6 +176,12 @@ public:
         int64_t GetEventCount() const;
 
         //!
+        //! \brief Returns whether the device has been lost (disconnected).
+        //! \return true if the device reported ENODEV
+        //!
+        bool IsDeviceLost() const;
+
+        //!
         //! \brief Method to run in the instantiated recorder thread.
         //!
         void EventActivityRecorderThread();
@@ -195,6 +201,12 @@ public:
         //! \brief Atomic that holds the current event tally for the monitored device.
         //!
         std::atomic<int64_t> m_event_count;
+
+        //!
+        //! \brief Atomic flag set when the device is disconnected (ENODEV). Checked by the monitor thread
+        //! to trigger re-enumeration.
+        //!
+        std::atomic<bool> m_device_lost;
     };
 
     //!

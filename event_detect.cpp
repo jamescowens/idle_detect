@@ -94,8 +94,6 @@ void Monitor::EventActivityMonitorThread()
     debug_log("INFO: %s: started",
               __func__);
 
-    size_t event_devices_size = 0;
-    size_t event_devices_size_prev = 0;
     int64_t event_count_prev = 0;
     int64_t event_count = 0;
 
@@ -116,14 +114,26 @@ void Monitor::EventActivityMonitorThread()
 
         lock.unlock();
 
-        event_devices_size_prev = GetEventDevices().size();
+        std::vector<fs::path> event_devices_prev = GetEventDevices();
 
         UpdateEventDevices();
 
-        event_devices_size = GetEventDevices().size();
+        std::vector<fs::path> event_devices = GetEventDevices();
 
-        if (m_initialized && event_devices_size != event_devices_size_prev) {
-            normal_log("INFO: %s: Input event device count changed. Restarting recorder threads.",
+        // Check if any recorder has lost its device.
+        bool device_lost = false;
+        for (const auto& recorder : g_event_recorders.GetEventRecorders()) {
+            if (recorder->IsDeviceLost()) {
+                normal_log("INFO: %s: Recorder for %s reported device lost.",
+                    __func__,
+                    recorder->GetEventDevicePath());
+                device_lost = true;
+                break;
+            }
+        }
+
+        if (m_initialized && (event_devices != event_devices_prev || device_lost)) {
+            normal_log("INFO: %s: Input event devices changed. Restarting recorder threads.",
                 __func__);
 
             pthread_kill(g_main_thread_id, SIGHUP);
@@ -348,6 +358,7 @@ int64_t InputEventRecorders::GetTotalEventCount() const
 InputEventRecorders::EventRecorder::EventRecorder(fs::path event_device_path)
     : m_event_device_path(event_device_path)
     , m_event_count(0)
+    , m_device_lost(false)
 {}
 
 //!
@@ -366,6 +377,11 @@ int64_t InputEventRecorders::EventRecorder::GetEventCount() const
     // No explicit lock needed.
 
     return m_event_count.load();
+}
+
+bool InputEventRecorders::EventRecorder::IsDeviceLost() const
+{
+    return m_device_lost.load();
 }
 
 void InputEventRecorders::EventRecorder::EventActivityRecorderThread()
@@ -455,9 +471,13 @@ void InputEventRecorders::EventRecorder::EventActivityRecorderThread()
                 // No event available, break to the outer loop to listen for signals
                 break;
             } else if (rc == -ENODEV) {
-                // Device disconnected
-                error_log("Device disconnected");
-                break;
+                // Device disconnected. Set flag for the monitor thread to trigger re-enumeration
+                // and exit the outer loop — there is nothing more to do on this fd.
+                error_log("%s: Device %s disconnected",
+                          __func__,
+                          device_access_path);
+                m_device_lost = true;
+                goto cleanup;
             } else {
                 error_log("%s: reading event: %s",
                           __func__,
@@ -470,6 +490,7 @@ void InputEventRecorders::EventRecorder::EventActivityRecorderThread()
         }
     }
 
+cleanup:
     // Cleanup
     libevdev_free(dev);
     close(fd);
