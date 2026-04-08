@@ -427,6 +427,69 @@ static int64_t GetIdleTimeKdeDBus() {
 }
 
 //!
+//! \brief Checks for screen idle inhibition on KDE Plasma 6 via the PowerManagement PolicyAgent D-Bus interface.
+//! This is needed because ext_idle_notifier_v1 may not reflect D-Bus-level inhibitions (e.g. from video players
+//! using org.freedesktop.ScreenSaver.Inhibit). The HasInhibition(1) call checks for ChangeScreenSettings inhibitions
+//! (type 1), which prevent screen idle/blanking.
+//! \return true if screen idle is inhibited, false otherwise (including on D-Bus errors).
+//!
+static bool CheckKdeInhibition() {
+    debug_log("INFO: %s: Checking KDE screen idle inhibitions via PolicyAgent D-Bus HasInhibition.", __func__);
+
+    GDBusConnection* connection = nullptr;
+    GError* dbus_error = nullptr;
+    GVariant* dbus_result = nullptr;
+    bool is_inhibited = false;
+
+    connection = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, &dbus_error);
+    if (!connection) {
+        if (dbus_error) {
+            debug_log("INFO: %s: Cannot connect to session bus for KDE inhibit check: %s", __func__, dbus_error->message);
+            g_error_free(dbus_error);
+        } else {
+            debug_log("INFO: %s: Cannot connect to session bus for KDE inhibit check (unknown error).", __func__);
+        }
+        return false;
+    }
+
+    const char* service_name = "org.kde.Solid.PowerManagement";
+    const char* object_path = "/org/kde/Solid/PowerManagement/PolicyAgent";
+    const char* interface_name = "org.kde.Solid.PowerManagement.PolicyAgent";
+    const char* method_name = "HasInhibition";
+
+    // Type 1 = ChangeScreenSettings (prevents screen idle/blanking)
+    guint32 inhibition_type = 1;
+
+    dbus_result = g_dbus_connection_call_sync(connection,
+                                              service_name, object_path, interface_name, method_name,
+                                              g_variant_new("(u)", inhibition_type),
+                                              G_VARIANT_TYPE("(b)"),
+                                              G_DBUS_CALL_FLAGS_NONE,
+                                              500, // Timeout (ms)
+                                              nullptr, &dbus_error);
+
+    if (dbus_error) {
+        debug_log("INFO: %s: Error calling %s: %s (Perhaps not KDE or method unavailable?)",
+                  __func__, method_name, dbus_error->message);
+        g_error_free(dbus_error);
+        is_inhibited = false;
+    } else if (dbus_result) {
+        gboolean inhibited_result = FALSE;
+        g_variant_get(dbus_result, "(b)", &inhibited_result);
+        is_inhibited = (inhibited_result == TRUE);
+        debug_log("INFO: %s: PolicyAgent.HasInhibition(type=%u) returned: %s",
+                  __func__, inhibition_type, is_inhibited ? "true" : "false");
+        g_variant_unref(dbus_result);
+    } else {
+        error_log("%s: Call to %s returned null result without error.", __func__, method_name);
+        is_inhibited = false;
+    }
+
+    g_object_unref(connection);
+    return is_inhibited;
+}
+
+//!
 //! \brief This helper function checks for idle inhibited on Gnome sessions and works for both Gnome X and Wayland.
 //! \return
 //!
@@ -653,11 +716,33 @@ int64_t GetIdleTimeSeconds() {
         return -2;
     }
 
-    if (IsKdeSession()) { // For KDE X or Wayland
-        // KDE D-Bus method handles inhibition internally by periodically resetting the idle time returned.
-        debug_log("INFO: %s: KDE session detected. Using KDE D-Bus method.", __func__);
+    if (IsKdeSession()) {
+        if (IsWaylandSession()) {
+            // KDE Wayland (Plasma 6+): ksmserver GetSessionIdleTime is removed and
+            // org.freedesktop.ScreenSaver.GetSessionIdleTime returns "not supported" on Wayland.
+            // Use ext_idle_notifier_v1 for idle time with a separate D-Bus inhibition check via
+            // the PowerManagement PolicyAgent, since ext_idle_notifier_v1 may not reflect D-Bus-level
+            // inhibitions from applications using org.freedesktop.ScreenSaver.Inhibit.
+            debug_log("INFO: %s: KDE Wayland session detected. Using ext_idle_notifier_v1 with PolicyAgent inhibition check.",
+                      __func__);
 
-        return GetIdleTimeKdeDBus(); // Returns >= 0 or -1
+            if (CheckKdeInhibition()) {
+                debug_log("INFO: %s: KDE screen idle is inhibited, returning 0 idle seconds.", __func__);
+                return 0;
+            }
+
+            if (g_wayland_idle_monitor.IsAvailable()) {
+                return g_wayland_idle_monitor.GetIdleSeconds();
+            }
+
+            error_log("ERROR: %s: WaylandIdleMonitor not available for KDE Wayland session.", __func__);
+            return -1;
+        } else {
+            // KDE X11 (Plasma 5 or Plasma 6 on X11): ksmserver D-Bus method handles inhibition
+            // internally by periodically resetting the idle time returned.
+            debug_log("INFO: %s: KDE X11 session detected. Using KDE D-Bus method.", __func__);
+            return GetIdleTimeKdeDBus();
+        }
     } else if (IsWaylandSession()) { // Non-KDE Wayland (Try GNOME D-Bus for both idle time and inhibition)
         debug_log("INFO: %s: Non-KDE Wayland session. Checking GNOME D-Bus idle time and inhibition.", __func__);
 
@@ -1046,26 +1131,20 @@ bool WaylandIdleMonitor::Start(int notification_timeout_ms) {
     // Includes retries internally now
     if (!InitializeWayland()) {
         error_log("%s: Failed to initialize Wayland or find required protocols after retries.", __func__);
-        CleanupWayland(); // Clean up pipe FDs and any partial Wayland state
-        m_initialized.store(false);
-        return false;
+        goto start_failed;
     }
 
     // Check again after InitializeWayland succeeded
     if (!m_seat || !m_idle_notifier) {
         error_log("%s: Required Wayland interfaces not bound even after InitializeWayland success (logic error?).", __func__);
-        CleanupWayland();
-        m_initialized.store(false);
-        return false;
+        goto start_failed;
     }
 
     // Create the specific idle notification request object
     CreateIdleNotification();
     if (!m_idle_notification) {
         error_log("%s: Failed to create Wayland idle notification object.", __func__);
-        CleanupWayland();
-        m_initialized.store(false);
-        return false;
+        goto start_failed;
     }
 
     // If Wayland setup okay, start the thread to run the event loop
@@ -1073,19 +1152,22 @@ bool WaylandIdleMonitor::Start(int notification_timeout_ms) {
         m_monitor_thread = std::thread(&WaylandIdleMonitor::WaylandMonitorThread, this);
     } catch (const std::system_error& e) {
         error_log("%s: Failed to start Wayland monitor thread: %s", __func__, e.what());
-        CleanupWayland(); // Clean up Wayland resources if thread fails to start
-        m_initialized.store(false);
-        return false;
+        goto start_failed;
     } catch (...) {
         error_log("%s: Unknown error starting Wayland monitor thread.", __func__);
-        CleanupWayland();
-        m_initialized.store(false);
-        return false;
+        goto start_failed;
     }
 
     m_initialized.store(true); // Set initialized only after thread starts successfully
     normal_log("INFO: %s: Wayland idle monitor started successfully.", __func__);
     return true;
+
+start_failed:
+    CleanupWayland();
+    if (m_interrupt_pipe_fd[0] != -1) { close(m_interrupt_pipe_fd[0]); m_interrupt_pipe_fd[0] = -1; }
+    if (m_interrupt_pipe_fd[1] != -1) { close(m_interrupt_pipe_fd[1]); m_interrupt_pipe_fd[1] = -1; }
+    m_initialized.store(false);
+    return false;
 }
 
 // Stop method
@@ -1133,6 +1215,10 @@ void WaylandIdleMonitor::Stop() {
 
     // Clean up Wayland resources *after* thread has stopped using them
     CleanupWayland();
+
+    // Close interrupt pipe FDs (owned by Start()/Stop(), not CleanupWayland())
+    if (m_interrupt_pipe_fd[0] != -1) { close(m_interrupt_pipe_fd[0]); m_interrupt_pipe_fd[0] = -1; }
+    if (m_interrupt_pipe_fd[1] != -1) { close(m_interrupt_pipe_fd[1]); m_interrupt_pipe_fd[1] = -1; }
 
     m_initialized.store(false); // Mark as no longer initialized
     normal_log("INFO: %s: Wayland idle monitor stopped.", __func__);
@@ -1248,9 +1334,9 @@ void WaylandIdleMonitor::CleanupWayland() {
         wl_display_disconnect(m_display);
         m_display = nullptr;
     }
-    // Close interrupt pipe FDs
-    if (m_interrupt_pipe_fd[0] != -1) { close(m_interrupt_pipe_fd[0]); m_interrupt_pipe_fd[0] = -1; }
-    if (m_interrupt_pipe_fd[1] != -1) { close(m_interrupt_pipe_fd[1]); m_interrupt_pipe_fd[1] = -1; }
+    // Note: Interrupt pipe FDs are NOT closed here. They are owned by Start()/Stop(), not by the
+    // Wayland connection lifecycle. CleanupWayland() is called from InitializeWayland() retry loops
+    // where the pipe must survive across attempts.
 
     // m_is_initialized is set in Stop() AFTER cleanup is done.
 }
