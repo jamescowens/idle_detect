@@ -56,14 +56,14 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-# --- Check for invoking user (still needed for user/group creation ownership checks if refined later) ---
+# --- Check for invoking user ---
+# SUDO_USER is needed to run the build step as the non-root user, avoiding
+# root-owned files in the build directory.
 if [ -z "$SUDO_USER" ]; then
-    # This case might occur if run directly as root, not via sudo from a user session.
-    # For user/group creation, this is okay, but user service steps were removed anyway.
-    echo "WARNING: \$SUDO_USER is not set (maybe run directly as root?)."
-    # We don't strictly need SUDO_USER anymore in *this* script after removing user steps.
+    echo "ERROR: \$SUDO_USER is not set. Please run this script via sudo, not directly as root."
+    echo "       Example: sudo ./install.sh"
+    exit 1
 fi
-# TARGET_USER_HOME determination not needed in this script anymore.
 
 echo "--- Starting System-Level Installation ---"
 echo "INFO: Install prefix set to: ${INSTALL_PREFIX}"
@@ -73,16 +73,18 @@ echo "INFO: Ensuring necessary build tools (cmake, make/ninja, C++/C compiler) a
 echo "      (See README.md for dependency package names for your distribution)."
 
 # --- Build Step ---
+# Run cmake configure and build as the invoking user (not root) to avoid
+# leaving root-owned files in the build directory that break subsequent
+# non-root builds.
 echo "INFO: Ensuring clean build directory: $BUILD_DIR"
-rm -rf "$BUILD_DIR" # Clean first! (Run as root via sudo)
-mkdir -p "$BUILD_DIR" # Create fresh
+rm -rf "$BUILD_DIR"
+sudo -u "$SUDO_USER" mkdir -p "$BUILD_DIR"
 
 echo "INFO: Configuring project with CMake..."
 echo "INFO: Running CMake: cmake -S . -B ${BUILD_DIR} ${CMAKE_CONFIGURE_ARGS}"
 
-# Execute cmake configure command from project root, specifying Source and Build dirs
-# Run directly within the sudo context
-if ! cmake -S . -B "$BUILD_DIR" ${CMAKE_CONFIGURE_ARGS} ; then
+# Execute cmake configure command as the invoking user
+if ! sudo -u "$SUDO_USER" cmake -S . -B "$BUILD_DIR" ${CMAKE_CONFIGURE_ARGS} ; then
     echo "ERROR: CMake configuration command failed with exit code $?."
     exit 1
 fi
@@ -98,15 +100,14 @@ else
 fi
 
 echo "INFO: Building project in ${BUILD_DIR}..."
-# Build using the specified build directory, no need to cd
-if cmake --build "$BUILD_DIR" -j$(nproc) ; then
+# Build as the invoking user
+if sudo -u "$SUDO_USER" cmake --build "$BUILD_DIR" -j$(nproc) ; then
     echo "INFO: Build successful."
 else
     BUILD_EC=$?
     echo "ERROR: Build failed with exit code $BUILD_EC."
     exit 1
 fi
-# No need to cd back
 
 # --- Install System Files ---
 echo "INFO: Installing system files (binaries, system service, system config) to prefix '${INSTALL_PREFIX}'..."
