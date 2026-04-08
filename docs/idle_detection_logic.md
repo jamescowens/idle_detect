@@ -190,18 +190,21 @@ hasn't changed yet (e.g., between a disconnect and reconnect).
 
 w0vncserver (TigerVNC 1.16.0) uses `org.freedesktop.portal.RemoteDesktop`
 for input injection on KWin (since KWin doesn't implement the wlr virtual
-input protocols). KWin does not reset its idle timer for portal-injected
-or virtual input. This means:
+input protocols `zwlr_virtual_pointer_v1` / `zwp_virtual_keyboard_v1`).
 
-- Moving the mouse via VNC does not reset KWin's idle timer
-- `ext_idle_notifier_v1` reports idle even during active VNC use
-- event_detect's `/dev/input` monitoring also doesn't see VNC input
-  (virtual input doesn't create `/dev/input` events)
-- **Current workaround**: `force_state.sh FORCED_ACTIVE`
-- **Planned fix**: Monitor virtual input at the idle_detect level
+On KDE Plasma 6 (confirmed on openSUSE Leap 16.0), KWin correctly resets
+its idle timer for portal-injected input. This means `ext_idle_notifier_v1`
+accurately reflects VNC input activity — moving the mouse in VNC resets
+idle, stopping movement allows idle to accumulate. No special VNC handling
+is needed in idle_detect.
 
-This is a KWin gap — wlroots compositors (Sway, etc.) do reset idle
-on virtual input.
+Note that event_detect's `/dev/input` monitoring does not see VNC input
+(virtual input doesn't create `/dev/input` events), but this is handled
+correctly because idle_detect's GUI idle time (via `ext_idle_notifier_v1`)
+is combined with event_detect's hardware idle time via `std::min`.
+
+Older Plasma versions may not reset idle on portal input — this was a
+known KWin gap that appears to have been fixed upstream in Plasma 6.
 
 ### systemd-logind IdleSinceHint
 
