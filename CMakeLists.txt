@@ -49,6 +49,10 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic -fPIE -fstack-p
 include(CheckCXXSourceCompiles) # Include the necessary module
 message(STATUS "Checking for C++17 <filesystem>, <variant>, <atomic> support...")
 
+# check_cxx_source_compiles does not inherit CMAKE_CXX_STANDARD;
+# the standard flag must be passed explicitly via CMAKE_REQUIRED_FLAGS.
+set(CMAKE_REQUIRED_FLAGS "-std=c++17")
+
 # Check if a small code snippet using these features compiles
 check_cxx_source_compiles(
 "
