@@ -49,6 +49,10 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra -Wpedantic -fPIE -fstack-p
 include(CheckCXXSourceCompiles) # Include the necessary module
 message(STATUS "Checking for C++17 <filesystem>, <variant>, <atomic> support...")
 
+# check_cxx_source_compiles does not inherit CMAKE_CXX_STANDARD;
+# the standard flag must be passed explicitly via CMAKE_REQUIRED_FLAGS.
+set(CMAKE_REQUIRED_FLAGS "-std=c++17")
+
 # Check if a small code snippet using these features compiles
 check_cxx_source_compiles(
 "
@@ -145,24 +149,16 @@ configure_file(idle_detect.conf.in ${CMAKE_CURRENT_BINARY_DIR}/idle_detect.conf 
 configure_file(idle-detect-autostart.desktop.in ${CMAKE_CURRENT_BINARY_DIR}/idle-detect-autostart.desktop @ONLY)
 
 
-execute_process(
-    COMMAND ${PKG_CONFIG_EXECUTABLE} --variable=pkgdatadir wayland-protocols
-    OUTPUT_VARIABLE WaylandProtocols_DATADIR
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    RESULT_VARIABLE _pkg_config_result
-    ERROR_QUIET
-)
-if(NOT _pkg_config_result EQUAL 0 OR NOT WaylandProtocols_DATADIR)
-    message(FATAL_ERROR "Failed to get pkgdatadir for wayland-protocols using pkg-config.")
-else()
-    message(STATUS "Found wayland-protocols data dir via pkg-config: ${WaylandProtocols_DATADIR}")
-endif()
-
 find_program(WAYLAND_SCANNER_EXECUTABLE wayland-scanner REQUIRED)
 
-set(IDLE_NOTIFY_XML "${WaylandProtocols_DATADIR}/staging/ext-idle-notify/ext-idle-notify-v1.xml")
+# ext-idle-notify-v1 is vendored at protocols/ext-idle-notify-v1.xml rather
+# than pulled from the system wayland-protocols package. This avoids a
+# build-time floor on wayland-protocols >= 1.31 (Ubuntu jammy ships 1.25),
+# and does not introduce any runtime dependency — wayland-scanner just
+# compiles the XML into generated C sources.
+set(IDLE_NOTIFY_XML "${CMAKE_CURRENT_SOURCE_DIR}/protocols/ext-idle-notify-v1.xml")
 if(NOT EXISTS ${IDLE_NOTIFY_XML})
-    message(FATAL_ERROR "Wayland protocol XML file not found: ${IDLE_NOTIFY_XML}. Check wayland-protocols-devel.")
+    message(FATAL_ERROR "Vendored wayland protocol XML not found: ${IDLE_NOTIFY_XML}.")
 endif()
 set(IDLE_NOTIFY_CLIENT_HEADER "${CMAKE_CURRENT_BINARY_DIR}/ext-idle-notify-v1-protocol.h")
 set(IDLE_NOTIFY_CLIENT_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/ext-idle-notify-v1-client-protocol.c")
@@ -233,9 +229,16 @@ set(INSTALL_BIN_DIR "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}" CACHE PATH
 
 if(EXISTS "${SYSCONF_INSTALL_DIR}")
     set(INSTALL_CONFIG_DIR "${SYSCONF_INSTALL_DIR}" CACHE PATH "Installation directory for configuration files")
+elseif(IS_ABSOLUTE "${CMAKE_INSTALL_SYSCONFDIR}")
+    # Debian/Ubuntu packaging passes -DCMAKE_INSTALL_SYSCONFDIR=/etc (absolute).
+    # Leading-slash prefix would produce "//etc", which CMake rejects as a
+    # UNC path when DESTDIR is set.
+    set(INSTALL_CONFIG_DIR "${CMAKE_INSTALL_SYSCONFDIR}" CACHE PATH "Installation directory for configuration files")
 else()
-    # Note this should probably be ${CMAKE_INSTALL_PREFIX}/... but this complicates the config file location logic in the service files and is not necessary. There is nothing wrong
-    # with a local (non-package) install putting a single config file in /etc.
+    # Local (non-package) install: SYSCONFDIR defaults to the relative "etc".
+    # Force the single config file into /etc rather than ${PREFIX}/etc — the
+    # service files reference this path and relocating it complicates the
+    # template logic for no real gain.
     set(INSTALL_CONFIG_DIR "/${CMAKE_INSTALL_SYSCONFDIR}" CACHE PATH "Installation directory for configuration files")
 endif()
 
@@ -318,14 +321,24 @@ configure_file(uninstall.cmake.in uninstall.cmake @ONLY)
 option(BUILD_TESTING "Build tests" ON)
 
 if(BUILD_TESTING)
-    include(FetchContent)
-    FetchContent_Declare(
-        googletest
-        GIT_REPOSITORY https://github.com/google/googletest.git
-        GIT_TAG v1.15.2
-    )
-    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
-    FetchContent_MakeAvailable(googletest)
+    # Prefer a system-installed GoogleTest (e.g. libgtest-dev on Debian/Ubuntu)
+    # so the build works offline — Debian package builds set
+    # FETCHCONTENT_FULLY_DISCONNECTED=ON, which would otherwise break the
+    # FetchContent path.
+    find_package(GTest QUIET)
+    if(NOT GTest_FOUND)
+        message(STATUS "System GTest not found; falling back to FetchContent.")
+        include(FetchContent)
+        FetchContent_Declare(
+            googletest
+            GIT_REPOSITORY https://github.com/google/googletest.git
+            GIT_TAG v1.15.2
+        )
+        set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+        FetchContent_MakeAvailable(googletest)
+    else()
+        message(STATUS "Using system GTest: ${GTest_DIR}")
+    endif()
 
     enable_testing()
     include(GoogleTest)
