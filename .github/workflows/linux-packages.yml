@@ -73,8 +73,13 @@ jobs:
 
               # Prepend a per-codename changelog entry so the .deb filename and
               # version encode the target distro (e.g. 0.9.0.0-1~bookworm).
+              # dch refuses "0.9.0.0-1~codename" as a downgrade from
+              # "0.9.0.0-1" (tilde sorts before empty). This ~codename
+              # suffix is the standard Debian convention for upgrade-path
+              # hygiene, so force past the check.
               CURRENT_VER=$(dpkg-parsechangelog -S Version)
-              dch --force-distribution \
+              dch --force-bad-version \
+                  --force-distribution \
                   --newversion "${CURRENT_VER}~${CODENAME}" \
                   --distribution "${CODENAME}" \
                   "Rebuild for ${CODENAME}."
