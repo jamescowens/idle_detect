@@ -390,9 +390,9 @@ static int64_t GetIdleTimeKdeDBus() {
     dbus_result = g_dbus_connection_call_sync(connection,
                                               service_name, object_path, interface_name, method_name,
                                               nullptr, // No input parameters
-                                              G_VARIANT_TYPE("(u)"), // <--- FIX: Expect uint32 reply type 'u'
+                                              G_VARIANT_TYPE("(u)"), // Expect uint32 reply type 'u'
                                               G_DBUS_CALL_FLAGS_NONE,
-                                              1000, // Timeout 1 sec
+                                              5000, // Timeout 5 sec — ksmserver can be slow to register at login
                                               nullptr, // Cancellable
                                               &dbus_error);
 
