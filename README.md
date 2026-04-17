@@ -1,82 +1,174 @@
 # idle_detect
 
-This is an effort to provide a compact C++ library to detect user activity on a workstation for the purpose of running commands when the idle/active state changes. It is motivated primarily to solve the idle detection issues with BOINC and other Linux based DC programs. I am implementing the following architecture as a separate service independent of any particular DC architecture.  One would hope logind in systemd would eventually fulfill this role, but as of now it does not correctly report the idle state of sessions. Note that I did a proof of concept in bash shell script, the last versions of which are in the deprecated folder for reference, and am currently very near completion on the C++ implementation. Event_detect is finished and the idle_detect C++ version is operational and being tested and fine-tuned.
+A compact C++17 idle-detection service for Linux, built to solve the
+long-standing idle-detection issues in BOINC and other distributed
+computing clients. Runs as a two-tier service: a system-level daemon
+aggregates raw input activity, and a per-user daemon handles
+session-aware idle time with desktop inhibit propagation (KDE, GNOME,
+Wayland via `ext_idle_notifier_v1`, X11 via XScreenSaver).
 
-Note the C++ is implemented in modern C++-17 compliant code, in an object oriented manner. It also is multi-threaded with appropriate locking/critical section control.
+Status: stable for daily use. Please file issues on GitHub for bugs
+or unsupported desktop configurations.
 
-1. There is a system level (via a dedicated system account event_detect) service, event_detect, run in a tightly controlled systemd service, dc_event_detection.service, that checks three things for idle time:
- - the /dev/input/event devices that are pointing devices. (This catches all physical mouse movement.)
- - the pts/tty devices for atime (which provides idle time for terminals/pseudo terminals, including ssh sessions.)
- - an input event via a named-pipe from user level detector (more on that below)
+## Installation
 
-The output of the event_detect is a shared memory segment /idle_detect_shmem and/or a file last_active_time.dat, which is in /run/event_detect. Note that on all reasonably recent Linux distributions, the /run directory is a tmpfs which is in memory only. The shared memory consists of a two element array of int64_t's that is the timestamp of the update and the last_active_time in Unix epoch seconds UTC. Similarly, the ONLY thing written to the last_active_time.dat is an int64 in string format that represents Unix epoch time in seconds UTC.
+Two paths: install a pre-built package for your distribution (preferred)
+or compile locally.
 
-2. There is a user level service, idle_detect, run as a user level systemd service (i.e. systemctl --user ...) that does the following things:
- - determines the session type, i.e. tty (non GUI), then whether kde.
- - for tty based session, uses event_detect.
- - If KDE, both X and Wayland provide idle time with inhibit propagation via org.kde.ksmserver GetSessionIdleTime. A session inhibit imposed by a movie application here causes the idle time to reset to zero every few seconds.
- - If not KDE, then via CheckGnomeInhibition() check org.gnome.SessionManager.IsInhibited which determines inhibition on both Wayland and X Gnome sessions. If not inhibited get Gnome idle time via mutter. If not Gnome get idle time from
-XSS. Note that the fallback strategy here means that essentially for non-KDE non-Gnome window managers, XSS and/or fallback to event_detect will be used, which means that idle inhibit functionality will be lost.
- - reports the combined last_active_time from all of the above (unless it fell back to USING event_detect) by writing to the named pipe set up by event_detect a short message in the form of timestamp:USER_ACTIVE, which is received by an asynchronous, non-blocking read thread on the event_detect side, which does validation on the message to prevent a security risk.
- - optionally can run dc control scripts itself to control dc programs directly based on idle time.
+### A. Packages (preferred)
 
-Since event_detect receives update last_active_times from its own sources AND all user level idle_detect instances running on the machine, and provides an overall last_active_time in last_active_time.dat, the BOINC client or other DC architecture can simply poll the shared memory segment once a second to determine idleness.
+#### openSUSE, Fedora, Arch Linux
 
-This resolves 99% of the issues we have been having with idle detection. Other specific window manager code can be added later for idle inhibit detection on other than KDE/Gnome.
+Pick your distribution from the one-click install page:
 
-This should be considered early beta code. It should run stably. Most corner cases have been tested, but installation is still not straightforward.
+https://software.opensuse.org//download.html?project=home%3Ajamescowens&package=idle_detect
 
-Development work is occurring on the development branch, and releases are on master. I am currently doing periodic pre-release tags (i.e. 0.x) at significant development points.
+Coverage: openSUSE Leap 15.6, Leap 16.0, Tumbleweed; Fedora 38–43 and
+Rawhide; Arch Linux. Multiple architectures depending on distribution
+(x86_64, aarch64, i586, armv7l, ppc64le).
 
-This code is licensed under the MIT license.
-## Installation procedure
+#### Debian, Ubuntu
 
-### Packages
-For packages please see https://software.opensuse.org//download.html?project=home%3Ajamescowens&package=idle_detect.
+Download the appropriate `.deb` for your codename and architecture from
+the latest GitHub release:
 
-### Local compilation
-If a package is not available for your distribution, you can compile and install it locally.
+https://github.com/jamescowens/idle_detect/releases
 
-#### Current dependencies (both library and development files - for compilation):
- - libevdev
- - libXss
- - dbus-1
- - glib-2.0
- - gobject-2.0
- - gio-2.0
+Coverage: Debian bookworm, trixie; Ubuntu jammy (22.04), noble (24.04),
+plucky (25.04). Architectures: amd64, arm64, armhf. Example:
 
-Dev packages needed to compile for
-Ubuntu:
- - libevdev-dev
- - libxss-dev
- - libdbus-1-dev
- - libglib2.0-dev
+```bash
+sudo dpkg -i idle-detect_<version>.<codename>_<arch>.deb
+sudo apt-get install -f   # resolve any dependencies dpkg didn't pull
+```
 
-Fedora:
- - libevdev-devel
- - libX11-devel
- - libXScrnSaver-devel
- - dbus-devel
- - glib2-devel
+Signature verification: `SHA256SUMS.txt` is published alongside each
+release.
 
-1. git clone https://github.com/jamescowens/idle_detect.git and change into the idle_detect directory.
+### Post-install activation
 
-2. Make sure you have installed the packages for the dependencies listed above. The actual names will vary depending on the distribution.
+After the package is installed, the **system service** (`dc_event_detection`)
+starts automatically via the system preset — no action needed.
 
-3. Compile and install the executables and system level service event_detect and config file with sudo ./install.sh. Two arguments can be supplied to install.sh: --prefix=\<prefix directory\> to change the installation prefix directory from the default of /usr/local/bin, and --cxx-compiler=\<compiler path\> to specify the path of a C++-17 compliant compiler. Note that the cmake install script run by install.sh will do a compile test to ensure the chosen compiler supports the C++-17 features used in this code, as some compilers report C++-17 compatible and accept the flag, but in fact do not fully implement all parts of the C++-17 standard. Gcc-7 is a good example.
+The **user service** (`dc_idle_detection`) is enabled via the user preset,
+but only takes effect for user sessions that start *after* package
+install. To light it up in your current session without logging out:
 
-4. Modify event_detect.conf to your liking with sudo nano /etc/event_detect.conf and if you changed the event_detect.conf file, reload the service with sudo systemctl restart dc_event_detection.
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now dc_idle_detection.service
+```
 
-5. Install user level script and user level service with ./user_install.sh (This is run as your regular user account, not sudo.)
+To verify both services:
 
-6. Modify idle_detect.conf to your liking with nano ~/.config/idle_detect.conf and reload the service with systemctl --user restart dc_idle_detection.
+```bash
+systemctl status dc_event_detection          # system
+systemctl --user status dc_idle_detection    # user
+```
 
-7. Check the status of both the services: sudo systemctl status dc_event_detection, and systemctl --user status dc_idle_detection, and make sure they are successfully running.
+### Configuration
 
-8. Modify the dc_pause and dc_unpause scripts to your liking (they are currently set up to control BOINC in its default installation).
-- sudo nano /usr/local/bin/dc_pause
-- sudo nano /usr/local/bin/dc_unpause
+- System config: `/etc/event_detect.conf` (edit as root, then
+  `sudo systemctl restart dc_event_detection`)
+- User config: `~/.config/idle_detect.conf` (auto-created on first run,
+  then `systemctl --user restart dc_idle_detection` after edits)
 
-9. If you make subsequent changes to the event_detect.conf file or the idle_detect.conf files, then you currently need to restart the appropriate service to pick up the changes.
+By default idle_detect does not run the DC-control scripts itself — the
+intent is that a DC client (e.g. BOINC) polls the shared memory segment
+at `/idle_detect_shmem` to decide when to pause. If you want idle_detect
+to call `dc_pause` / `dc_unpause` directly, enable that in
+`idle_detect.conf` and adjust the scripts at `/usr/bin/dc_pause` and
+`/usr/bin/dc_unpause` for your DC client.
 
-### This is beta level code.
+## Architecture
+
+Two processes, coordinated via a named pipe and POSIX shared memory:
+
+**`event_detect`** (system daemon, `event_detect:event_detect` user):
+- Monitors `/dev/input/event*` pointing devices (catches physical mouse
+  and keyboard activity)
+- Monitors pts/tty atime (catches terminal and SSH activity)
+- Receives messages from per-user `idle_detect` instances via named pipe
+- Exports aggregated `last_active_time` as `/idle_detect_shmem` (two
+  `int64_t`: update timestamp and last-active timestamp, Unix epoch
+  seconds UTC) and optionally `/run/event_detect/last_active_time.dat`
+
+**`idle_detect`** (per-user daemon, one per session):
+- Detects session type and uses the most appropriate idle source:
+  - **KDE X11 / Plasma 5**: `org.kde.ksmserver` `GetSessionIdleTime`
+    (includes inhibit propagation)
+  - **KDE Wayland / Plasma 6**: `ext_idle_notifier_v1` + D-Bus
+    `PowerManagement` inhibit check
+  - **GNOME**: `org.gnome.SessionManager.IsInhibited` + Mutter idle time
+  - **Other Wayland**: `ext_idle_notifier_v1`
+  - **X11 fallback**: XScreenSaver (`libXss`)
+  - **TTY**: falls back to `event_detect`
+- Reports activity to `event_detect` via named pipe as
+  `timestamp:USER_ACTIVE` messages
+
+A DC client polls `/idle_detect_shmem` once a second to decide whether
+to run. This resolves ≈99% of the idle-detection issues that were seen
+with BOINC directly.
+
+## Local compilation
+
+If no package is available for your distribution, build from source.
+
+### Dependencies (development packages)
+
+Debian / Ubuntu:
+```
+libevdev-dev libxss-dev libdbus-1-dev libglib2.0-dev libx11-dev
+libwayland-dev libwayland-bin wayland-protocols libgtest-dev
+cmake ninja-build pkg-config
+```
+
+Fedora / openSUSE:
+```
+libevdev-devel libXScrnSaver-devel dbus-devel glib2-devel
+wayland-devel wayland-protocols-devel gtest-devel
+cmake ninja-build pkgconfig
+```
+
+A C++17-capable compiler is required (GCC 9+ or Clang 10+).
+
+### Build and install
+
+```bash
+git clone https://github.com/jamescowens/idle_detect.git
+cd idle_detect
+sudo ./install.sh
+```
+
+Supported arguments:
+- `--prefix=<dir>` (default `/usr/local`)
+- `--cxx-compiler=<path>` — force a specific compiler. CMake runs a
+  feature-check compile; some compilers advertise C++17 without fully
+  implementing it (GCC 7 is a known case).
+
+`install.sh` handles the system side: building and installing
+`event_detect`, the system service file, and the system config. Then as
+your regular user (not sudo):
+
+```bash
+./user_install.sh
+```
+
+This installs the user service. Enable and start it:
+
+```bash
+systemctl --user daemon-reload
+systemctl --user enable --now dc_idle_detection.service
+```
+
+## Branching and releases
+
+- `development` — active development
+- `master` — releases and pre-release tags
+
+Packages published to OBS and attached to GitHub releases are built
+from `master` tags.
+
+## License
+
+MIT. See `LICENSE.md`.
