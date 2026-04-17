@@ -1,5 +1,6 @@
-idle-detect (0.7.12-1) unstable; urgency=medium
+idle-detect (0.9.0.0-1) unstable; urgency=medium
 
-  * Initial Debian packaging draft.
+  * Release 0.9.0.0.
+  * See https://github.com/jamescowens/idle_detect/releases for details.
 
- -- James C. Owens <jamesowens@optonline.net>  Wed, 16 Apr 2025 22:30:00 -0400
+ -- James C. Owens <jamesowens@optonline.net>  Fri, 17 Apr 2026 12:00:00 -0400

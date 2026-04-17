@@ -1,0 +1,13 @@
+#!/bin/sh
+set -e
+
+if ! getent group event_detect >/dev/null; then
+    addgroup --system event_detect
+fi
+if ! getent passwd event_detect >/dev/null; then
+    adduser --system --ingroup event_detect --no-create-home --home / \
+            --shell /sbin/nologin --gecos "Event Detect Service User" event_detect
+fi
+
+#DEBHELPER#
+exit 0

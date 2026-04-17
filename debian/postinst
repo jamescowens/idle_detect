@@ -1,0 +1,10 @@
+#!/bin/sh
+set -e
+
+if [ "$1" = "configure" ] || [ "$1" = "abort-upgrade" ]; then
+    adduser event_detect input  >/dev/null 2>&1 || true
+    adduser event_detect tty    >/dev/null 2>&1 || true
+fi
+
+#DEBHELPER#
+exit 0
