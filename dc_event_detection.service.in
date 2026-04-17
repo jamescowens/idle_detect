@@ -1,11 +1,11 @@
 [Unit]
 Description=DC Event Detection Service
-After=systemd-udev-settle.service dev-shm.mount
-Wants=systemd-udev-settle.service
+After=multi-user.target dev-shm.mount
 
 [Service]
 Type=simple
 
+ExecStartPre=/bin/sleep 5
 ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/event_detect /etc/event_detect.conf
 
 Restart=on-failure
