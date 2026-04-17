@@ -229,9 +229,16 @@ set(INSTALL_BIN_DIR "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}" CACHE PATH
 
 if(EXISTS "${SYSCONF_INSTALL_DIR}")
     set(INSTALL_CONFIG_DIR "${SYSCONF_INSTALL_DIR}" CACHE PATH "Installation directory for configuration files")
+elseif(IS_ABSOLUTE "${CMAKE_INSTALL_SYSCONFDIR}")
+    # Debian/Ubuntu packaging passes -DCMAKE_INSTALL_SYSCONFDIR=/etc (absolute).
+    # Leading-slash prefix would produce "//etc", which CMake rejects as a
+    # UNC path when DESTDIR is set.
+    set(INSTALL_CONFIG_DIR "${CMAKE_INSTALL_SYSCONFDIR}" CACHE PATH "Installation directory for configuration files")
 else()
-    # Note this should probably be ${CMAKE_INSTALL_PREFIX}/... but this complicates the config file location logic in the service files and is not necessary. There is nothing wrong
-    # with a local (non-package) install putting a single config file in /etc.
+    # Local (non-package) install: SYSCONFDIR defaults to the relative "etc".
+    # Force the single config file into /etc rather than ${PREFIX}/etc — the
+    # service files reference this path and relocating it complicates the
+    # template logic for no real gain.
     set(INSTALL_CONFIG_DIR "/${CMAKE_INSTALL_SYSCONFDIR}" CACHE PATH "Installation directory for configuration files")
 endif()
 
