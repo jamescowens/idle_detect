@@ -14,7 +14,7 @@ Build-Depends: debhelper-compat (= 13),
                libx11-dev,
                libwayland-dev,
                libwayland-bin,
-               wayland-protocols (>= 1.17)
+               libgtest-dev
 Standards-Version: 4.6.2
 Homepage: https://github.com/jamescowens/idle_detect
 Vcs-Browser: https://github.com/jamescowens/idle_detect
