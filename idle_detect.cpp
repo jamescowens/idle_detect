@@ -133,7 +133,7 @@ void IdleDetectConfig::ProcessArgs()
 
     // execute_dc_control_scripts
 
-    std::string execute_dc_control_scripts_arg = GetArgString("execute_dc_control_scripts", "true");
+    std::string execute_dc_control_scripts_arg = GetArgString("execute_dc_control_scripts", "false");
 
     if (execute_dc_control_scripts_arg == "1" || ToLower(execute_dc_control_scripts_arg) == "true") {
         m_config.insert(std::make_pair("execute_dc_control_scripts", true));

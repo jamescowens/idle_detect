@@ -73,12 +73,30 @@ systemctl --user status dc_idle_detection    # user
 - User config: `~/.config/idle_detect.conf` (auto-created on first run,
   then `systemctl --user restart dc_idle_detection` after edits)
 
-By default idle_detect does not run the DC-control scripts itself — the
-intent is that a DC client (e.g. BOINC) polls the shared memory segment
-at `/idle_detect_shmem` to decide when to pause. If you want idle_detect
-to call `dc_pause` / `dc_unpause` directly, enable that in
-`idle_detect.conf` and adjust the scripts at `/usr/bin/dc_pause` and
-`/usr/bin/dc_unpause` for your DC client.
+By default idle_detect does **not** call the DC-control scripts. It
+publishes activity state to `event_detect`, which exports
+`/idle_detect_shmem` and `/run/event_detect/last_active_time.dat`. A DC
+client that reads either of those can decide for itself when to pause.
+
+If your DC client does not read the shared memory segment directly
+(e.g. the current BOINC client), you can have idle_detect drive it by
+enabling the bundled scripts:
+
+1. Edit `~/.config/idle_detect.conf` and set
+   `execute_dc_control_scripts=1`.
+2. `systemctl --user restart dc_idle_detection`.
+
+The default `/usr/bin/dc_pause` and `/usr/bin/dc_unpause` scripts
+target BOINC via `boinccmd --set_run_mode never` / `always`. For other
+DC clients, edit those scripts, or point `active_command` /
+`idle_command` in `idle_detect.conf` at your own.
+
+> **Note for upgraders from 0.9.0.0.** That release shipped with
+> `execute_dc_control_scripts=1` enabled by default. Package managers
+> preserve `idle_detect.conf` across upgrades (it's marked as a
+> configuration file), so existing installs keep their prior setting —
+> your behavior does not change on upgrade. If you want the new
+> default-off behavior, edit `~/.config/idle_detect.conf` manually.
 
 ## Architecture
 
