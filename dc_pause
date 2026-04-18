@@ -1,7 +1,63 @@
 #!/bin/sh
+# dc_pause — pause the local DC (distributed computing) client.
+#
+# Called by idle_detect when the user becomes active (see active_command
+# in idle_detect.conf). Default behavior targets BOINC and switches its
+# run mode to "never".
+#
+# NOTE: This script is replaced on every package install and every
+# install.sh run. To customize permanently:
+#   1. Copy this file to ~/.local/bin/
+#   2. Edit the copy.
+#   3. Point active_command in ~/.config/idle_detect.conf at the copy
+#      (use the full path — ~/ does not expand in the config file).
+#   4. systemctl --user restart dc_idle_detection
+#
+# To override the BOINC data directory without editing the script, set
+# BOINC_DATA_DIR in the environment (e.g. via a user-service override
+# at ~/.config/systemd/user/dc_idle_detection.service.d/override.conf).
 
-password=$(cat /var/lib/boinc/gui_rpc_auth.cfg);
+set -eu
 
-boinccmd --host localhost --passwd $password --set_run_mode never
+# --- Locate BOINC data directory -------------------------------------
+# Honor a user-provided override first; otherwise probe common paths.
+BOINC_DATA_DIR="${BOINC_DATA_DIR:-}"
 
-echo "Set BOINC client to run mode \"never\"."
+if [ -z "$BOINC_DATA_DIR" ]; then
+    for candidate in \
+        /var/lib/boinc \
+        /var/lib/boinc-client \
+        /var/snap/boinc/common \
+        "$HOME/BOINC" \
+        "$HOME/.BOINC" \
+        "$HOME/.var/app/edu.berkeley.BOINC/data"
+    do
+        if [ -r "$candidate/gui_rpc_auth.cfg" ]; then
+            BOINC_DATA_DIR="$candidate"
+            break
+        fi
+    done
+fi
+
+if [ -z "$BOINC_DATA_DIR" ] || [ ! -r "$BOINC_DATA_DIR/gui_rpc_auth.cfg" ]; then
+    echo "dc_pause: cannot locate a readable gui_rpc_auth.cfg." >&2
+    echo "  Set BOINC_DATA_DIR in the environment, or copy this script" >&2
+    echo "  to ~/.local/bin/ and edit the path — see the header." >&2
+    exit 1
+fi
+
+# --- Check boinccmd availability -------------------------------------
+if ! command -v boinccmd >/dev/null 2>&1; then
+    echo "dc_pause: boinccmd not found in PATH." >&2
+    exit 1
+fi
+
+# --- Issue the pause command -----------------------------------------
+password=$(cat "$BOINC_DATA_DIR/gui_rpc_auth.cfg")
+
+if ! boinccmd --host localhost --passwd "$password" --set_run_mode never; then
+    echo "dc_pause: boinccmd failed. Is BOINC running?" >&2
+    exit 1
+fi
+
+echo 'Set BOINC client to run mode "never".'
