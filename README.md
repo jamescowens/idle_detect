@@ -78,18 +78,19 @@ publishes activity state to `event_detect`, which exports
 `/idle_detect_shmem` and `/run/event_detect/last_active_time.dat`. A DC
 client that reads either of those can decide for itself when to pause.
 
-If your DC client does not read the shared memory segment directly
-(e.g. the current BOINC client), you can have idle_detect drive it by
-enabling the bundled scripts:
+If your DC client does not read the shared memory segment directly —
+including **BOINC versions before 8.2.10** — enable the bundled
+scripts: set `execute_dc_control_scripts=1` in
+`~/.config/idle_detect.conf` and
+`systemctl --user restart dc_idle_detection`. The default
+`/usr/bin/dc_pause` and `/usr/bin/dc_unpause` target BOINC via
+`boinccmd --set_run_mode`. BOINC 8.2.10 and later read
+`/idle_detect_shmem` directly; for those the shipped default
+(scripts disabled) is correct.
 
-1. Edit `~/.config/idle_detect.conf` and set
-   `execute_dc_control_scripts=1`.
-2. `systemctl --user restart dc_idle_detection`.
-
-The default `/usr/bin/dc_pause` and `/usr/bin/dc_unpause` scripts
-target BOINC via `boinccmd --set_run_mode never` / `always`. For other
-DC clients, edit those scripts, or point `active_command` /
-`idle_command` in `idle_detect.conf` at your own.
+For the full list of every setting in both config files — types,
+defaults, interactions, common configurations — see
+**[docs/configuration.md](docs/configuration.md)**.
 
 > **Note for upgraders from 0.9.0.0.** That release shipped with
 > `execute_dc_control_scripts=1` enabled by default. Package managers
@@ -131,53 +132,43 @@ with BOINC directly.
 ## Local compilation
 
 If no package is available for your distribution, build from source.
-
-### Dependencies (development packages)
-
-Debian / Ubuntu:
-```
-libevdev-dev libxss-dev libdbus-1-dev libglib2.0-dev libx11-dev
-libwayland-dev libwayland-bin wayland-protocols libgtest-dev
-cmake ninja-build pkg-config
-```
-
-Fedora / openSUSE:
-```
-libevdev-devel libXScrnSaver-devel dbus-devel glib2-devel
-wayland-devel wayland-protocols-devel gtest-devel
-cmake ninja-build pkgconfig
-```
-
 A C++17-capable compiler is required (GCC 9+ or Clang 10+).
 
-### Build and install
+### Quick build
+
+```bash
+# Debian / Ubuntu
+sudo apt-get install build-essential cmake ninja-build pkg-config \
+    libevdev-dev libxss-dev libdbus-1-dev libglib2.0-dev libx11-dev \
+    libwayland-dev libwayland-bin wayland-protocols libgtest-dev
+
+# Fedora
+sudo dnf install gcc-c++ cmake ninja-build pkgconf \
+    libevdev-devel libXScrnSaver-devel dbus-devel glib2-devel \
+    wayland-devel wayland-protocols-devel gtest-devel
+
+# openSUSE
+sudo zypper install gcc-c++ cmake ninja pkgconf \
+    libevdev-devel libXScrnSaver-devel dbus-1-devel glib2-devel \
+    wayland-devel wayland-protocols-devel gtest
+
+# Arch
+sudo pacman -S --needed base-devel cmake ninja pkgconf \
+    libevdev libxss dbus glib2 libx11 wayland wayland-protocols gtest
+```
+
+Then:
 
 ```bash
 git clone https://github.com/jamescowens/idle_detect.git
 cd idle_detect
-sudo ./install.sh
+sudo ./install.sh            # system side
+./user_install.sh            # user side (not sudo)
 ```
 
-Supported arguments:
-- `--prefix=<dir>` (default `/usr/local`)
-- `--cxx-compiler=<path>` — force a specific compiler. CMake runs a
-  feature-check compile; some compilers advertise C++17 without fully
-  implementing it (GCC 7 is a known case).
-
-`install.sh` handles the system side: building and installing
-`event_detect`, the system service file, and the system config. Then as
-your regular user (not sudo):
-
-```bash
-./user_install.sh
-```
-
-This installs the user service. Enable and start it:
-
-```bash
-systemctl --user daemon-reload
-systemctl --user enable --now dc_idle_detection.service
-```
+For the full build guide — CMake options, manual CMake invocation,
+tests, sanitizer builds, developer workflow, local package builds,
+and troubleshooting — see **[docs/building.md](docs/building.md)**.
 
 ## Branching and releases
 
