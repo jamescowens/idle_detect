@@ -290,6 +290,64 @@ config) to `dc_pause` / `dc_unpause`, which call
 `boinccmd --set_run_mode`. Adjust `inactivity_time_trigger` from the
 default `300` if you want a different idle threshold.
 
+The shipped scripts probe a handful of common BOINC data directories
+(`/var/lib/boinc`, `/var/lib/boinc-client`, `/var/snap/boinc/common`,
+`$HOME/BOINC`, `$HOME/.BOINC`, and the Flatpak path), so most
+installations work without any configuration. If your BOINC data
+directory is somewhere else, set `BOINC_DATA_DIR` in the environment;
+see *Customizing dc_pause / dc_unpause* below.
+
+### Customizing dc_pause / dc_unpause
+
+The shipped `/usr/bin/dc_pause` and `/usr/bin/dc_unpause` scripts are
+**replaced on every package upgrade and every `install.sh` run**. Do
+not edit them in place — your edits will be lost.
+
+To customize permanently, copy the scripts to a location outside the
+idle_detect install prefix and point the config at the copies.
+`~/.local/bin/` is the recommended destination because it is never
+touched by any install path (package or local build), and it matches
+the execution context of the user service that runs these scripts.
+
+```bash
+mkdir -p ~/.local/bin
+cp /usr/bin/dc_pause /usr/bin/dc_unpause ~/.local/bin/
+chmod +x ~/.local/bin/dc_pause ~/.local/bin/dc_unpause
+# edit ~/.local/bin/dc_pause and ~/.local/bin/dc_unpause as needed
+```
+
+Then edit `~/.config/idle_detect.conf` — use the fully-expanded path
+(`~/` does **not** expand in the config file):
+
+```ini
+active_command=/home/USER/.local/bin/dc_pause
+idle_command=/home/USER/.local/bin/dc_unpause
+```
+
+Finally:
+
+```bash
+systemctl --user restart dc_idle_detection
+```
+
+`/usr/local/bin/` can also work as a system-wide location, but only
+for package installs — a local build via `install.sh` defaults to
+`--prefix=/usr/local` and will overwrite anything you place there.
+
+**Environment-variable override (no file edits).** If the only thing
+you need to change is the BOINC data directory, set `BOINC_DATA_DIR`
+on the user service instead of copying the scripts:
+
+```bash
+mkdir -p ~/.config/systemd/user/dc_idle_detection.service.d
+cat > ~/.config/systemd/user/dc_idle_detection.service.d/override.conf <<'EOF'
+[Service]
+Environment=BOINC_DATA_DIR=/path/to/your/boinc/data
+EOF
+systemctl --user daemon-reload
+systemctl --user restart dc_idle_detection
+```
+
 ### DC client reads shmem directly (idle_detect is passive)
 
 No changes needed — this is the shipped default. Your client opens
