@@ -76,6 +76,13 @@ constexpr int X_STARTUP_CONNECT_RETRIES = 6;
 //! A resolver run against N discovered displays on every reconcile tick cannot: the call is synchronous, so
 //! one dead display stalls every other endpoint behind it, every tick.
 //!
+//! A display dying at any point during the call, including between the connect and the query, yields -1 and
+//! does NOT terminate the process. Xlib's defaults do terminate it, so this call installs replacement X error
+//! handlers on first use; see the X error handling commentary in idle_detect.cpp for what those handlers must
+//! do and why one hook is not enough. The XScreenSaver Status return is checked as part of this, because a
+//! query that failed leaves its info buffer unwritten and the zeroed buffer would otherwise be published as a
+//! genuine "idle 0 seconds".
+//!
 //! \param display X display string, e.g. ":1". Empty uses the DISPLAY environment variable, which is the
 //!        historical behavior.
 //! \param max_connect_retries XOpenDisplay attempts before giving up. Values below one are treated as one.

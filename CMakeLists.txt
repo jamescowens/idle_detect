@@ -146,6 +146,43 @@ pkg_check_modules(GLIB REQUIRED glib-2.0 gobject-2.0 gio-2.0)
 # For ext-idle-notify-v1 wayland interface
 pkg_check_modules(WAYLAND_CLIENT REQUIRED wayland-client)
 
+# --- Check for XSetIOErrorExitHandler (libX11 >= 1.7) ---
+#
+# A fatal X I/O error is terminal for the process unless the application takes control of it:
+# libX11's _XDefaultIOError is declared _X_NORETURN and calls exit(1). idle_detect queries X
+# displays it does not own, so a display dying mid-query must not take the daemon with it.
+#
+# libX11 >= 1.7 provides XSetIOErrorExitHandler, which lets the application replace the
+# terminal exit. Older libX11 has no such hook and GetIdleTimeXss() falls back to
+# siglongjmp; see the X error handling section of idle_detect.cpp. Both the header
+# declaration and the library symbol are checked, since a mismatched pair is what actually
+# breaks the link.
+message(STATUS "Checking for XSetIOErrorExitHandler (libX11 >= 1.7)...")
+set(CMAKE_REQUIRED_FLAGS "-std=c++17")
+set(CMAKE_REQUIRED_INCLUDES ${X11_INCLUDE_DIR})
+set(CMAKE_REQUIRED_LIBRARIES ${X11_LIBRARIES})
+check_cxx_source_compiles(
+"
+#include <X11/Xlib.h>
+static void handler(Display*, void*) {}
+int main() {
+    XSetIOErrorExitHandler(static_cast<Display*>(nullptr), handler, nullptr);
+    return 0;
+}
+"
+HAVE_X11_IO_ERROR_EXIT_HANDLER
+)
+unset(CMAKE_REQUIRED_INCLUDES)
+unset(CMAKE_REQUIRED_LIBRARIES)
+unset(CMAKE_REQUIRED_FLAGS)
+
+if(HAVE_X11_IO_ERROR_EXIT_HANDLER)
+    message(STATUS "Checking for XSetIOErrorExitHandler (libX11 >= 1.7)... - Success")
+else()
+    message(STATUS "Checking for XSetIOErrorExitHandler (libX11 >= 1.7)... - Not found, "
+                   "using the siglongjmp fallback for fatal X I/O errors.")
+endif()
+
 # --- Configure Files from Templates ---
 # This creates the final files in the build directory with paths filled in
 message(STATUS "Configuring service files and wrapper script with install paths...")
@@ -218,6 +255,10 @@ target_include_directories(idle_detect PRIVATE
     ${GLIB_INCLUDE_DIRS}
     ${WAYLAND_CLIENT_INCLUDE_DIRS}
 )
+
+if(HAVE_X11_IO_ERROR_EXIT_HANDLER)
+    target_compile_definitions(idle_detect PRIVATE HAVE_X11_IO_ERROR_EXIT_HANDLER)
+endif()
 
 # Link libraries
 target_link_libraries(idle_detect PRIVATE

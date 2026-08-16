@@ -23,6 +23,8 @@
 #include <cerrno>      // For errno
 #include <future>      // For std::async in Stop() timeout
 #include <filesystem> // Needed for first-run config copy logic
+#include <mutex>       // For std::call_once installing the X error handlers
+#include <csetjmp>     // For sigsetjmp/siglongjmp in the pre-libX11-1.7 I/O error fallback
 
 // Platform Specific Libs
 #include <X11/Xlib.h>
@@ -650,14 +652,390 @@ static bool IsKdeSession() {
     // const char* kdeSession = getenv("KDE_SESSION_VERSION");
     // return (kdeSession != nullptr && strlen(kdeSession) > 0);
 }
+namespace {
+
+//
+// ---------------------------------------------------------------------------------------------------
+// X error handling
+// ---------------------------------------------------------------------------------------------------
+//
+// Xlib's defaults terminate the process, which is unacceptable for a daemon that queries X displays it
+// does not own. GetIdleTimeXss() is aimed at displays discovered from other sessions, so a display that
+// dies while it is being read must cost one reading, not the daemon. That is exactly the multi-endpoint
+// VNC case this design exists for: an endpoint appearing and disappearing is normal operation, not an
+// error condition.
+//
+// Xlib splits this into two unrelated failures, and they need different treatment.
+//
+// 1. PROTOCOL errors (X_Error events, e.g. BadWindow from a root window that vanished with its screen)
+//    are non-fatal. Xlib's _XDefaultError calls exit(1), but a replacement handler is explicitly
+//    permitted to return and Xlib carries on with the connection intact. HandleXProtocolError() logs and
+//    returns 0.
+//
+// 2. Fatal I/O errors (the connection itself is gone) are terminal by default, and no single hook fixes
+//    them. Reading libX11 1.8.10's XlibInt.c, _XIOError does:
+//
+//        if (_XIOErrorFunction != NULL) (*_XIOErrorFunction)(dpy); else _XDefaultIOError(dpy);
+//        exit_handler(dpy, exit_handler_data);
+//
+//    _XDefaultIOError is _X_NORETURN and calls exit(1), and the per-display exit_handler defaults to
+//    _XDefaultIOErrorExit, which also calls exit(1). Two consequences, both measured against a killed
+//    Xvfb rather than assumed:
+//
+//      - XSetIOErrorHandler is MANDATORY even on a libX11 that has XSetIOErrorExitHandler. With the I/O
+//        handler omitted the probe died with "X connection to :82 broken" and status 1, because
+//        _XDefaultIOError never returns and the exit hook is therefore never reached.
+//      - Returning from both hooks is safe. _XIOError returns 1 to its Xlib caller, the in-flight call
+//        unwinds normally, XScreenSaverQueryInfo() returns Status 0, and the subsequent XFree() and
+//        XCloseDisplay() on the dead Display both complete cleanly. A later connection to a different,
+//        live display is unaffected, so no global state is poisoned.
+//
+// THE WINDOW THE EXIT HANDLER CANNOT COVER
+//
+// XSetIOErrorExitHandler takes a Display*, so it cannot be installed until XOpenDisplay() has returned.
+// An I/O error raised INSIDE XOpenDisplay therefore still falls through to _XDefaultIOErrorExit and
+// exits. This is not theoretical: driving GetIdleTimeXss() through a proxy that severs the connection
+// after a chosen number of client writes, severing anywhere in the connection handshake killed the
+// process with status 1 while our I/O handler was logging, and only a severance after the handshake was
+// recoverable by the exit handler. That window matters here more than in a normal X client, because this
+// function opens a fresh connection on every single query rather than holding one open.
+//
+// So the two mechanisms are used where each is actually clean:
+//
+//   - XOpenDisplay() is wrapped in sigsetjmp/siglongjmp. The global I/O handler is the ONLY hook that
+//     runs in this phase, on every libX11 version, so escaping through it is the only available fix.
+//   - Everything after the open relies on the exit handler, which lets Xlib unwind its own call and
+//     leaves the Display safe to close normally. This is the common case and it is leak-free: 200
+//     induced post-open failures left the descriptor count unchanged at 4.
+//
+// A jump is not free, which is the other reason to confine it to the open. It cannot be followed by
+// XCloseDisplay(), because siglongjmp leaves Xlib's request buffers mid-write and a failed
+// XOpenDisplay() never hands out the pointer at all, so the Display structure is lost. Measured over 200
+// induced failures, abandoning it whole grew the descriptor table from 4 to 204 and RSS by 14 MB, which
+// is an outage for a daemon rather than a wasted reading. ReclaimDyingXConnection() therefore closes the
+// socket, which bounds the damage to memory; see it for why that is safe.
+//
+// On libX11 < 1.7 there is no exit hook at all, so the guard is widened to cover the post-open phases
+// too, and those failures pay the same cost. Doing that on a build that predates 2021 is the lesser evil
+// against exiting.
+//
+// Constraints the jump imposes, all satisfied by construction below:
+//   - The guarded regions are OpenXDisplayGuarded() and QueryXssIdleMs(), whose locals are raw pointers
+//     and integers only. Nothing in either has a non-trivial destructor, so the jump skips no cleanup.
+//     Both deliberately keep logging OUT of the guarded region, so no string temporary can ever be live
+//     across a jump.
+//   - No local written between sigsetjmp() and siglongjmp() is read on the jump path unless it is
+//     declared volatile, so no local can be read with an indeterminate value.
+//   - The jump buffer and its armed flag are thread_local, not global, so two threads resolving two X
+//     displays cannot land in each other's stack frame. The handler is re-entrant-safe because it
+//     disarms before jumping, so a second I/O error cannot jump into a frame that has already been left.
+//
+// A failed query leaves its XScreenSaverInfo untouched, which is why the Status return is now checked.
+// The old code ignored it and published info->idle regardless; since XScreenSaverAllocInfo() zeroes the
+// struct, a dying display would have reported "idle 0 seconds", i.e. "the user is active right now", on
+// a display that no longer exists. Suspending compute forever on a display that is gone is a worse
+// failure than the crash this fix is about.
+//
+// XInitThreads() is deliberately NOT called. It would have to be the first Xlib call in the process, and
+// it is not needed today: every X resolution runs on the main loop thread, and GetIdleTimeXss() opens and
+// closes its own Display inside the call, so no Display is ever shared between threads or even between
+// calls. If Phase 3 ever resolves X11IdleSources on worker threads, XInitThreads() becomes REQUIRED --
+// not for the per-display state, but because XOpenDisplay() mutates a process-global display list under
+// _Xglobal_lock, which is a no-op until XInitThreads() is called. It must then be added as the first
+// statement of main(). Note that it would also make _XIOError take the display's user lock without
+// releasing it before our handler runs, so the jump paths above would leave that lock held; that is
+// another reason not to enable it until it is actually needed.
+//
+
+//!
+//! \brief Set by the fatal I/O error handlers when the display being queried has died, so that
+//! GetIdleTimeXss() can report the failure and choose a safe teardown. Thread local because the handlers
+//! are process-global but the failure belongs to one call on one thread.
+//!
+thread_local bool t_x_display_died = false;
+
+//!
+//! \brief Landing point for the fatal I/O error escape. Always compiled: it guards XOpenDisplay() on
+//! every libX11 version, because the per-display exit handler cannot exist during the open.
+//!
+thread_local sigjmp_buf t_x_io_error_jump;
+
+//!
+//! \brief Whether t_x_io_error_jump currently refers to a live frame that is willing to be jumped into.
+//! When false the I/O handler returns instead, leaving the outcome to the exit handler.
+//!
+thread_local bool t_x_io_error_jump_armed = false;
+
+//!
+//! \brief The Display the fatal I/O error arrived on, handed from the handler to the landing site so
+//! that the abandoned connection's socket can be reclaimed. Only ever set immediately before a jump, and
+//! cleared as soon as it is consumed, so it can never name a stale Display.
+//!
+thread_local Display* t_x_dying_display = nullptr;
+
+//!
+//! \brief Closes the socket of a Display abandoned by a jump, bounding the cost of a failure that a
+//! daemon will meet repeatedly.
+//!
+//! A jump cannot be followed by XCloseDisplay(): siglongjmp leaves Xlib's request buffers mid-write, and
+//! during a failed XOpenDisplay() Xlib never even hands out the Display pointer, so the structure is only
+//! half built. The memory is therefore lost, and there is no public API to reclaim it.
+//!
+//! The file descriptor is a different matter, and is the one that actually threatens the process.
+//! Measured over 200 induced failures, abandoning the connection outright grew the descriptor table one
+//! entry per failure, 4 to 204, which walks a long-running daemon into its descriptor limit. Closing it
+//! here is safe because the Display is unreachable the moment we return: nothing in this process holds a
+//! pointer to it, no thread can query it, and Xlib only ever revisits a Display through a caller-supplied
+//! pointer.
+//!
+void ReclaimDyingXConnection()
+{
+    Display* dying = t_x_dying_display;
+    t_x_dying_display = nullptr;
+
+    if (dying == nullptr) {
+        return;
+    }
+
+    int connection_fd = ConnectionNumber(dying);
+
+    if (connection_fd >= 0) {
+        close(connection_fd);
+    }
+}
+
+//!
+//! \brief Replacement for Xlib's _XDefaultError, which calls exit(1). Returning from a protocol error
+//! handler is explicitly safe and Xlib continues with the connection.
+//!
+//! Only the numeric codes are logged. The handler must not perform operations on the display, and
+//! XGetErrorText() would allocate and consult the resource database on a connection that may be in the
+//! process of dying. The codes are sufficient here because this process issues exactly one kind of
+//! request on these displays.
+//!
+//! \param x_display Display the error arrived on. Unused; logging it would mean touching it.
+//! \param error_event The X error.
+//! \return 0 always. Xlib ignores the value.
+//!
+int HandleXProtocolError(Display* x_display, XErrorEvent* error_event)
+{
+    (void) x_display;
+
+    error_log("WARNING: %s: X protocol error: error_code=%d request_code=%d minor_code=%d serial=%lu. "
+              "Continuing; this display's reading is discarded.",
+              __func__,
+              (int) error_event->error_code,
+              (int) error_event->request_code,
+              (int) error_event->minor_code,
+              (unsigned long) error_event->serial);
+
+    return 0;
+}
+
+//!
+//! \brief Replacement for Xlib's _XDefaultIOError, which is _X_NORETURN and calls exit(1).
+//!
+//! Installing this is mandatory even when XSetIOErrorExitHandler() is available, because _XIOError runs
+//! this hook first and the default never returns, so the exit hook would otherwise never be reached.
+//!
+//! \param x_display Display whose connection was lost. Unused; the connection is gone.
+//! \return 0 when a guarded region is not active, handing control to the exit handler. When one is
+//!         active this does not return at all, having jumped back into that region.
+//!
+int HandleXIoError(Display* x_display)
+{
+    t_x_display_died = true;
+
+    if (t_x_io_error_jump_armed) {
+        // Disarmed before jumping so that a second I/O error cannot target a frame that has already
+        // been left, which is what makes this handler safe to re-enter.
+        t_x_io_error_jump_armed = false;
+
+        // Xlib passes the Display even when the failure happened inside XOpenDisplay() and the caller
+        // therefore never received it. That is the only chance to reclaim its socket.
+        t_x_dying_display = x_display;
+
+        siglongjmp(t_x_io_error_jump, 1);
+    }
+
+    return 0;
+}
+
+#ifdef HAVE_X11_IO_ERROR_EXIT_HANDLER
+//!
+//! \brief Replacement for Xlib's _XDefaultIOErrorExit, which calls exit(1). Returning from here makes
+//! _XIOError return to its Xlib caller, which then unwinds the in-flight call normally and leaves the
+//! Display safe to close.
+//! \param x_display Display whose connection was lost. Unused.
+//! \param user_data Unused; the per-call state is the thread_local flag above.
+//!
+void HandleXIoErrorExit(Display* x_display, void* user_data)
+{
+    (void) x_display;
+    (void) user_data;
+
+    t_x_display_died = true;
+}
+#endif
+
+//!
+//! \brief Installs the two process-global X error handlers exactly once.
+//!
+//! These are process-global, not per-display, so re-registering them on every GetIdleTimeXss() call
+//! would be a pointless write to shared state from whichever thread happened to call first. The
+//! per-display exit handler is a different thing and must be set on each Display, since it is a field of
+//! the Display itself; GetIdleTimeXss() does that after each successful open.
+//!
+void EnsureXErrorHandlersInstalled()
+{
+    static std::once_flag installed;
+
+    std::call_once(installed, []() {
+        XSetErrorHandler(HandleXProtocolError);
+        XSetIOErrorHandler(HandleXIoError);
+
+        debug_log("INFO: %s: Installed X protocol and I/O error handlers (%s).",
+                  __func__,
+#ifdef HAVE_X11_IO_ERROR_EXIT_HANDLER
+                  "XSetIOErrorExitHandler available for the post-open phases"
+#else
+                  "no XSetIOErrorExitHandler; siglongjmp guards the whole cycle"
+#endif
+                  );
+    });
+}
+
+//!
+//! \brief Opens an X display, surviving a connection that dies during the handshake.
+//!
+//! The guard is what distinguishes this from a bare XOpenDisplay(). An I/O error raised inside the open
+//! cannot be caught by the per-display exit handler, because there is no Display to attach one to yet,
+//! so the global I/O handler jumps back here instead.
+//!
+//! Only raw pointers live in this frame, so the jump skips no cleanup, and x_display is written after
+//! the sigsetjmp() but read only on the path that did not jump.
+//!
+//! \param display_name Display to open, or nullptr for the DISPLAY environment variable.
+//! \return The open display, or nullptr if it could not be opened or died during connection setup.
+//!
+Display* OpenXDisplayGuarded(const char* display_name)
+{
+    if (sigsetjmp(t_x_io_error_jump, 1) != 0) {
+        // Arrived from HandleXIoError(). Xlib never handed us a Display, so the half-built structure is
+        // unreachable and only its socket can be recovered.
+        ReclaimDyingXConnection();
+        return nullptr;
+    }
+
+    t_x_io_error_jump_armed = true;
+    Display* x_display = XOpenDisplay(display_name);
+    t_x_io_error_jump_armed = false;
+
+    return x_display;
+}
+
+//!
+//! \brief Outcome of the post-open XScreenSaver sequence, kept separate from the value so that the
+//! logging can happen outside the guarded region.
+//!
+enum class XssOutcome {
+    OK,
+    NO_EXTENSION,
+    ALLOC_FAILED,
+    QUERY_FAILED,
+    DISPLAY_DIED
+};
+
+//!
+//! \brief Runs the post-open XScreenSaver sequence: extension probe, info allocation, and the idle
+//! query.
+//!
+//! This is a separate function so that the guarded region is small enough to audit at a glance. Its
+//! locals are two ints, a raw pointer and an enum, none of which has a non-trivial destructor, and it
+//! contains no logging so that no string temporary can be live across a jump.
+//!
+//! On a libX11 with an exit handler no jump is armed here at all: Xlib unwinds the failed call by itself
+//! and the caller can close the Display normally. The guard is only compiled in for the fallback.
+//!
+//! \param x_display Open display to query.
+//! \param outcome Set to the reason for failure, or OK.
+//! \return Idle milliseconds >= 0 when outcome is OK, otherwise -1.
+//!
+int64_t QueryXssIdleMs(Display* x_display, XssOutcome* outcome)
+{
+    // volatile because the fallback build reads it on the jump path, where a non-volatile local written
+    // after sigsetjmp() would be indeterminate. The pointer is volatile, not the pointee, so it still
+    // passes to XFree() without a cast.
+    XScreenSaverInfo* volatile info = nullptr;
+
+#ifndef HAVE_X11_IO_ERROR_EXIT_HANDLER
+    if (sigsetjmp(t_x_io_error_jump, 1) != 0) {
+        // Arrived from HandleXIoError(). info is our own Xmalloc'd buffer and Xlib holds no reference to
+        // it, so reclaiming it is safe even though the stack was unwound from inside Xlib. The Display
+        // is NOT closed here; see the caller.
+        if (info != nullptr) {
+            XFree(info);
+        }
+
+        ReclaimDyingXConnection();
+
+        *outcome = XssOutcome::DISPLAY_DIED;
+        return -1;
+    }
+
+    t_x_io_error_jump_armed = true;
+#endif
+
+    int64_t idle_time_ms = -1;
+    int event_base = 0;
+    int error_base = 0;
+
+    if (!XScreenSaverQueryExtension(x_display, &event_base, &error_base)) {
+        *outcome = XssOutcome::NO_EXTENSION;
+    } else if ((info = XScreenSaverAllocInfo()) == nullptr) {
+        *outcome = XssOutcome::ALLOC_FAILED;
+    } else {
+        // A failed query leaves info->idle exactly as XScreenSaverAllocInfo() zeroed it, so the Status
+        // must gate the read. Publishing the zero would mean "the user is active right now" on a display
+        // that has just died.
+        if (XScreenSaverQueryInfo(x_display, DefaultRootWindow(x_display), info)) {
+            idle_time_ms = static_cast<int64_t>(info->idle);
+            *outcome = XssOutcome::OK;
+        } else {
+            *outcome = XssOutcome::QUERY_FAILED;
+        }
+
+        XFree(info);
+        info = nullptr;
+    }
+
+#ifndef HAVE_X11_IO_ERROR_EXIT_HANDLER
+    t_x_io_error_jump_armed = false;
+#endif
+
+    // The exit-handler path unwinds through the normal return above rather than jumping, so the died
+    // flag is the only thing that distinguishes it from an ordinary query failure.
+    if (t_x_display_died) {
+        *outcome = XssOutcome::DISPLAY_DIED;
+        return -1;
+    }
+
+    return idle_time_ms;
+}
+
+} // anonymous namespace
 
 // Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this from X11IdleSource.
 //
 // The local Display* is named x_display rather than display so it does not shadow the display name parameter.
 int64_t GetIdleTimeXss(const std::string& display, int max_connect_retries) {
-    debug_log("INFO: %s: Using XScreenSaver on display '%s'.",
-              __func__,
-              display.empty() ? "<default>" : display.c_str());
+    const char* display_label = display.empty() ? "<default>" : display.c_str();
+
+    debug_log("INFO: %s: Using XScreenSaver on display '%s'.", __func__, display_label);
+
+    // A display that is not this process's own can die at any point below, including during the
+    // connection handshake. Without these handlers that takes the whole daemon down.
+    EnsureXErrorHandlersInstalled();
 
     Display* x_display = nullptr;
 
@@ -669,7 +1047,10 @@ int64_t GetIdleTimeXss(const std::string& display, int max_connect_retries) {
     const int max_attempts = (max_connect_retries > 1) ? max_connect_retries : 1;
 
     for (int attempt = 1; attempt <= max_attempts; ++attempt) {
-        x_display = XOpenDisplay(display_name);
+        // Cleared before every attempt: a previous attempt's dead connection must not condemn this one.
+        t_x_display_died = false;
+
+        x_display = OpenXDisplayGuarded(display_name);
         if (x_display) break;
         if (attempt < max_attempts) {
             error_log("WARNING: %s: Could not open X display (attempt %d/%d). Retrying...", __func__, attempt, max_attempts);
@@ -680,23 +1061,55 @@ int64_t GetIdleTimeXss(const std::string& display, int max_connect_retries) {
         }
     }
 
-    int event_base, error_base;
-    if (!XScreenSaverQueryExtension(x_display, &event_base, &error_base)) {
-        error_log("%s: XScreenSaver extension unavailable.", __func__);
+    // Cleared again: the open succeeded, so anything the flag still holds belongs to an earlier attempt.
+    t_x_display_died = false;
+
+#ifdef HAVE_X11_IO_ERROR_EXIT_HANDLER
+    // Unlike the two handlers above this is a field of the Display, so it is set per connection. It only
+    // covers what happens from here on; the open itself was covered by the guard inside
+    // OpenXDisplayGuarded().
+    XSetIOErrorExitHandler(x_display, HandleXIoErrorExit, nullptr);
+#endif
+
+    XssOutcome outcome = XssOutcome::QUERY_FAILED;
+    int64_t idle_time_ms = QueryXssIdleMs(x_display, &outcome);
+
+    if (outcome == XssOutcome::DISPLAY_DIED) {
+#ifdef HAVE_X11_IO_ERROR_EXIT_HANDLER
+        // Xlib unwound its own call, so the Display is internally consistent and XCloseDisplay() tears it
+        // down without touching the dead socket. Verified against a killed Xvfb.
         XCloseDisplay(x_display);
+        error_log("WARNING: %s: X display '%s' died during the query. Discarding this reading.",
+                  __func__,
+                  display_label);
+#else
+        // siglongjmp left Xlib's request buffers mid-write and XCloseDisplay() would walk them, so the
+        // structure is abandoned and only its socket was reclaimed. Only reachable on libX11 < 1.7.
+        error_log("WARNING: %s: X display '%s' died during the query. Discarding this reading; the "
+                  "Display structure cannot be freed safely on this libX11.",
+                  __func__,
+                  display_label);
+#endif
         return -1;
     }
-    XScreenSaverInfo* info = XScreenSaverAllocInfo();
-    if (!info) {
-        error_log("%s: Could not allocate XScreenSaverInfo.", __func__);
-        XCloseDisplay(x_display);
-        return -1;
-    }
-    Window root = DefaultRootWindow(x_display);
-    XScreenSaverQueryInfo(x_display, root, info);
-    int64_t idle_time_ms = info->idle;
-    XFree(info);
+
     XCloseDisplay(x_display);
+
+    switch (outcome) {
+    case XssOutcome::OK:
+        break;
+    case XssOutcome::NO_EXTENSION:
+        error_log("%s: XScreenSaver extension unavailable on display '%s'.", __func__, display_label);
+        return -1;
+    case XssOutcome::ALLOC_FAILED:
+        error_log("%s: Could not allocate XScreenSaverInfo.", __func__);
+        return -1;
+    case XssOutcome::QUERY_FAILED:
+    case XssOutcome::DISPLAY_DIED:
+        error_log("%s: XScreenSaver query failed on display '%s'.", __func__, display_label);
+        return -1;
+    }
+
     int64_t idle_time_seconds = idle_time_ms / 1000;
     debug_log("INFO: %s: XScreenSaver reported: %lld ms (%lld seconds)", __func__, (int64_t)idle_time_ms, (int64_t)idle_time_seconds);
     return idle_time_seconds;
