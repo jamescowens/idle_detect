@@ -187,10 +187,9 @@ endif()
 
 # --- Configure Files from Templates ---
 # This creates the final files in the build directory with paths filled in
-message(STATUS "Configuring service files and wrapper script with install paths...")
+message(STATUS "Configuring service and config files with install paths...")
 configure_file(dc_event_detection.service.in ${CMAKE_CURRENT_BINARY_DIR}/dc_event_detection.service @ONLY)
 configure_file(dc_idle_detection.service.in ${CMAKE_CURRENT_BINARY_DIR}/dc_idle_detection.service @ONLY)
-configure_file(idle_detect_wrapper.sh.in ${CMAKE_CURRENT_BINARY_DIR}/idle_detect_wrapper.sh @ONLY)
 configure_file(event_detect.conf.in ${CMAKE_CURRENT_BINARY_DIR}/event_detect.conf @ONLY)
 configure_file(idle_detect.conf.in ${CMAKE_CURRENT_BINARY_DIR}/idle_detect.conf @ONLY)
 configure_file(idle-detect-autostart.desktop.in ${CMAKE_CURRENT_BINARY_DIR}/idle-detect-autostart.desktop @ONLY)
@@ -303,11 +302,6 @@ set(INSTALL_CUSTOMIZABLE_USER_SERVICE_DIR "$ENV{HOME}/.config/systemd/user" CACH
 # Install the executable and scripts
 install(TARGETS event_detect idle_detect read_shmem_timestamps DESTINATION ${INSTALL_BIN_DIR})
 install(FILES "dc_pause" "dc_unpause" "idle_detect_resources.sh" "force_state.sh" "event_detect_control.sh" "idle_detect_new_user_setup.sh"
-        PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ GROUP_EXECUTE GROUP_READ WORLD_EXECUTE WORLD_READ
-        DESTINATION ${INSTALL_BIN_DIR} )
-
-# Install GENERATED wrapper script
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/idle_detect_wrapper.sh
         PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ GROUP_EXECUTE GROUP_READ WORLD_EXECUTE WORLD_READ
         DESTINATION ${INSTALL_BIN_DIR} )
 
@@ -424,7 +418,6 @@ endif()
 add_custom_target(install_executables_only
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/event_detect" "${INSTALL_BIN_DIR}/event_detect"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/idle_detect" "${INSTALL_BIN_DIR}/idle_detect"
-    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/idle_detect_wrapper.sh" "${INSTALL_BIN_DIR}/idle_detect_wrapper.sh"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/idle_detect_resources.sh" "${INSTALL_BIN_DIR}/idle_detect_resources.sh"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/force_state.sh" "${INSTALL_BIN_DIR}/force_state.sh"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/event_detect_control.sh" "${INSTALL_BIN_DIR}/event_detect_control.sh"

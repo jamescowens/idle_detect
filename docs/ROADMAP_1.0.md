@@ -174,8 +174,7 @@ install scripts stay at root for discoverability.
 │                        #   idle_detect_new_user_setup.sh
 ├── systemd/             # *.service.in, *.preset
 ├── config/              # *.conf.in,
-│                        #   idle-detect-autostart.desktop.in,
-│                        #   idle_detect_wrapper.sh.in
+│                        #   idle-detect-autostart.desktop.in
 ├── cmake/               # uninstall.cmake.in
 ├── tests/               # already exists
 ├── docs/                # Doxyfile moves here
