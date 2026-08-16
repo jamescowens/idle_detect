@@ -501,6 +501,14 @@ void InputEventRecorders::EventRecorder::EventActivityRecorderThread()
                   libevdev_get_uniq(dev.get()));
     }
 
+    // The libevdev handle, not g_exit_code, is the authority on whether this recorder can read events. The
+    // initialization block above is entered under one read of g_exit_code and the read loop below under a later,
+    // separate one, and g_exit_code is not monotonic. A thread that observed a non-zero g_exit_code above therefore
+    // has an empty handle and must not fall through into the loop and call libevdev_next_event() on nullptr.
+    if (dev.get() == nullptr) {
+        return;
+    }
+
     struct input_event ev;
 
     while (g_exit_code == 0) {
