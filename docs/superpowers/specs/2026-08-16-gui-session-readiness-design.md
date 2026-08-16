@@ -195,6 +195,32 @@ to `event_detect` unconditionally, overriding the `use_event_detect` config sett
 "No endpoints and no shell" is the only path to `-2`. A shell present with no endpoints, or
 endpoints present with no shell, both yield a real result or `-1`.
 
+**When `-2` can and cannot fire.** `-2` is a statement about the *source set*, not about the
+readings: it fires only when the pool holds nothing at all. `-1` is a statement about the readings:
+sources exist, none produced a value. `main()` treats them differently on purpose. `-2` overrides
+the `use_event_detect` config setting, because in that state the only activity there is to see is
+tty and ssh and only `event_detect` can see it. `-1` does not override anything — a GUI session
+demonstrably exists and only the reading failed, so whether to fall back to `event_detect` stays
+the config's decision.
+
+It follows that there are legitimate, correctly-working sessions where `-2` can never fire, and
+they are not a fault:
+
+- **KDE on Wayland with no validated endpoint.** The shell is a source. It contributes inhibition
+  and no idle value, so it resolves `-1` on every tick, and the aggregate is `-1` forever. This is
+  the "contributes inhibition only" row of the source-chain table below, working exactly as
+  designed.
+- **GNOME without mutter**, for the same reason.
+
+In both, the pool is right to say `-1` rather than `-2`: there IS a GUI session, its shell is
+answering, and the user has a working configuration in which `use_event_detect` — true by
+default — supplies the reading. Nothing is being suppressed.
+
+See "Error handling" for the narrower case that IS a fault: a source that is retained after it has
+stopped working keeps the source set non-empty, so a session that genuinely has no readable source
+reports `-1` when it should report `-2`, and the override never fires for the user who disabled
+`use_event_detect`.
+
 ### The shell is a source, not a property of an endpoint
 
 The shell must **not** be fused into an endpoint's chain. With N X11 endpoints and one
@@ -256,14 +282,22 @@ This structure reproduces current behavior in every case:
 
 ## Components
 
-New files, since `idle_detect.cpp` is already 2054 lines.
+New files. The stated reason was that `idle_detect.cpp` was already 2054 lines; **that reason was
+not achieved, and it was the wrong reason.** `idle_detect.cpp` is 3194 lines on this branch, half
+again as large as it started, with about 3,000 further lines in the eight new files beside it. It
+grew because the work that landed in it — reconcile wiring, the discovery-input plumbing, the
+XAUTHORITY hint, the log throttles — is new behaviour rather than behaviour moved out, and because
+the Wayland monitor and the X11 query stayed put. Nothing was extracted from it to make it smaller.
 
-The file attributions below are as implemented. The split is sharper than first sketched, along
-one line: anything that makes system contact — D-Bus via GIO, Wayland, X11 — is confined to
+The split that did get made was drawn on a different line, and it is the one worth keeping:
+anything that makes system contact — D-Bus via GIO, Wayland, X11 — is confined to
 `idle_sources_system.h/cpp`, and everything else is kept free of those dependencies so it links
 into `idle_detect_tests`, which links none of those libraries. That is why `ShellMonitor` and the
 three concrete `IdleSource` implementations live in the system file while the interface, the
-discovery union, and the pool do not.
+discovery union, and the pool do not. Testability is the criterion; line count never was, and the
+original rationale should be read as a placeholder for it rather than as a goal that was met.
+
+The file attributions below are as implemented.
 
 ### `DiscoverEndpoints()` — `session_discovery.h/cpp`
 
@@ -299,11 +333,19 @@ the `Environment` `DISPLAY` hint supplies.
 ### `ShellMonitor` — `idle_sources_system.h/cpp`
 
 Detects the shell by bus name ownership and exposes shell kind and inhibition state. As
-implemented it **polls** `NameHasOwner` for `org.kde.ksmserver`, `org.gnome.Mutter.IdleMonitor`
-and `org.gnome.SessionManager` on every reconcile rather than subscribing to `NameOwnerChanged`;
-see "Triggers and data flow" for why, and for the debounce that a polled probe turned out to
-need. It holds no state and no connection and is constructed per call, GIO's shared session bus
-connection being what is actually reused.
+implemented it **polls** rather than subscribing to `NameOwnerChanged`; see "Triggers and data
+flow" for why, and for the debounce that a polled probe turned out to need. It holds no state and
+no connection and is constructed per call, GIO's shared session bus connection being what is
+actually reused.
+
+`DetectShellKind()` knows three names — `org.kde.ksmserver`, `org.gnome.Mutter.IdleMonitor` and
+`org.gnome.SessionManager` — but does **not** probe all three per reconcile. It short-circuits on
+the first owner it finds, in that order, so the per-tick cost is one `NameHasOwner` round trip on
+KDE, two on GNOME with mutter, and three only on GNOME without mutter and on a session with no
+shell at all. Ordering is therefore load-bearing for cost as well as for classification: KDE is
+first because the old `IsKdeSession()` branch was, and mutter precedes gnome-session because it is
+the common GNOME case and answers both questions at once. The GNOME shell factory issues one
+further probe, `HasGnomeIdleMonitor()`, and only when a GNOME shell source is being built.
 
 `org.gnome.SessionManager` is a third name the original sketch did not have. Presence for
 inhibition and presence for an idle value are different questions: gnome-session answers
@@ -397,7 +439,12 @@ logout-to-greeter are the cases that matter.
 
 **TTY/VT sessions are out of scope** — handled by `event_detect`'s tty detector, which is
 optional and which some users deliberately disable so terminal access does not stop DC. This
-mechanism reasons about tty only as "no GUI endpoints found → return `-2`".
+mechanism does not reason about tty at all; it has no concept of one. What it reasons about is an
+empty source set — **no endpoints *and* no shell** — which is what returns `-2`, and a tty-only
+session is simply the commonest way to arrive there. Getting this wrong in the earlier wording
+mattered, because "no GUI endpoints found → `-2`" is a different and incorrect rule: a KDE session
+on Wayland with no validated endpoint has no endpoints either, and it must yield `-1` rather than
+`-2` because its shell is a live source. See the sentinel contract.
 
 ## Triggers and data flow
 
@@ -440,15 +487,37 @@ Two things a polled probe needed that a signal would not have:
   observed `SHELL_ABSENCE_OBSERVATIONS_REQUIRED` = 3 times consecutively before it is acted on.
   Only the disappearing direction is debounced; a shell appearing is acted on at once.
 - **Repeated-failure logging is throttled everywhere it can recur.** Anything that logs
-  unconditionally in this path logs once per second for the life of the process. Candidate
-  validation failures are reported on the backoff ladder; the shell source, which is not a
-  candidate and never passes through that ladder, counts its own consecutive failures and reports
-  them on an equivalent doubling ladder.
+  unconditionally in this path logs once per second for the life of the process. Three ladders
+  cover it, all with the same shape — report the first failure of a run, then double the number
+  suppressed between reports to a ceiling of 64, and clear the whole thing on the first success:
+
+  1. Candidate validation failures, on the backoff ladder that also defers the retry itself.
+  2. The shell source, which is not a candidate and never passes through that ladder, counting its
+     own consecutive failures. Only the logging is throttled here, never the query: a shell that
+     starts answering again must be read on the tick it recovers.
+  3. The main loop body, which was the last place holding out. Reconciling and resolving are the
+     loop's job, so the loop is where "no source produced a value" and "event_detect could not be
+     read" are decided, and both were reported unconditionally — one `ERROR` per second each, on
+     any session where nothing resolves and on any machine without `event_detect` respectively.
+     Sends to the `event_detect` pipe share a third instance of the ladder, since a pipe that is
+     not there stays not there.
+
+  The shape is written once, as `FailureReportThrottle` in `util.*`, which is in the test binary
+  and therefore has tests; the two older ladders predate it and still carry their own copies. The
+  first occurrence of each condition stays at `ERROR` so a genuine fault is immediately visible,
+  the reports after it are follow-ups at normal level, and everything suppressed is debug material
+  rather than discarded.
+
+  Throttling is not the only tool. Per-tick helpers whose caller already reports a counted,
+  throttled summary log their own detail at debug level instead — `GetIdleTimeKdeDBus()`,
+  `GetIdleTimeWaylandGnomeViaDBus()`, `ReadTimestampViaShmem()` and `ReadLastActiveTimeFile()` all
+  keep that contract. The rule is one operator-visible line per condition per ladder, owned by
+  whoever can count the run.
 
 **Startup is not special.** The daemon starts, runs discovery, and finds either zero or some
-endpoints. Zero is a normal state returning `-2` — not a failure, not a reason to exit. The
-"started before the GUI" case is the ordinary path with a later trigger. This removes the
-wrapper's reason to exist, and with it the cause of #12.
+sources. An empty pool — no endpoints and no shell — is a normal state returning `-2`, not a
+failure and not a reason to exit. The "started before the GUI" case is the ordinary path with a
+later trigger. This removes the wrapper's reason to exist, and with it the cause of #12.
 
 ## Error handling
 
@@ -479,10 +548,21 @@ cases that ARE detectable is strict liveness: an endpoint whose socket disappear
 reports itself dead, or whose source stops producing readings is torn down rather than left
 reporting. This is the same discipline #11 concerns.
 
-**Suppressing `-2` is the failure mode to watch.** Every one of the above matters less for the
-readings it saves than for what a retained dead source does to `any_source_present`: while it
-exists, `-2` cannot fire, so `main()` never overrides `use_event_detect`, and a session with no
-readable idle source is served by nothing at all.
+**A retained dead source suppressing `-2` is the failure mode to watch.** Every one of the above
+matters less for the readings it saves than for what a retained dead source does to
+`any_source_present`: while it exists the pool reports `-1` where it should report `-2`, so
+`main()` never overrides `use_event_detect`, and a user who set `use_event_detect=0` — the only
+user for whom the override is load-bearing — is served by nothing at all.
+
+Note the precision this needs, because the naive version of the claim contradicts the aggregation
+rules. `-2` failing to fire is not in itself a fault: per "When `-2` can and cannot fire" above,
+there are healthy sessions — KDE on Wayland with no validated endpoint, GNOME without mutter —
+where a live, correctly-behaving shell source resolves `-1` forever and `-2` correctly never fires.
+The fault is narrower than "`-2` did not fire". It is **a source that is counted while it is dead**:
+the source set is non-empty only because nothing noticed that one of its members stopped working.
+That is what `IsAlive()` and `DEAD_SOURCE_ERROR_THRESHOLD` exist to catch, and it is why the second
+of them had to be added — an `X11IdleSource` against a `SIGKILL`ed X server answers `IsAlive()` true
+forever and is exactly this case.
 
 ## Removals
 
@@ -507,7 +587,34 @@ binary, which at the time linked only `util.cpp`, deliberately links no system l
   `-1`, inhibition short-circuiting ahead of all sources, empty-set behavior.
 - Source chain fidelity with injected fake sources: each row of the source-chain table,
   asserting today's ordering is preserved — especially KDE-X11 taking `GetIdleTimeKdeDBus()`
-  with no separate inhibition call.
+  with no separate inhibition call. **Not built, and cannot be, as written.** The chains belong to
+  `ShellIdleSource`, which lives in `idle_sources_system.cpp` because it makes D-Bus contact, and
+  that file is deliberately excluded from `idle_detect_tests`. An injected fake source can stand in
+  for a chain but cannot *be* one, so a fake proves nothing about which D-Bus method a real arm
+  calls. Splitting the arms out from the calls to make them injectable would move the untested
+  boundary rather than remove it.
+
+  What covers it instead, in three parts:
+
+  - **The half about inhibition is now structural rather than per-arm, and is tested.** Inhibition
+    is evaluated once by the pool through an injected `InhibitionQuery` and short-circuits ahead of
+    every source, so no chain contains an inhibition call for a fidelity test to catch.
+    `InhibitionShortCircuitsToZero`, `InhibitionIsQueriedWithTheDetectedShellKind` and
+    `InhibitionStillAppliesWhenTheShellSourceCouldNotBeCreated` assert it.
+  - **The half that actually broke — *which* row applies — is tested in the pool**, because the
+    inputs that select the row are pushed in by the pool through `ShellSourceContext`. The KDE row
+    is selected by whether a Wayland endpoint *candidate* exists, and that was got wrong once, in
+    exactly the direction that sent a Plasma 6 Wayland shell down the KDE-on-X11 arm. Five tests
+    pin it: `WaylandEndpointPresenceIsPushedToTheShellSource`,
+    `AWaylandCandidateThatFailsValidationStillMarksTheShellAsWayland`,
+    `AnAllX11CandidateSetDoesNotMarkTheShellAsWayland`,
+    `TheWaylandFlagFollowsCandidatesAcrossReconciles` and
+    `AShellSourceBuiltThisTickAlreadyKnowsTheSessionIsWayland`.
+  - **The remainder — which D-Bus method each arm issues — is covered only by review and by the
+    manual runs below.** That is an honest gap, and it is the price of the isolation rule. It is a
+    tolerable one: each arm is a handful of straight-line lines with no branching left in it once
+    the row is chosen, and a wrong method fails loudly and immediately on a live session rather
+    than subtly.
 - The multi-endpoint regression this design exists to prevent: two X11 endpoints with a KDE
   shell present, where one endpoint is active and the other idle, must report the active
   one. This fails if the shell is ever fused into endpoint chains.

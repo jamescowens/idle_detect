@@ -42,9 +42,12 @@ constexpr int ENDPOINT_RETRY_BACKOFF_INITIAL_TICKS = 1;
 //! A permanently-bad candidate therefore costs one validation attempt per 64 ticks forever rather
 //! than one per tick. That is the difference between a bounded background cost and the measured
 //! failure this constant exists to prevent: a stale $XDG_RUNTIME_DIR/wayland-9 socket with no
-//! listener produced 87 journal lines in 8 seconds with debug logging off, roughly 604,000 lines a
-//! day. GNOME is the ordinary case, not an exotic one -- it does not advertise ext_idle_notifier_v1
-//! at all, so every Wayland candidate in a GNOME session is a permanent validation failure.
+//! listener emitted 7 journal lines on EVERY reconcile tick with debug logging off -- start, three
+//! failures, three stop lines -- which at a one second tick is roughly 604,800 lines a day from that
+//! one socket. The run it was measured in logged 87 lines in 8 seconds all told, about 940,000 a day,
+//! the balance being the shell's own repeated failure and startup. GNOME is the ordinary case, not an
+//! exotic one -- it does not advertise ext_idle_notifier_v1 at all, so every Wayland candidate in a
+//! GNOME session is a permanent validation failure.
 //!
 constexpr int ENDPOINT_RETRY_BACKOFF_MAX_TICKS = 64;
 

@@ -650,8 +650,10 @@ TEST(IdleSourcePool, FailedCandidateIsNotAddedAndIsRetriedOnALaterReconcile)
 // The defect these pin down is a permanently-bad candidate -- a stale Wayland socket with no
 // listener, or any Wayland candidate at all in a GNOME session, which advertises no
 // ext_idle_notifier_v1 -- being rebuilt, restarted and re-logged on every single reconcile tick
-// forever. Measured at 87 journal lines in 8 seconds with debug logging off, which is roughly
-// 604,000 lines a day from one dead socket.
+// forever. Measured at 7 journal lines per reconcile tick with debug logging off, which at a one
+// second tick is roughly 604,800 lines a day from one dead socket. The run they were counted in
+// logged 87 lines in 8 seconds all told, about 940,000 a day, the rest of it the shell's own
+// repeated failure and startup.
 //
 
 TEST(IdleSourcePool, RepeatedValidationFailuresAreBackedOffRatherThanRetriedEveryTick)
