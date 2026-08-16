@@ -144,14 +144,46 @@ private:
 //! process can own org.kde.ksmserver or org.gnome.Mutter.IdleMonitor, so there is at most one shell per user
 //! regardless of how many graphical endpoints exist.
 //!
+//! PRESENCE FOR INHIBITION AND PRESENCE FOR AN IDLE VALUE ARE DIFFERENT QUESTIONS, AND MUST NOT SHARE ONE
+//! PROBE. On GNOME they are answered by two different bus names owned by two different processes:
+//!
+//!   - org.gnome.SessionManager is gnome-session, and it is what answers IsInhibited. It is present in
+//!     every gnome-session desktop.
+//!   - org.gnome.Mutter.IdleMonitor is mutter, and it is what answers the idle time. It is present only
+//!     when the window manager actually is mutter.
+//!
+//! GNOME Flashback with Metacity, and other gnome-session variants, have the first and not the second.
+//! Probing only for Mutter would classify those as ShellKind::NONE and silently drop their inhibition,
+//! which is a regression against the behavior this replaced: the old GetIdleTimeSeconds() ran
+//! CheckGnomeInhibition() on every non-KDE session unconditionally, precisely because inhibition does not
+//! depend on the window manager. So DetectShellKind() answers the inhibition question and reports GNOME
+//! for either name, while HasGnomeIdleMonitor() answers the idle-value question separately.
+//!
 class ShellMonitor
 {
 public:
     //!
-    //! \brief Detects the current desktop shell by checking session bus name ownership.
+    //! \brief Detects which shell's INHIBITION rules apply, by checking session bus name ownership.
+    //!
+    //! KDE is checked first, matching the ordering the old IsKdeSession() branch had. GNOME is reported
+    //! when either org.gnome.Mutter.IdleMonitor or org.gnome.SessionManager has an owner; see the class
+    //! commentary for why the second name has to count. A shell reported on the strength of
+    //! org.gnome.SessionManager alone contributes inhibition only, exactly as KDE does on Wayland.
+    //!
     //! \return ShellKind::KDE, ShellKind::GNOME, or ShellKind::NONE.
     //!
     ShellKind DetectShellKind() const;
+
+    //!
+    //! \brief Reports whether mutter's IdleMonitor is on the bus, i.e. whether a GNOME shell has an idle
+    //! value to give at all.
+    //!
+    //! Deliberately separate from DetectShellKind(). Folding it in would recreate the regression the
+    //! class commentary describes, because a single answer cannot serve both questions.
+    //!
+    //! \return true if org.gnome.Mutter.IdleMonitor has an owner.
+    //!
+    bool HasGnomeIdleMonitor() const;
 
     //!
     //! \brief Checks whether the given shell reports idle inhibition. This is a global override applied
@@ -207,9 +239,26 @@ public:
     void SetWaylandEndpointPresent(bool present);
 
     //!
+    //! \brief Records whether mutter's IdleMonitor is on the bus, which is how this source learns that a
+    //! GNOME shell is a GNOME shell WITHOUT an idle value.
+    //!
+    //! This is the GNOME counterpart of SetWaylandEndpointPresent(), and exists for the same reason: the
+    //! shell kind alone does not determine whether there is a value to read. A gnome-session desktop whose
+    //! window manager is not mutter -- GNOME Flashback with Metacity, and other variants -- is a GNOME
+    //! shell for inhibition purposes but has no IdleMonitor to query. See the ShellMonitor commentary.
+    //!
+    //! Without this the source would still behave correctly, because the Mutter D-Bus call fails and
+    //! returns IDLE_ERROR by itself. It would just pay a 500 ms D-Bus timeout to discover that on every
+    //! resolve, on a session where the answer never changes.
+    //!
+    //! \param present true if org.gnome.Mutter.IdleMonitor has an owner.
+    //!
+    void SetGnomeIdleMonitorPresent(bool present);
+
+    //!
     //! \brief Resolves the shell's idle time per the source-chain table: KDE on X11 uses ksmserver, which
     //! handles inhibition internally so no separate check is added; GNOME uses Mutter's IdleMonitor; KDE on
-    //! Wayland has no idle value and contributes inhibition only.
+    //! Wayland, and GNOME without mutter, have no idle value and contribute inhibition only.
     //! \return Idle seconds >= 0, or IDLE_ERROR when this shell supplies no value.
     //!
     int64_t ResolveIdleSeconds() override;
@@ -232,6 +281,15 @@ private:
     //! aggregation excludes.
     //!
     bool m_wayland_endpoint_present;
+
+    //!
+    //! \brief Whether mutter's IdleMonitor is on the bus. See SetGnomeIdleMonitorPresent().
+    //!
+    //! Defaults to true for the same reason m_wayland_endpoint_present defaults to false: a source
+    //! constructed before its owner has probed the bus should attempt the call once rather than suppress
+    //! it, and a wrong guess costs one excluded IDLE_ERROR.
+    //!
+    bool m_gnome_idle_monitor_present;
 };
 
 } // namespace IdleDetect

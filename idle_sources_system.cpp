@@ -162,15 +162,35 @@ std::string X11IdleSource::Describe() const
 
 ShellKind ShellMonitor::DetectShellKind() const
 {
+    // KDE first, preserving the ordering the old IsKdeSession() branch had.
     if (SessionBusNameHasOwner("org.kde.ksmserver")) {
         return ShellKind::KDE;
     }
 
+    // Mutter first among the GNOME names only because it is the common case and answers both questions,
+    // so the second probe is usually skipped. It is not the authoritative one: see below.
     if (SessionBusNameHasOwner("org.gnome.Mutter.IdleMonitor")) {
         return ShellKind::GNOME;
     }
 
+    // gnome-session without mutter. This is still a GNOME shell for inhibition purposes -- IsInhibited
+    // talks to org.gnome.SessionManager, which is this very name -- and dropping it here would silently
+    // lose inhibition on GNOME Flashback/Metacity and other gnome-session variants. See the ShellMonitor
+    // class commentary in the header for why the two questions cannot share one probe.
+    if (SessionBusNameHasOwner("org.gnome.SessionManager")) {
+        debug_log("INFO: %s: org.gnome.SessionManager is present without org.gnome.Mutter.IdleMonitor. "
+                  "Treating this as a GNOME shell that contributes inhibition but no idle value.",
+                  __func__);
+
+        return ShellKind::GNOME;
+    }
+
     return ShellKind::NONE;
+}
+
+bool ShellMonitor::HasGnomeIdleMonitor() const
+{
+    return SessionBusNameHasOwner("org.gnome.Mutter.IdleMonitor");
 }
 
 bool ShellMonitor::IsInhibited(ShellKind kind) const
@@ -195,6 +215,7 @@ bool ShellMonitor::IsInhibited(ShellKind kind) const
 ShellIdleSource::ShellIdleSource(ShellKind kind)
     : m_kind(kind)
     , m_wayland_endpoint_present(false)
+    , m_gnome_idle_monitor_present(true)
 {}
 
 void ShellIdleSource::SetKind(ShellKind kind)
@@ -205,6 +226,11 @@ void ShellIdleSource::SetKind(ShellKind kind)
 void ShellIdleSource::SetWaylandEndpointPresent(bool present)
 {
     m_wayland_endpoint_present = present;
+}
+
+void ShellIdleSource::SetGnomeIdleMonitorPresent(bool present)
+{
+    m_gnome_idle_monitor_present = present;
 }
 
 int64_t ShellIdleSource::ResolveIdleSeconds()
@@ -224,8 +250,19 @@ int64_t ShellIdleSource::ResolveIdleSeconds()
 
         return GetIdleTimeKdeDBus();
     case ShellKind::GNOME:
-        // Mutter's IdleMonitor answers on both GNOME X11 and GNOME Wayland, so no such distinction is
-        // needed here.
+        // Mutter's IdleMonitor answers on both GNOME X11 and GNOME Wayland, so the Wayland distinction
+        // KDE needs does not apply. What does apply is whether mutter is the window manager at all: a
+        // gnome-session desktop running Metacity owns org.gnome.SessionManager but not
+        // org.gnome.Mutter.IdleMonitor, so it is a GNOME shell with no idle value to read. It then
+        // contributes inhibition only, exactly like KDE on Wayland above, and its endpoint supplies the
+        // idle value.
+        if (!m_gnome_idle_monitor_present) {
+            debug_log("INFO: %s: GNOME shell without mutter's IdleMonitor. No shell idle value; the "
+                      "endpoint supplies it and the shell supplies inhibition.",
+                      __func__);
+            break;
+        }
+
         return GetIdleTimeWaylandGnomeViaDBus();
     case ShellKind::NONE:
         break;
