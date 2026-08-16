@@ -31,6 +31,24 @@
 namespace IdleDetect {
 
 //!
+//! \brief Reconcile ticks to skip after a candidate endpoint's first validation failure. Each
+//! further consecutive failure doubles the interval, up to ENDPOINT_RETRY_BACKOFF_MAX_TICKS.
+//!
+constexpr int ENDPOINT_RETRY_BACKOFF_INITIAL_TICKS = 1;
+
+//!
+//! \brief Ceiling on the retry interval for a repeatedly failing candidate, in reconcile ticks.
+//!
+//! A permanently-bad candidate therefore costs one validation attempt per 64 ticks forever rather
+//! than one per tick. That is the difference between a bounded background cost and the measured
+//! failure this constant exists to prevent: a stale $XDG_RUNTIME_DIR/wayland-9 socket with no
+//! listener produced 87 journal lines in 8 seconds with debug logging off, roughly 604,000 lines a
+//! day. GNOME is the ordinary case, not an exotic one -- it does not advertise ext_idle_notifier_v1
+//! at all, so every Wayland candidate in a GNOME session is a permanent validation failure.
+//!
+constexpr int ENDPOINT_RETRY_BACKOFF_MAX_TICKS = 64;
+
+//!
 //! \brief Creates a started, validated source for an endpoint, or nullptr if the candidate is not
 //! usable.
 //!
@@ -40,9 +58,11 @@ namespace IdleDetect {
 //! source from a nullptr. Any tuning the construction needs -- notification timeouts, retry budgets
 //! -- is captured by the factory rather than threaded through Reconcile().
 //!
-//! A nullptr return is never cached. Discovery re-offers the candidate on the next reconcile tick
-//! and the factory is called again, so a compositor that is still starting up is picked up on a
-//! later tick rather than being locked out for the life of the process.
+//! A nullptr return is never cached as a verdict. Discovery re-offers the candidate and the factory
+//! is called again, so a compositor that is still starting up is picked up on a later tick rather
+//! than being locked out for the life of the process. What IS remembered is how many times in a row
+//! the candidate has failed, which throttles how often "again" is: see the backoff commentary on
+//! Reconcile().
 //!
 using EndpointSourceFactory = std::function<std::unique_ptr<IdleSource>(const Endpoint&)>;
 
@@ -113,6 +133,23 @@ public:
     //! unrelated churn would drop and re-establish a working compositor connection every time some
     //! other endpoint appeared or went away.
     //!
+    //! A candidate that fails validation is retried, but not on every tick. Consecutive failures are
+    //! counted per endpoint and the retry is deferred by an exponentially growing interval -- one
+    //! tick, then two, four, eight, capped at ENDPOINT_RETRY_BACKOFF_MAX_TICKS. The counter is reset
+    //! the moment validation succeeds or the endpoint leaves the candidate set, so a compositor
+    //! restart or a socket that is replugged recovers on the tick after it reappears rather than
+    //! waiting out a backoff it did not earn.
+    //!
+    //! THE INTERVAL IS COUNTED IN RECONCILE TICKS RATHER THAN IN SECONDS, and that is a deliberate
+    //! consequence of this file being dependency-free: the pool has no clock and is not going to
+    //! grow one, because taking a time source would mean taking either a global or another injected
+    //! callable purely to schedule retries. Ticks are what the pool can count without help, and they
+    //! are a sound unit here because the caller reconciles on a fixed interval, so a tick count is a
+    //! wall-clock interval scaled by that period. The property it lacks is that a caller which
+    //! reconciles on an event rather than a timer would back off in events rather than seconds; that
+    //! is acceptable, since the backoff exists to bound work per reconcile, and the number of
+    //! reconciles is exactly what it bounds it against.
+    //!
     //! \param endpoints Candidate endpoints from discovery.
     //! \param shell Currently detected shell kind.
     //!
@@ -145,6 +182,55 @@ public:
 
 private:
     //!
+    //! \brief Retry state for a candidate endpoint whose validation has failed at least once.
+    //!
+    //! Only failing candidates have an entry. A candidate that validates, and a candidate that has
+    //! left the set, both have their entry erased, which is what makes recovery immediate.
+    //!
+    struct EndpointBackoff {
+        //! \brief Consecutive validation failures, counting the one that created this entry.
+        int m_consecutive_failures = 0;
+
+        //!
+        //! \brief Interval applied after the most recent failure, in reconcile ticks. Retained so a
+        //! change in it can be logged, and so the next interval is a doubling of a real value rather
+        //! than a shift by a failure count that grows without bound.
+        //!
+        int m_interval_ticks = 0;
+
+        //! \brief Reconcile ticks still to be skipped before the factory is called again.
+        int m_ticks_until_retry = 0;
+    };
+
+    //!
+    //! \brief Whether a failing candidate's retry is still deferred, consuming one tick of its
+    //! backoff if so. Called with mtx_pool held.
+    //!
+    //! The tick is consumed here, in the one place that asks the question, rather than in a separate
+    //! pass over the map: an endpoint that is no longer a candidate has no entry to decrement, so
+    //! coupling the countdown to the candidate's presence is what keeps a disappeared endpoint from
+    //! silently ageing out of a backoff it is not serving.
+    //!
+    //! \param endpoint Candidate being considered.
+    //! \return true if the factory must not be called for this endpoint on this tick.
+    //!
+    bool BackoffDefersCandidate(const Endpoint& endpoint);
+
+    //!
+    //! \brief Records a validation failure and schedules the next attempt. Called with mtx_pool
+    //! held.
+    //!
+    //! Logging level is decided here rather than by the caller, because the level is a function of
+    //! the backoff state: the first failure and each subsequent growth of the interval are reported
+    //! at normal level, and every failure after the interval has reached its ceiling is debug only.
+    //! A permanently-bad candidate therefore produces a small, bounded number of normal-level lines
+    //! over the life of the process instead of one per tick forever.
+    //!
+    //! \param endpoint Candidate that failed validation.
+    //!
+    void RecordCandidateFailure(const Endpoint& endpoint);
+
+    //!
     //! \brief Pushes the context only the pool knows onto the shell source, if that source wants
     //! it. Called with mtx_pool held.
     //!
@@ -164,6 +250,14 @@ private:
 
     //! \brief One source per live endpoint, keyed by endpoint.
     std::map<Endpoint, std::unique_ptr<IdleSource>> m_endpoint_sources;
+
+    //!
+    //! \brief Retry state for candidate endpoints that are currently failing validation.
+    //!
+    //! Disjoint from m_endpoint_sources by construction: an endpoint with a live source has no
+    //! backoff entry, and an endpoint with a backoff entry has no source.
+    //!
+    std::map<Endpoint, EndpointBackoff> m_endpoint_backoff;
 
     //! \brief The single shell source, null when no shell is present or its factory declined.
     std::unique_ptr<IdleSource> m_shell_source;

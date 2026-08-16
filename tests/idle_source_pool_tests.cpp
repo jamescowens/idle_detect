@@ -10,6 +10,7 @@
 #include <functional>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -169,6 +170,12 @@ public:
         m_endpoint_values[endpoint] = value;
     }
 
+    //! \brief Makes an endpoint fail validation again, as a compositor that has gone away would.
+    void ClearEndpointScript(const Endpoint& endpoint)
+    {
+        m_endpoint_values.erase(endpoint);
+    }
+
     //! \brief Live source for an endpoint, or nullptr if there is none. Never dangling: a source
     //! deregisters itself as it is destroyed.
     FakeIdleSource* EndpointSource(const Endpoint& endpoint) const
@@ -325,6 +332,52 @@ private:
 const Endpoint g_wayland_zero{EndpointKind::WAYLAND, "wayland-0"};
 const Endpoint g_x11_one{EndpointKind::X11, ":1"};
 const Endpoint g_x11_two{EndpointKind::X11, ":2"};
+
+//!
+//! \brief Runs the given number of reconcile ticks against an unchanging candidate set and shell.
+//! \param harness harness owning the pool
+//! \param ticks number of reconciles to run
+//! \param endpoints candidate set offered on each tick
+//!
+void ReconcileTicks(PoolHarness& harness, int ticks, const std::set<Endpoint>& endpoints)
+{
+    for (int tick = 0; tick < ticks; ++tick) {
+        harness.Pool().Reconcile(endpoints, ShellKind::NONE);
+    }
+}
+
+//!
+//! \brief Reconciles until the endpoint is offered to the factory again, and reports how many ticks
+//! that took.
+//!
+//! The count includes the tick on which the offer happened, so an endpoint offered on every tick
+//! returns 1 and an endpoint serving an N-tick backoff returns N + 1. Written as a search rather
+//! than as an absolute tick number because the ladder's later rungs are 32 and 64 ticks long, and
+//! spelling those out as running totals would obscure the very intervals the test is about.
+//!
+//! \param harness harness owning the pool
+//! \param endpoint endpoint to watch
+//! \param endpoints candidate set offered on each tick
+//! \param limit tick ceiling, guarding against a hang if the backoff never elapses
+//! \return ticks consumed, or -1 if the limit was reached without an offer
+//!
+int TicksUntilNextFactoryCall(PoolHarness& harness,
+                              const Endpoint& endpoint,
+                              const std::set<Endpoint>& endpoints,
+                              int limit = 1000)
+{
+    const int calls_before = harness.EndpointFactoryCalls(endpoint);
+
+    for (int ticks = 1; ticks <= limit; ++ticks) {
+        harness.Pool().Reconcile(endpoints, ShellKind::NONE);
+
+        if (harness.EndpointFactoryCalls(endpoint) > calls_before) {
+            return ticks;
+        }
+    }
+
+    return -1;
+}
 
 } // anonymous namespace
 
@@ -499,35 +552,221 @@ TEST(IdleSourcePool, ShellAloneCountsAsASource)
 TEST(IdleSourcePool, FailedCandidateIsNotAddedAndIsRetriedOnALaterReconcile)
 {
     // Discovery is deliberately over-inclusive, so a candidate that does not validate is normal.
-    // Caching that failure is the bug: a compositor that is still starting up would then be locked
-    // out for the life of the daemon.
+    // Caching that failure as a verdict is the bug: a compositor that is still starting up would
+    // then be locked out for the life of the daemon.
     PoolHarness harness;
 
-    harness.Pool().Reconcile({g_wayland_zero}, ShellKind::NONE);
+    const std::set<Endpoint> candidates{g_wayland_zero};
+
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
 
     EXPECT_EQ(harness.Pool().EndpointSourceCount(), 0u);
     EXPECT_EQ(harness.Pool().GetIdleSeconds(), IDLE_NO_GUI_SESSION);
     EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 1);
 
-    // Still failing on the next tick: still retried, still not added.
-    harness.Pool().Reconcile({g_wayland_zero}, ShellKind::NONE);
+    // Still failing on the retry: still offered, still not added. The retry is one tick later than
+    // the failure rather than on the very next tick, because a first failure buys a one-tick
+    // backoff; see the ladder tests below.
+    EXPECT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 2);
 
     EXPECT_EQ(harness.Pool().EndpointSourceCount(), 0u);
     EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 2);
 
-    // The compositor finishes coming up.
+    // The compositor finishes coming up. It is picked up on the next offer, which is what makes the
+    // backoff a delay rather than the lockout it is guarding against.
     harness.ScriptEndpoint(g_wayland_zero, 17);
-    harness.Pool().Reconcile({g_wayland_zero}, ShellKind::NONE);
+
+    EXPECT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 3);
 
     EXPECT_EQ(harness.Pool().EndpointSourceCount(), 1u);
     EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 3);
     EXPECT_EQ(harness.Pool().GetIdleSeconds(), 17);
 
     // And having succeeded, it is not rebuilt on the tick after that.
-    harness.Pool().Reconcile({g_wayland_zero}, ShellKind::NONE);
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
 
     EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 3);
     EXPECT_FALSE(harness.EndpointDestroyed(g_wayland_zero));
+}
+
+//
+// Validation backoff.
+//
+// The defect these pin down is a permanently-bad candidate -- a stale Wayland socket with no
+// listener, or any Wayland candidate at all in a GNOME session, which advertises no
+// ext_idle_notifier_v1 -- being rebuilt, restarted and re-logged on every single reconcile tick
+// forever. Measured at 87 journal lines in 8 seconds with debug logging off, which is roughly
+// 604,000 lines a day from one dead socket.
+//
+
+TEST(IdleSourcePool, RepeatedValidationFailuresAreBackedOffRatherThanRetriedEveryTick)
+{
+    PoolHarness harness;
+
+    const std::set<Endpoint> candidates{g_wayland_zero};
+
+    // Tick 1: offered, fails. One tick of backoff.
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 1);
+
+    // Tick 2: deferred. This is the assertion the whole fix is about -- the factory is not called,
+    // so nothing is built, nothing is started against a socket nobody is listening on, and nothing
+    // is logged about it.
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 1);
+
+    // Tick 3: interval elapsed, offered again, fails again. Interval doubles to two ticks.
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 2);
+
+    // Ticks 4 and 5: deferred.
+    ReconcileTicks(harness, 2, candidates);
+
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 2);
+
+    // Tick 6: offered, fails. Interval doubles to four ticks.
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 3);
+
+    // Ticks 7 through 10: deferred.
+    ReconcileTicks(harness, 4, candidates);
+
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 3);
+
+    // Tick 11: offered.
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 4);
+
+    // Eleven ticks, four validation attempts. Without the backoff it would be eleven.
+    EXPECT_EQ(harness.Pool().EndpointSourceCount(), 0u);
+}
+
+TEST(IdleSourcePool, BackoffIntervalDoublesAndThenHoldsAtItsCeiling)
+{
+    // The ladder in full, and the ceiling it stops at. Unbounded doubling would eventually stop
+    // retrying a candidate in any useful sense at all, which is the failure mode on the other side
+    // of the one being fixed: a compositor that comes up an hour after the daemon did must still be
+    // picked up within a bounded time.
+    PoolHarness harness;
+
+    const std::set<Endpoint> candidates{g_wayland_zero};
+
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    ASSERT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 1);
+
+    // Each value is the interval just earned, plus the tick the retry itself lands on.
+    EXPECT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 1 + 1);
+    EXPECT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 2 + 1);
+    EXPECT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 4 + 1);
+    EXPECT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 8 + 1);
+    EXPECT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 16 + 1);
+    EXPECT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 32 + 1);
+
+    // Capped from here on rather than continuing to 128.
+    EXPECT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates),
+              ENDPOINT_RETRY_BACKOFF_MAX_TICKS + 1);
+    EXPECT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates),
+              ENDPOINT_RETRY_BACKOFF_MAX_TICKS + 1);
+    EXPECT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates),
+              ENDPOINT_RETRY_BACKOFF_MAX_TICKS + 1);
+}
+
+TEST(IdleSourcePool, SuccessfulValidationClearsTheBackoffLadder)
+{
+    // A candidate that finally comes up must not carry the interval it earned while it was down.
+    PoolHarness harness;
+
+    const std::set<Endpoint> candidates{g_wayland_zero};
+
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+    ASSERT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 2);
+    ASSERT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 2);
+
+    // Two failures deep, so the ladder stands at two ticks. The compositor comes up and the next
+    // offer succeeds.
+    harness.ScriptEndpoint(g_wayland_zero, 11);
+
+    ASSERT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 3);
+    ASSERT_EQ(harness.Pool().EndpointSourceCount(), 1u);
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), 11);
+
+    // A live source is left alone, so no further offers are made while it survives.
+    ReconcileTicks(harness, 5, candidates);
+
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 3);
+
+    // The compositor goes away, and comes back as a candidate that is failing again. The first
+    // failure after the success buys one tick, not the two the ladder stood at before it, which is
+    // what "cleared" means here.
+    harness.Pool().Reconcile({}, ShellKind::NONE);
+    harness.ClearEndpointScript(g_wayland_zero);
+
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 4);
+    EXPECT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 2);
+}
+
+TEST(IdleSourcePool, LeavingAndReenteringTheCandidateSetClearsTheBackoff)
+{
+    // Leaving the candidate set is the pool's only evidence that the thing behind the endpoint has
+    // changed. A socket that is replugged, or a compositor restarted, therefore gets a full-speed
+    // attempt on the tick it reappears rather than serving out an interval earned by its
+    // predecessor -- which at the ceiling would be a 64-tick wait for a session that is up now.
+    PoolHarness harness;
+
+    const std::set<Endpoint> candidates{g_wayland_zero};
+
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+    ASSERT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 2);
+    ASSERT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 3);
+    ASSERT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 3);
+
+    // Three failures deep, so the ladder stands at four ticks. The endpoint disappears while that
+    // interval is still running.
+    harness.Pool().Reconcile({}, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 3);
+
+    // It comes back, and is offered on the very tick it returns rather than after the remainder of
+    // an interval it is no longer serving.
+    harness.ScriptEndpoint(g_wayland_zero, 21);
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 4);
+    EXPECT_EQ(harness.Pool().EndpointSourceCount(), 1u);
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), 21);
+}
+
+TEST(IdleSourcePool, OneCandidatesBackoffDoesNotDelayAnother)
+{
+    // The ladder is per endpoint. A dead Wayland socket sitting at the bottom of its ladder must not
+    // hold back the X display that appears next to it, which is the multi-endpoint case the whole
+    // pool exists for.
+    PoolHarness harness;
+
+    const std::set<Endpoint> wayland_only{g_wayland_zero};
+
+    harness.Pool().Reconcile(wayland_only, ShellKind::NONE);
+    ASSERT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, wayland_only), 2);
+    ASSERT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, wayland_only), 3);
+    ASSERT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 3);
+
+    // The Wayland candidate is three failures deep and serving a four-tick interval. A live X
+    // display appears and is validated on the very tick it is first offered.
+    harness.ScriptEndpoint(g_x11_one, 64);
+    harness.Pool().Reconcile({g_wayland_zero, g_x11_one}, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_x11_one), 1);
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 3);
+    EXPECT_EQ(harness.Pool().EndpointSourceCount(), 1u);
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), 64);
 }
 
 TEST(IdleSourcePool, EndpointDisappearingDestroysItsSource)

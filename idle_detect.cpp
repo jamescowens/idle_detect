@@ -1436,10 +1436,16 @@ WaylandIdleMonitor::~WaylandIdleMonitor() {
 
 // Start method
 bool WaylandIdleMonitor::Start(const std::string& socket_name, int notification_timeout_ms, int max_init_retries) {
-    // Use log for start/stop
-    normal_log("INFO: %s: Starting Wayland idle monitor on socket %s.",
-               __func__,
-               SocketNameForLog(socket_name));
+    // Debug rather than normal, because every call to this is now a validation attempt: the only caller is
+    // WaylandIdleSource::Start(), which IdleSourcePool's endpoint factory uses to decide whether a discovered
+    // candidate is a real compositor. Announcing the attempt at normal level made an ATTEMPT as loud as an
+    // OUTCOME, and attempts against a candidate that can never validate -- a stale socket with no listener, or
+    // any Wayland candidate in a GNOME session, which advertises no ext_idle_notifier_v1 -- repeat for the life
+    // of the process. The outcomes are still reported: the pool logs the source it added, and it logs the
+    // rejection and the backoff it applied.
+    debug_log("INFO: %s: Starting Wayland idle monitor on socket %s.",
+              __func__,
+              SocketNameForLog(socket_name));
 
     if (m_initialized.load()) {
         // The already-running monitor keeps the socket it was started with. Log both names so a mismatched
@@ -1500,7 +1506,10 @@ bool WaylandIdleMonitor::StartInternal(int max_init_retries) {
     // Initialize Wayland connection, get initial state, and subscribe
     // Includes retries internally now
     if (!InitializeWayland(max_init_retries)) {
-        error_log("%s: Failed to initialize Wayland or find required protocols after retries.", __func__);
+        // Debug, not error. A candidate that does not turn out to be an ext_idle_notifier_v1 compositor is an
+        // ordinary outcome of validating an over-inclusive discovery set, and InitializeWayland() has already
+        // said why at the same level. The pool decides what the operator hears about a rejected candidate.
+        debug_log("INFO: %s: Failed to initialize Wayland or find required protocols after retries.", __func__);
         return false;
     }
 
@@ -1688,6 +1697,13 @@ void WaylandIdleMonitor::ResetWaylandState() {
 
 // InitializeWayland (with simplified retry logic focusing on connect and roundtrip check)
 bool WaylandIdleMonitor::InitializeWayland(int max_retries) {
+    // Every failure path below logs at debug level. This method is reached only through Start(), whose only
+    // caller validates a discovery candidate, and a candidate that fails to connect or that connects to a
+    // compositor without ext_idle_notifier_v1 is an ordinary outcome rather than an error: discovery is
+    // deliberately over-inclusive and validation is how the wrong guesses are removed. At normal and error
+    // level these lines were the bulk of a measured 87 journal messages in 8 seconds from a single stale
+    // socket, because each failed attempt emitted several of them and the attempt repeated every tick.
+    // IdleSourcePool reports the rejection itself, once, and backs the candidate off.
     const int INIT_RETRY_DELAY_SECONDS = 2; // Example delay
 
     // A caller asking for zero or fewer attempts still means "try", not "do nothing". Clamping here rather
@@ -1714,7 +1730,7 @@ bool WaylandIdleMonitor::InitializeWayland(int max_retries) {
         // call did unconditionally before the monitor became addressable.
         m_display = wl_display_connect(m_socket_name.empty() ? nullptr : m_socket_name.c_str());
         if (!m_display) {
-            error_log("%s: Failed to connect to Wayland display %s (attempt %d).",
+            debug_log("INFO: %s: Failed to connect to Wayland display %s (attempt %d).",
                       __func__,
                       SocketNameForLog(m_socket_name),
                       attempt);
@@ -1722,7 +1738,7 @@ bool WaylandIdleMonitor::InitializeWayland(int max_retries) {
         } else {
             m_registry = wl_display_get_registry(m_display);
             if (!m_registry) {
-                error_log("%s: Failed to get Wayland registry (attempt %d).", __func__, attempt);
+                debug_log("INFO: %s: Failed to get Wayland registry (attempt %d).", __func__, attempt);
                 CleanupWayland();
                 // Go to sleep and retry
             } else {
@@ -1743,9 +1759,11 @@ bool WaylandIdleMonitor::InitializeWayland(int max_retries) {
                         // Note: Registry listener remains attached.
                         return true;
                     } else {
-                        // Roundtrip succeeded but didn't get the needed globals yet
-                        error_log("%s: Wayland roundtrip ok, but required globals (wl_seat/ext_idle_notifier_v1) "
-                                  "not found (attempt %d).",
+                        // Roundtrip succeeded but didn't get the needed globals yet. This is the GNOME case, and
+                        // it is permanent there rather than a timing artifact: mutter implements no
+                        // ext_idle_notifier_v1 for this to find on any attempt, ever.
+                        debug_log("INFO: %s: Wayland roundtrip ok, but required globals "
+                                  "(wl_seat/ext_idle_notifier_v1) not found (attempt %d).",
                                   __func__,
                                   attempt);
                         // Clean up this attempt's resources before retrying
@@ -1753,7 +1771,7 @@ bool WaylandIdleMonitor::InitializeWayland(int max_retries) {
                         // Go to sleep and retry
                     }
                 } else {
-                    error_log("%s: Wayland display roundtrip failed (attempt %d).", __func__, attempt);
+                    debug_log("INFO: %s: Wayland display roundtrip failed (attempt %d).", __func__, attempt);
                     // Clean up this attempt's resources
                     CleanupWayland();
                     // Go to sleep and retry
@@ -1775,7 +1793,7 @@ bool WaylandIdleMonitor::InitializeWayland(int max_retries) {
         }
     } // end retry loop
 
-    error_log("%s: Failed to initialize Wayland on socket %s after %d attempts.",
+    debug_log("INFO: %s: Failed to initialize Wayland on socket %s after %d attempts.",
               __func__,
               SocketNameForLog(m_socket_name),
               max_init_retries);

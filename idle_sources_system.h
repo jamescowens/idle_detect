@@ -63,6 +63,13 @@ public:
     //! not implement ext_idle_notifier_v1 at all: the connect and both roundtrips succeed, the globals never
     //! appear, and the entire budget is spent on every tick forever rather than once.
     //!
+    //! Everything this path logs about a failure is at debug level, which follows from the same reasoning. A
+    //! failed Start() here does not mean something went wrong; it means a candidate produced by a deliberately
+    //! over-inclusive discovery turned out not to be an endpoint, which is what validation is for. Such a
+    //! candidate offers itself on every reconcile tick, so anything emitted here at normal or error level is
+    //! emitted forever: 87 journal lines in 8 seconds were measured from one stale socket with no listener.
+    //! The rejection is reported once, by IdleSourcePool, which is also what decides when to try again.
+    //!
     //! \param notification_timeout_ms Idle notification threshold in milliseconds.
     //! \param max_init_retries Connect-and-bind attempts before declaring the candidate unusable. Exposed so
     //!        the pool can tune it without reaching into the monitor.

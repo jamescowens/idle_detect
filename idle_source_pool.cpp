@@ -45,6 +45,24 @@ void IdleSourcePool::Reconcile(const std::set<Endpoint>& endpoints, ShellKind sh
         }
     }
 
+    // --- Drop retry state for endpoints that are no longer candidates. ---
+    //
+    // Leaving the candidate set is the pool's only evidence that the thing behind the endpoint has
+    // changed, so it is what resets the backoff ladder. A socket that is replugged, or a compositor
+    // that is restarted, therefore gets a full-speed attempt on the tick it reappears rather than
+    // serving out an interval earned by whatever was there before.
+    for (auto iter = m_endpoint_backoff.begin(); iter != m_endpoint_backoff.end();) {
+        if (endpoints.count(iter->first) == 0) {
+            debug_log("INFO: %s: Candidate endpoint %s is gone; clearing its validation backoff.",
+                      __func__,
+                      iter->first.ToString().c_str());
+
+            iter = m_endpoint_backoff.erase(iter);
+        } else {
+            ++iter;
+        }
+    }
+
     // --- Add sources for newly-seen endpoints. ---
     //
     // Endpoints already holding a source are skipped entirely rather than rebuilt, because a live
@@ -54,20 +72,31 @@ void IdleSourcePool::Reconcile(const std::set<Endpoint>& endpoints, ShellKind sh
             continue;
         }
 
+        // A candidate that has been failing is not offered to the factory again until its backoff
+        // has elapsed. This is what bounds the cost of a permanently-bad candidate, which is the
+        // ordinary case rather than the exotic one: a GNOME session advertises no
+        // ext_idle_notifier_v1, so its Wayland candidate can never validate, and without this it
+        // would be rebuilt, restarted and re-logged on every tick for the life of the process.
+        if (BackoffDefersCandidate(endpoint)) {
+            continue;
+        }
+
         std::unique_ptr<IdleSource> source = m_endpoint_factory ? m_endpoint_factory(endpoint) : nullptr;
 
         // A null return means the candidate did not validate. Discovery is deliberately
-        // over-inclusive, so this is an ordinary outcome and not an error. Nothing about the failure
-        // is recorded: the candidate is offered again on the next tick and tried again then, which
-        // is how a compositor or X server that is still starting up gets picked up.
+        // over-inclusive, so this is an ordinary outcome and not an error. The failure is not cached
+        // as a verdict -- the candidate is offered again on a later tick, which is how a compositor
+        // or X server that is still starting up gets picked up -- but it does advance the backoff
+        // that decides which later tick that is.
         if (!source) {
-            debug_log("INFO: %s: Candidate endpoint %s did not validate; not adding it. It will be "
-                      "retried on the next reconcile.",
-                      __func__,
-                      endpoint.ToString().c_str());
+            RecordCandidateFailure(endpoint);
 
             continue;
         }
+
+        // Success clears the ladder outright, so an endpoint that finally comes up after a long
+        // backoff is not carrying an interval into whatever happens to it next.
+        m_endpoint_backoff.erase(endpoint);
 
         normal_log("INFO: %s: Added idle source %s.", __func__, source->Describe().c_str());
 
@@ -162,6 +191,11 @@ void IdleSourcePool::Shutdown()
     m_endpoint_sources.clear();
     m_shell_source.reset();
 
+    // The retry ladders go with the sources. A pool that has been shut down and repopulated is
+    // starting over, and holding a candidate at a 64-tick interval across that would be the one
+    // thing this state must never do: outlive the situation that produced it.
+    m_endpoint_backoff.clear();
+
     // Clearing the kind too, so that a pool which has been shut down cannot go on reporting
     // inhibition for a shell it is no longer tracking.
     m_shell_kind = ShellKind::NONE;
@@ -179,6 +213,74 @@ bool IdleSourcePool::HasShellSource() const
     std::unique_lock<std::mutex> lock(mtx_pool);
 
     return m_shell_source != nullptr;
+}
+
+bool IdleSourcePool::BackoffDefersCandidate(const Endpoint& endpoint)
+{
+    auto iter = m_endpoint_backoff.find(endpoint);
+
+    if (iter == m_endpoint_backoff.end()) {
+        return false;
+    }
+
+    if (iter->second.m_ticks_until_retry <= 0) {
+        return false;
+    }
+
+    --iter->second.m_ticks_until_retry;
+
+    debug_log("INFO: %s: Candidate endpoint %s is backed off after %d consecutive validation "
+              "failure(s); %d more reconcile tick(s) before it is offered again.",
+              __func__,
+              endpoint.ToString().c_str(),
+              iter->second.m_consecutive_failures,
+              iter->second.m_ticks_until_retry);
+
+    return true;
+}
+
+void IdleSourcePool::RecordCandidateFailure(const Endpoint& endpoint)
+{
+    EndpointBackoff& backoff = m_endpoint_backoff[endpoint];
+
+    const int previous_interval_ticks = backoff.m_interval_ticks;
+
+    ++backoff.m_consecutive_failures;
+
+    // Doubling the previous interval rather than shifting by the failure count. The failure count of
+    // a candidate that is permanently bad grows for as long as the daemon runs, and a shift by it
+    // would be undefined long before the value it produced was clamped.
+    int interval_ticks = (previous_interval_ticks == 0)
+            ? ENDPOINT_RETRY_BACKOFF_INITIAL_TICKS
+            : previous_interval_ticks * 2;
+
+    if (interval_ticks > ENDPOINT_RETRY_BACKOFF_MAX_TICKS) {
+        interval_ticks = ENDPOINT_RETRY_BACKOFF_MAX_TICKS;
+    }
+
+    backoff.m_interval_ticks = interval_ticks;
+    backoff.m_ticks_until_retry = interval_ticks;
+
+    // One line, at one level, per failure. The first failure is worth telling the operator about,
+    // and so is each step of the retreat, because those are the transitions that describe what the
+    // daemon has decided about this candidate. Once the interval has reached its ceiling nothing
+    // further is being decided, and the remaining failures are debug material.
+    const char* message = "INFO: %s: Candidate endpoint %s did not validate (%d consecutive "
+                          "failure(s)). Retrying in %d reconcile tick(s).";
+
+    if (backoff.m_consecutive_failures == 1 || interval_ticks != previous_interval_ticks) {
+        normal_log(message,
+                   __func__,
+                   endpoint.ToString().c_str(),
+                   backoff.m_consecutive_failures,
+                   interval_ticks);
+    } else {
+        debug_log(message,
+                  __func__,
+                  endpoint.ToString().c_str(),
+                  backoff.m_consecutive_failures,
+                  interval_ticks);
+    }
 }
 
 void IdleSourcePool::UpdateShellSourceContext()
