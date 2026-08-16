@@ -92,7 +92,8 @@ using InhibitionQuery = std::function<bool(ShellKind)>;
 //! idle value the main loop consumes.
 //!
 //! Endpoint sources are reconciled against discovery: newly-seen endpoints are started, endpoints
-//! that disappeared are torn down and evicted. Eviction is immediate rather than deferred, because
+//! that disappeared are torn down and evicted, and endpoints whose source has stopped being able to
+//! produce readings are torn down and rebuilt. Eviction is immediate rather than deferred, because
 //! a source left reporting against a dead compositor would pin the aggregate to "active"
 //! indefinitely.
 //!
@@ -129,9 +130,12 @@ public:
     //! \brief Brings the live source set in line with discovery. Starts newly-seen endpoints,
     //! evicts endpoints that disappeared, and updates the shell source.
     //!
-    //! Sources for endpoints that are still present are left strictly alone. Rebuilding them on
-    //! unrelated churn would drop and re-establish a working compositor connection every time some
-    //! other endpoint appeared or went away.
+    //! Sources for endpoints that are still present AND still alive are left strictly alone.
+    //! Rebuilding them on unrelated churn would drop and re-establish a working compositor connection
+    //! every time some other endpoint appeared or went away. Liveness is the one thing that is not
+    //! unrelated churn: a source that reports IdleSource::IsAlive() false is torn down and its
+    //! endpoint treated as newly-seen, because the candidate key surviving says only that the socket
+    //! is still there, not that anything is still answering on it.
     //!
     //! A candidate that fails validation is retried, but not on every tick. Consecutive failures are
     //! counted per endpoint and the retry is deferred by an exponentially growing interval -- one

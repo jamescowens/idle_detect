@@ -90,6 +90,22 @@ public:
     int64_t ResolveIdleSeconds() override;
 
     //!
+    //! \brief Reports whether the monitor behind this source is still running.
+    //!
+    //! This is the monitor's own availability flag, which its thread clears on the way out when the
+    //! compositor hangs up or removes a global the monitor depends on. That state is unrecoverable from
+    //! inside the source -- the Wayland connection has to be rebuilt, and rebuilding is the pool's job --
+    //! so reporting it here is what gets the source torn down and a new one constructed. Without it the
+    //! pool would hold a permanently dead source, which is the frozen-value bug at a different layer:
+    //! ResolveIdleSeconds() would return IDLE_ERROR forever while the source's existence went on
+    //! suppressing IDLE_NO_GUI_SESSION, so the daemon would neither read this compositor nor fall back to
+    //! event_detect.
+    //!
+    //! \return true if the monitor is available.
+    //!
+    bool IsAlive() const override;
+
+    //!
     //! \brief Human-readable description, "wayland:<socket>".
     //! \return string representation
     //!
@@ -132,6 +148,19 @@ public:
     //! \return Idle seconds >= 0, or IDLE_ERROR.
     //!
     int64_t ResolveIdleSeconds() override;
+
+    //!
+    //! \brief Always true. This source holds nothing that can die between queries: the X connection is
+    //! opened and closed inside ResolveIdleSeconds(), so a display that has gone away simply starts
+    //! returning IDLE_ERROR and there is nothing to tear down.
+    //!
+    //! Tearing it down on those errors would be actively wrong. An X server that is momentarily
+    //! unreachable is answered by the next query, whereas eviction would drop the endpoint and put it at
+    //! the bottom of the pool's retry ladder for a fault that had already cleared.
+    //!
+    //! \return true
+    //!
+    bool IsAlive() const override;
 
     //!
     //! \brief Human-readable description, "x11:<display>".
@@ -273,6 +302,17 @@ public:
     //! \return Idle seconds >= 0, or IDLE_ERROR when this shell supplies no value.
     //!
     int64_t ResolveIdleSeconds() override;
+
+    //!
+    //! \brief Always true. This source holds no connection and no thread; each resolve is a D-Bus call
+    //! made and completed within the call, so there is no state here that can go stale.
+    //!
+    //! A shell that has actually gone away is handled by the kind it is reconciled with rather than by
+    //! liveness: the pool drops the source when the detected shell becomes ShellKind::NONE.
+    //!
+    //! \return true
+    //!
+    bool IsAlive() const override;
 
     //!
     //! \brief Human-readable description, "shell:kde", "shell:gnome", or "shell:none".

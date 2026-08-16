@@ -63,9 +63,36 @@ void IdleSourcePool::Reconcile(const std::set<Endpoint>& endpoints, ShellKind sh
         }
     }
 
+    // --- Tear down retained sources that can no longer produce readings. ---
+    //
+    // The endpoint key still being in the candidate set is NOT proof that the source behind it works.
+    // A Wayland socket outlives the compositor's ability to serve it: the monitor thread exits on a
+    // hangup or on the removal of a global it depends on, while the socket that produced the candidate
+    // sits in $XDG_RUNTIME_DIR exactly as before. Retaining on key alone left such a source in place
+    // for the life of the process, which is the frozen-value bug this design fixed inside the monitor,
+    // reintroduced one layer up: the source could only ever return IDLE_ERROR, and its mere existence
+    // kept any_source_present true, so IDLE_NO_GUI_SESSION could never fire and the daemon neither read
+    // the compositor nor fell back to event_detect.
+    //
+    // Destroying it here rather than marking it puts the endpoint back in the newly-seen state below,
+    // so the rebuild goes through validation and the backoff like any other candidate. That is what
+    // keeps a compositor that is genuinely gone from being reconnected on every tick.
+    for (auto iter = m_endpoint_sources.begin(); iter != m_endpoint_sources.end();) {
+        if (!iter->second->IsAlive()) {
+            normal_log("INFO: %s: Idle source %s is no longer alive. Tearing it down; it will be rebuilt "
+                       "if its endpoint still validates.",
+                       __func__,
+                       iter->second->Describe().c_str());
+
+            iter = m_endpoint_sources.erase(iter);
+        } else {
+            ++iter;
+        }
+    }
+
     // --- Add sources for newly-seen endpoints. ---
     //
-    // Endpoints already holding a source are skipped entirely rather than rebuilt, because a live
+    // Endpoints already holding a live source are skipped entirely rather than rebuilt, because a live
     // source may own a compositor connection and a thread that took real work to establish.
     for (const Endpoint& endpoint : endpoints) {
         if (m_endpoint_sources.count(endpoint) > 0) {

@@ -303,6 +303,14 @@ int64_t WaylandIdleSource::ResolveIdleSeconds()
     return m_monitor->GetIdleSeconds();
 }
 
+bool WaylandIdleSource::IsAlive() const
+{
+    // The same flag ResolveIdleSeconds() gates on, asked as a different question. There it decides whether
+    // this reading is usable; here it decides whether this source still has a future, which is what lets the
+    // pool rebuild the connection instead of holding a source that can only ever return IDLE_ERROR.
+    return m_monitor->IsAvailable();
+}
+
 std::string WaylandIdleSource::Describe() const
 {
     return "wayland:" + m_socket_name;
@@ -326,6 +334,14 @@ int64_t X11IdleSource::ResolveIdleSeconds()
     // display stall the whole pool for 2.5 seconds, on every tick, since this call is synchronous and N
     // displays are resolved in sequence.
     return GetIdleTimeXss(m_display, 1);
+}
+
+bool X11IdleSource::IsAlive() const
+{
+    // Stateless by construction: the connection is opened and closed inside every query, so there is no
+    // stale state for liveness to detect and a failed reading is reported as IDLE_ERROR rather than as
+    // death. See the header for why evicting on those errors would be worse than keeping the source.
+    return true;
 }
 
 std::string X11IdleSource::Describe() const
@@ -446,6 +462,13 @@ int64_t ShellIdleSource::ResolveIdleSeconds()
     }
 
     return IDLE_ERROR;
+}
+
+bool ShellIdleSource::IsAlive() const
+{
+    // Nothing is held between resolves, so nothing can die between them. A shell that goes away is handled
+    // by the pool as a change of ShellKind, not as a liveness failure.
+    return true;
 }
 
 std::string ShellIdleSource::Describe() const

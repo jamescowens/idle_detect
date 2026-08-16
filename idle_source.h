@@ -100,6 +100,27 @@ public:
     virtual int64_t ResolveIdleSeconds() = 0;
 
     //!
+    //! \brief Whether this source can still produce readings. A source that reports false is
+    //! torn down and rebuilt on the next reconcile.
+    //!
+    //! This is deliberately pure rather than defaulted to true. The distinction it draws -- between a
+    //! source that is answering badly and a source that has stopped being a source at all -- is one
+    //! only the implementation can make, and a default would let a new stateful source inherit the
+    //! wrong answer silently. A stateless source that opens and closes its connection inside each
+    //! query cannot go stale by construction and says so explicitly.
+    //!
+    //! It is separate from ResolveIdleSeconds() returning IDLE_ERROR because the two mean different
+    //! things and call for different responses: an error is one failed reading, excluded from the
+    //! aggregate and retried on the next pass, whereas this reports that no future reading will
+    //! succeed until something is rebuilt. Conflating them would either tear down a working source on
+    //! a transient error, or -- the failure this exists to prevent -- keep a dead one forever and let
+    //! its mere existence suppress IDLE_NO_GUI_SESSION.
+    //!
+    //! \return true if the source is still usable
+    //!
+    virtual bool IsAlive() const = 0;
+
+    //!
     //! \brief Human-readable description for logging.
     //! \return string representation
     //!

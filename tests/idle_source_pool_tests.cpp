@@ -49,6 +49,7 @@ public:
     FakeIdleSource(std::string description, int64_t value, std::function<void()> on_destroy)
         : m_description(std::move(description))
         , m_value(value)
+        , m_alive(true)
         , m_resolve_count(0)
         , m_on_destroy(std::move(on_destroy))
     {}
@@ -70,6 +71,11 @@ public:
         return m_value;
     }
 
+    bool IsAlive() const override
+    {
+        return m_alive;
+    }
+
     std::string Describe() const override
     {
         return m_description;
@@ -81,6 +87,15 @@ public:
         m_value = value;
     }
 
+    //!
+    //! \brief Kills or revives this source, standing in for a compositor hangup that leaves the
+    //! endpoint's socket in place while the monitor behind it stops working.
+    //!
+    void SetAlive(bool alive)
+    {
+        m_alive = alive;
+    }
+
     //! \brief Number of times the pool has resolved this source.
     int ResolveCount() const
     {
@@ -90,6 +105,7 @@ public:
 private:
     std::string m_description;
     int64_t m_value;
+    bool m_alive;
     int m_resolve_count;
     std::function<void()> m_on_destroy;
 };
@@ -192,6 +208,20 @@ public:
         return (iter == m_endpoint_destroyed.end()) ? false : iter->second;
     }
 
+    //!
+    //! \brief How many sources for this endpoint have been destroyed over the pool's life.
+    //!
+    //! EndpointDestroyed() cannot answer the rebuild case: the replacement source registers itself as
+    //! not-destroyed, so a teardown immediately followed by a rebuild leaves that flag false. A count
+    //! is what distinguishes "torn down and rebuilt" from "never touched".
+    //!
+    int EndpointDestructions(const Endpoint& endpoint) const
+    {
+        auto iter = m_endpoint_destructions.find(endpoint);
+
+        return (iter == m_endpoint_destructions.end()) ? 0 : iter->second;
+    }
+
     int EndpointFactoryCalls(const Endpoint& endpoint) const
     {
         auto iter = m_endpoint_factory_calls.find(endpoint);
@@ -290,6 +320,7 @@ private:
     void OnEndpointDestroyed(const Endpoint& endpoint)
     {
         m_endpoint_destroyed[endpoint] = true;
+        ++m_endpoint_destructions[endpoint];
 
         // Deregistered rather than left behind, so EndpointSource() can never hand a test a pointer
         // to a source the pool has already torn down.
@@ -313,6 +344,7 @@ private:
     std::map<Endpoint, int64_t> m_endpoint_values;
     std::map<Endpoint, FakeIdleSource*> m_endpoint_sources;
     std::map<Endpoint, bool> m_endpoint_destroyed;
+    std::map<Endpoint, int> m_endpoint_destructions;
     std::map<Endpoint, int> m_endpoint_factory_calls;
 
     int64_t m_shell_value;
@@ -818,6 +850,184 @@ TEST(IdleSourcePool, UnrelatedChurnPreservesSurvivingSourceIdentity)
     EXPECT_EQ(harness.EndpointSource(g_wayland_zero), wayland_source);
     EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 1);
     EXPECT_EQ(harness.Pool().GetIdleSeconds(), 6);
+}
+
+//
+// Liveness of retained sources.
+//
+// The defect these pin down is Reconcile() treating "the endpoint key is still in the candidate set"
+// as proof that the source behind it works. A Wayland socket outlives the compositor's ability to
+// serve it, so a monitor whose thread has exited leaves the candidate looking exactly as it did when
+// it was healthy. Retained on key alone, such a source is kept forever: it can only return
+// IDLE_ERROR, and its existence keeps any_source_present true, so IDLE_NO_GUI_SESSION can never fire
+// and the daemon neither reads the compositor nor falls back to event_detect.
+//
+
+TEST(IdleSourcePool, DeadRetainedSourceIsTornDownAndRebuilt)
+{
+    PoolHarness harness;
+
+    const std::set<Endpoint> candidates{g_wayland_zero};
+
+    harness.ScriptEndpoint(g_wayland_zero, 12);
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    FakeIdleSource* original = harness.EndpointSource(g_wayland_zero);
+    ASSERT_NE(original, nullptr);
+    ASSERT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 1);
+
+    // The compositor hangs up and the monitor thread exits. The socket is untouched, so discovery goes
+    // on offering the same candidate: nothing in the endpoint set can distinguish this from health.
+    //
+    // The dead source is left reporting a distinctive value, so that a pool which kept it would be
+    // caught by the aggregate below rather than only by a pointer comparison.
+    original->SetValue(999);
+    original->SetAlive(false);
+
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointDestructions(g_wayland_zero), 1);
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 2);
+    ASSERT_EQ(harness.Pool().EndpointSourceCount(), 1u);
+
+    FakeIdleSource* rebuilt = harness.EndpointSource(g_wayland_zero);
+    ASSERT_NE(rebuilt, nullptr);
+    EXPECT_TRUE(rebuilt->IsAlive());
+
+    // The rebuilt source reports the scripted value. 999 here would mean the dead one survived.
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), 12);
+}
+
+TEST(IdleSourcePool, LiveRetainedSourceIsNeverRebuilt)
+{
+    // The other half of the rule. Liveness must not become an excuse to rebuild a working source,
+    // which would drop and re-establish a compositor connection on every tick.
+    PoolHarness harness;
+
+    const std::set<Endpoint> candidates{g_wayland_zero};
+
+    harness.ScriptEndpoint(g_wayland_zero, 12);
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    FakeIdleSource* source = harness.EndpointSource(g_wayland_zero);
+    ASSERT_NE(source, nullptr);
+
+    // Mutated, so a rebuilt source would be caught by behavior and not only by pointer identity.
+    source->SetValue(77);
+
+    ReconcileTicks(harness, 10, candidates);
+
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 1);
+    EXPECT_EQ(harness.EndpointDestructions(g_wayland_zero), 0);
+    EXPECT_EQ(harness.EndpointSource(g_wayland_zero), source);
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), 77);
+}
+
+TEST(IdleSourcePool, DeadSourceThatCannotBeRebuiltStopsCountingAsASource)
+{
+    // This is the whole point of the fix. A compositor that is gone for good, behind a socket that
+    // lingers, must stop suppressing IDLE_NO_GUI_SESSION -- otherwise the daemon reports a GUI session
+    // it cannot read, and the main loop never hands the session to event_detect.
+    PoolHarness harness;
+
+    const std::set<Endpoint> candidates{g_wayland_zero};
+
+    harness.ScriptEndpoint(g_wayland_zero, 12);
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    FakeIdleSource* source = harness.EndpointSource(g_wayland_zero);
+    ASSERT_NE(source, nullptr);
+    ASSERT_EQ(harness.Pool().GetIdleSeconds(), 12);
+
+    // The compositor dies and does not come back. The stale socket keeps the candidate alive.
+    source->SetAlive(false);
+    harness.ClearEndpointScript(g_wayland_zero);
+
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointDestructions(g_wayland_zero), 1);
+    EXPECT_EQ(harness.Pool().EndpointSourceCount(), 0u);
+
+    // Retaining the dead source would report 12 forever. Retaining it as a mere presence would report
+    // IDLE_ERROR forever. Both mask a session that has no readable idle source at all.
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), IDLE_NO_GUI_SESSION);
+    EXPECT_NE(harness.Pool().GetIdleSeconds(), IDLE_ERROR);
+}
+
+TEST(IdleSourcePool, FailedRebuildOfADeadSourceIsBackedOff)
+{
+    // A dead compositor behind a lingering socket is a permanently-failing candidate like any other,
+    // so the rebuild goes through the same ladder rather than reconnecting on every tick.
+    PoolHarness harness;
+
+    const std::set<Endpoint> candidates{g_wayland_zero};
+
+    harness.ScriptEndpoint(g_wayland_zero, 12);
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    FakeIdleSource* source = harness.EndpointSource(g_wayland_zero);
+    ASSERT_NE(source, nullptr);
+
+    source->SetAlive(false);
+    harness.ClearEndpointScript(g_wayland_zero);
+
+    // Teardown and the failed rebuild happen on the same tick: the endpoint is newly-seen again by
+    // the time the add pass runs.
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    ASSERT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 2);
+
+    // One tick of backoff, then the retry.
+    EXPECT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 2);
+    EXPECT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 3);
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 4);
+}
+
+TEST(IdleSourcePool, SuccessfulRebuildResetsTheBackoff)
+{
+    // The strict form of "success resets the ladder": the endpoint never leaves the candidate set, so
+    // the reset can only have come from the successful validation itself.
+    PoolHarness harness;
+
+    const std::set<Endpoint> candidates{g_wayland_zero};
+
+    harness.ScriptEndpoint(g_wayland_zero, 12);
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    FakeIdleSource* source = harness.EndpointSource(g_wayland_zero);
+    ASSERT_NE(source, nullptr);
+
+    // The compositor dies, and the rebuild fails twice, taking the ladder to two ticks.
+    source->SetAlive(false);
+    harness.ClearEndpointScript(g_wayland_zero);
+
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+    ASSERT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 2);
+    ASSERT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 2);
+    ASSERT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 3);
+
+    // The compositor comes back and the next attempt succeeds.
+    harness.ScriptEndpoint(g_wayland_zero, 5);
+
+    ASSERT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 3);
+    ASSERT_EQ(harness.Pool().EndpointSourceCount(), 1u);
+    ASSERT_EQ(harness.Pool().GetIdleSeconds(), 5);
+
+    // It dies again. The rebuild attempt is made on that very tick rather than being deferred by the
+    // two-tick interval the ladder stood at before the success.
+    FakeIdleSource* rebuilt = harness.EndpointSource(g_wayland_zero);
+    ASSERT_NE(rebuilt, nullptr);
+
+    rebuilt->SetAlive(false);
+    harness.ClearEndpointScript(g_wayland_zero);
+
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_wayland_zero), 5);
+    EXPECT_EQ(harness.EndpointDestructions(g_wayland_zero), 2);
+
+    // And the ladder restarts at one tick rather than resuming at two.
+    EXPECT_EQ(TicksUntilNextFactoryCall(harness, g_wayland_zero, candidates), 2);
 }
 
 //
