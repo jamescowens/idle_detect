@@ -9,6 +9,7 @@
 
 #include <condition_variable>
 #include <cstdint> // For int64_t
+#include <string>
 #include <thread>
 #include <util.h>
 
@@ -134,14 +135,36 @@ public:
     WaylandIdleMonitor(WaylandIdleMonitor&&) = delete;
     WaylandIdleMonitor& operator=(WaylandIdleMonitor&&) = delete;
 
+    //!
     //! \brief Initializes the Wayland display and registry, and starts the idle notifier.
-    bool Start(int notification_timeout_ms);
+    //!
+    //! The socket name binds this monitor to one specific compositor endpoint, which is what allows more than
+    //! one monitor to coexist in the same process. An empty name is the historical behavior: the socket is
+    //! derived from the WAYLAND_DISPLAY environment variable by libwayland itself.
+    //!
+    //! \param socket_name Wayland socket to connect to (e.g. "wayland-0"). Empty means use the WAYLAND_DISPLAY
+    //!        environment variable.
+    //! \param notification_timeout_ms Idle notification threshold in milliseconds.
+    //! \return true if the monitor was started (or was already running), false on failure.
+    //!
+    bool Start(const std::string& socket_name, int notification_timeout_ms);
 
     //! \brief Stops the Wayland idle monitor and cleans up resources.
     void Stop();
 
     //! \brief Checks if the Wayland idle monitor is available.
     bool IsAvailable() const;
+
+    //!
+    //! \brief Returns the Wayland socket this monitor is bound to.
+    //!
+    //! This is the name that was passed to the most recent Start(). It is empty if the monitor has never been
+    //! started, or if it was started with an empty name and is therefore bound to the environment-derived
+    //! socket.
+    //!
+    //! \return Socket name, empty if environment-derived.
+    //!
+    const std::string& GetSocketName() const;
 
     //! \brief Provides the number of seconds the session has been idle via the ext_idle_notifier_v1 protocol.
     int64_t GetIdleSeconds() const;
@@ -198,6 +221,15 @@ private:
 
     //! \brief Timeout for idle notification in milliseconds
     int m_notification_timeout_ms;
+
+    //!
+    //! \brief Wayland socket name this instance connects to. Empty means use WAYLAND_DISPLAY.
+    //!
+    //! Stored by Start() before any fallible work and deliberately left alone by ReapFailedThread(), so that
+    //! reaping a self-exited thread and restarting reconnects to the same endpoint rather than falling back to
+    //! whatever WAYLAND_DISPLAY happens to say.
+    //!
+    std::string m_socket_name;
 
     //!
     //! \brief Private method that performs the fallible portion of Start(): initializing Wayland, validating the

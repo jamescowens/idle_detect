@@ -1081,6 +1081,17 @@ extern const struct ext_idle_notification_v1_listener g_idle_notification_listen
 const void* WaylandIdleMonitor::c_registry_listener_ptr = &g_registry_listener;
 const void* WaylandIdleMonitor::c_idle_notification_listener_ptr = &g_idle_notification_listener;
 
+//!
+//! \brief Renders a Wayland socket name for logging. Once more than one monitor can be alive at a time, the log
+//! has to say which endpoint each line is about, and an empty name has to read as something other than "".
+//!
+//! \param socket_name Socket name as stored by WaylandIdleMonitor::Start().
+//! \return The socket name, or a placeholder for the environment-derived socket.
+//!
+static std::string SocketNameForLog(const std::string& socket_name) {
+    return socket_name.empty() ? std::string("<WAYLAND_DISPLAY>") : socket_name;
+}
+
 // Constructor
 WaylandIdleMonitor::WaylandIdleMonitor() :
     m_seat(nullptr),
@@ -1107,10 +1118,18 @@ WaylandIdleMonitor::~WaylandIdleMonitor() {
 }
 
 // Start method
-bool WaylandIdleMonitor::Start(int notification_timeout_ms) {
-    normal_log("INFO: %s: Starting Wayland idle monitor.", __func__); // Use log for start/stop
+bool WaylandIdleMonitor::Start(const std::string& socket_name, int notification_timeout_ms) {
+    // Use log for start/stop
+    normal_log("INFO: %s: Starting Wayland idle monitor on socket %s.",
+               __func__,
+               SocketNameForLog(socket_name));
+
     if (m_initialized.load()) {
-        debug_log("INFO: %s: Monitor already initialized.", __func__);
+        // The already-running monitor keeps the socket it was started with. Log both names so a mismatched
+        // restart request is visible rather than silently ignored.
+        debug_log("INFO: %s: Monitor already initialized on socket %s.",
+                  __func__,
+                  SocketNameForLog(m_socket_name));
         return true; // Already running
     }
 
@@ -1124,7 +1143,10 @@ bool WaylandIdleMonitor::Start(int notification_timeout_ms) {
         return false;
     }
 
+    // Store the parameters before any fallible work below, so that InitializeWayland() and
+    // CreateIdleNotification() see them regardless of which failure path is taken from here.
     m_notification_timeout_ms = notification_timeout_ms;
+    m_socket_name = socket_name;
 
     // Create pipe for interrupting poll() before initializing Wayland
     // pipe2 is Linux-specific, use pipe() for broader POSIX if needed
@@ -1150,7 +1172,9 @@ bool WaylandIdleMonitor::Start(int notification_timeout_ms) {
         return false;
     }
 
-    normal_log("INFO: %s: Wayland idle monitor started successfully.", __func__);
+    normal_log("INFO: %s: Wayland idle monitor started successfully on socket %s.",
+               __func__,
+               SocketNameForLog(m_socket_name));
     return true;
 }
 
@@ -1263,6 +1287,11 @@ bool WaylandIdleMonitor::ReapFailedThread() {
 
     // Reset the state flags so the caller sees a pristine object. Start() sets these again itself, but a
     // half-reset object between the two would report a stale idle time through IsIdle()/GetIdleSeconds().
+    //
+    // The reset stops at the flags on purpose. m_socket_name and m_notification_timeout_ms are configuration,
+    // not run state: clearing m_socket_name here would make a reap-then-restart silently fall back to the
+    // WAYLAND_DISPLAY-derived socket instead of reconnecting to the endpoint this monitor owns. Start()
+    // overwrites both from its arguments anyway, so there is nothing stale to guard against either.
     m_interrupt_monitor.store(false);
     m_globals_lost.store(false);
     m_is_idle.store(false);
@@ -1273,7 +1302,9 @@ bool WaylandIdleMonitor::ReapFailedThread() {
 
 // Stop method
 void WaylandIdleMonitor::Stop() {
-    normal_log("INFO: %s: Stopping Wayland idle monitor...", __func__);
+    normal_log("INFO: %s: Stopping Wayland idle monitor on socket %s...",
+               __func__,
+               SocketNameForLog(m_socket_name));
 
     // Use exchange to prevent concurrent Stop calls and get previous state
     if (m_interrupt_monitor.exchange(true)) {
@@ -1322,7 +1353,12 @@ void WaylandIdleMonitor::Stop() {
     if (m_interrupt_pipe_fd[1] != -1) { close(m_interrupt_pipe_fd[1]); m_interrupt_pipe_fd[1] = -1; }
 
     m_initialized.store(false); // Mark as no longer initialized
-    normal_log("INFO: %s: Wayland idle monitor stopped.", __func__);
+
+    // m_socket_name is deliberately not cleared: it is what the next Start() would be reconnecting to, and it
+    // keeps GetSocketName() meaningful for a stopped monitor that is still sitting in an endpoint pool.
+    normal_log("INFO: %s: Wayland idle monitor on socket %s stopped.",
+               __func__,
+               SocketNameForLog(m_socket_name));
 }
 
 void WaylandIdleMonitor::ResetWaylandState() {
@@ -1354,9 +1390,14 @@ bool WaylandIdleMonitor::InitializeWayland() {
         // therefore clears the flag again once the bound-pointer re-check passes.
         m_globals_lost.store(false);
 
-        m_display = wl_display_connect(nullptr);
+        // An empty socket name means "let libwayland derive the socket from WAYLAND_DISPLAY", which is what this
+        // call did unconditionally before the monitor became addressable.
+        m_display = wl_display_connect(m_socket_name.empty() ? nullptr : m_socket_name.c_str());
         if (!m_display) {
-            error_log("%s: Failed to connect to Wayland display (attempt %d).", __func__, attempt);
+            error_log("%s: Failed to connect to Wayland display %s (attempt %d).",
+                      __func__,
+                      SocketNameForLog(m_socket_name),
+                      attempt);
             // Go directly to sleep and retry
         } else {
             m_registry = wl_display_get_registry(m_display);
@@ -1374,7 +1415,10 @@ bool WaylandIdleMonitor::InitializeWayland() {
                 if (wl_display_roundtrip(m_display) != -1 && wl_display_roundtrip(m_display) != -1) {
                     // Check if required globals were actually found and bound by the listener
                     if (m_seat != nullptr && m_idle_notifier != nullptr) {
-                        debug_log("INFO: %s: Wayland connection and required globals found on attempt %d.", __func__, attempt);
+                        debug_log("INFO: %s: Wayland connection to %s and required globals found on attempt %d.",
+                                  __func__,
+                                  SocketNameForLog(m_socket_name),
+                                  attempt);
                         // Success! Don't cleanup, just return true.
                         // Note: Registry listener remains attached.
                         return true;
@@ -1411,7 +1455,10 @@ bool WaylandIdleMonitor::InitializeWayland() {
         }
     } // end retry loop
 
-    error_log("%s: Failed to initialize Wayland after %d attempts.", __func__, MAX_INIT_RETRIES);
+    error_log("%s: Failed to initialize Wayland on socket %s after %d attempts.",
+              __func__,
+              SocketNameForLog(m_socket_name),
+              MAX_INIT_RETRIES);
     CleanupWayland(); // Final cleanup after all attempts fail
     return false;
 }
@@ -1682,6 +1729,11 @@ void WaylandIdleMonitor::WaylandMonitorThread() {
 // IsAvailable getter
 bool WaylandIdleMonitor::IsAvailable() const {
     return m_initialized.load();
+}
+
+// GetSocketName getter
+const std::string& WaylandIdleMonitor::GetSocketName() const {
+    return m_socket_name;
 }
 
 // IsIdle getter
@@ -2029,7 +2081,9 @@ int main(int argc, char* argv[])
     if (IdleDetect::IsWaylandSession()) {
         int notification_timeout_ms = 1000;
         debug_log("INFO: %s: Attempting Wayland idle monitor (timeout %dms)...", __func__, notification_timeout_ms);
-        if (g_wayland_idle_monitor.Start(notification_timeout_ms)) {
+        // An empty socket name keeps the historical WAYLAND_DISPLAY-derived behavior. The discovered endpoint
+        // supplies the real name once the endpoint pool drives the monitors.
+        if (g_wayland_idle_monitor.Start(std::string {}, notification_timeout_ms)) {
             debug_log("INFO: %s: Wayland idle monitor started successfully.", __func__);
             wayland_monitor_started = true; // Track success
         } else {
