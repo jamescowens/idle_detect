@@ -1127,24 +1127,42 @@ bool WaylandIdleMonitor::Start(int notification_timeout_ms) {
     m_is_idle.store(false);
     m_idle_start_time.store(0);
 
+    // Perform the fallible setup. StartInternal() does no cleanup of its own; the teardown below is the single
+    // failure path for everything it may have partially constructed.
+    if (!StartInternal()) {
+        CleanupWayland();
+        if (m_interrupt_pipe_fd[0] != -1) { close(m_interrupt_pipe_fd[0]); m_interrupt_pipe_fd[0] = -1; }
+        if (m_interrupt_pipe_fd[1] != -1) { close(m_interrupt_pipe_fd[1]); m_interrupt_pipe_fd[1] = -1; }
+        m_initialized.store(false);
+        return false;
+    }
+
+    m_initialized.store(true); // Set initialized only after thread starts successfully
+    normal_log("INFO: %s: Wayland idle monitor started successfully.", __func__);
+    return true;
+}
+
+// StartInternal method. This performs no cleanup; Start() owns the failure teardown.
+bool WaylandIdleMonitor::StartInternal() {
     // Initialize Wayland connection, get initial state, and subscribe
     // Includes retries internally now
     if (!InitializeWayland()) {
         error_log("%s: Failed to initialize Wayland or find required protocols after retries.", __func__);
-        goto start_failed;
+        return false;
     }
 
     // Check again after InitializeWayland succeeded
     if (!m_seat || !m_idle_notifier) {
         error_log("%s: Required Wayland interfaces not bound even after InitializeWayland success (logic error?).", __func__);
-        goto start_failed;
+        return false;
     }
 
-    // Create the specific idle notification request object
+    // Create the specific idle notification request object. This uses m_notification_timeout_ms, which Start() has
+    // already stored.
     CreateIdleNotification();
     if (!m_idle_notification) {
         error_log("%s: Failed to create Wayland idle notification object.", __func__);
-        goto start_failed;
+        return false;
     }
 
     // If Wayland setup okay, start the thread to run the event loop
@@ -1152,22 +1170,13 @@ bool WaylandIdleMonitor::Start(int notification_timeout_ms) {
         m_monitor_thread = std::thread(&WaylandIdleMonitor::WaylandMonitorThread, this);
     } catch (const std::system_error& e) {
         error_log("%s: Failed to start Wayland monitor thread: %s", __func__, e.what());
-        goto start_failed;
+        return false;
     } catch (...) {
         error_log("%s: Unknown error starting Wayland monitor thread.", __func__);
-        goto start_failed;
+        return false;
     }
 
-    m_initialized.store(true); // Set initialized only after thread starts successfully
-    normal_log("INFO: %s: Wayland idle monitor started successfully.", __func__);
     return true;
-
-start_failed:
-    CleanupWayland();
-    if (m_interrupt_pipe_fd[0] != -1) { close(m_interrupt_pipe_fd[0]); m_interrupt_pipe_fd[0] = -1; }
-    if (m_interrupt_pipe_fd[1] != -1) { close(m_interrupt_pipe_fd[1]); m_interrupt_pipe_fd[1] = -1; }
-    m_initialized.store(false);
-    return false;
 }
 
 // Stop method
@@ -1379,6 +1388,20 @@ void WaylandIdleMonitor::CreateIdleNotification() {
     debug_log("INFO: %s: Created idle notification object (timeout %d ms).", __func__, m_notification_timeout_ms);
 }
 
+// PrepareRead helper. Extracted from the monitor thread loop so that a dispatch failure in the inner loop can
+// terminate the outer loop rather than only the inner one.
+bool WaylandIdleMonitor::PrepareRead() {
+    while (wl_display_prepare_read(m_display) != 0) {
+        // Dispatch pending events that arrived before prepare_read locked the queue
+        if (wl_display_dispatch_pending(m_display) == -1) {
+            error_log("%s: wl_display_dispatch_pending() failed in prepare loop. Exiting thread.", __func__);
+            return false;
+        }
+    }
+
+    return true;
+}
+
 // WaylandMonitorThread (using poll)
 void WaylandIdleMonitor::WaylandMonitorThread() {
     debug_log("INFO: %s: Wayland monitor thread started.", __func__);
@@ -1398,20 +1421,17 @@ void WaylandIdleMonitor::WaylandMonitorThread() {
     int poll_ret;
 
     while (!m_interrupt_monitor.load(std::memory_order_relaxed)) {
-        // Prepare read BEFORE blocking in poll
-        while (wl_display_prepare_read(m_display) != 0) {
-            // Dispatch pending events that arrived before prepare_read locked the queue
-            if (wl_display_dispatch_pending(m_display) == -1) {
-                error_log("%s: wl_display_dispatch_pending() failed in prepare loop. Exiting thread.", __func__);
-                goto thread_exit; // Use goto for central exit point? Or just return?
-            }
+        // Prepare read BEFORE blocking in poll. A failure here must exit the thread, not just the prepare loop,
+        // otherwise we would flush and poll on a display that has already failed to dispatch.
+        if (!PrepareRead()) {
+            break;
         }
 
         // Flush requests to ensure server gets listener setups etc. before we block
         if (wl_display_flush(m_display) == -1 && errno != EAGAIN) {
             error_log("%s: wl_display_flush() failed: %s (%d). Exiting thread.", __func__, strerror(errno), errno);
             wl_display_cancel_read(m_display);
-            goto thread_exit;
+            break;
         }
 
         // Block in poll() until Wayland FD has events OR interrupt pipe is written/closed
@@ -1421,7 +1441,7 @@ void WaylandIdleMonitor::WaylandMonitorThread() {
             if (errno == EINTR) { continue; } // Interrupted by unrelated signal
             error_log("%s: poll() failed: %s (%d). Exiting thread.", __func__, strerror(errno), errno);
             wl_display_cancel_read(m_display); // Need to cancel before error exit? Yes.
-            goto thread_exit;
+            break;
         }
 
         // Check for interrupt first
@@ -1438,19 +1458,19 @@ void WaylandIdleMonitor::WaylandMonitorThread() {
         if (fds[0].revents & (POLLERR | POLLHUP)) {
             error_log("%s: Error/Hangup on Wayland display FD. Exiting thread.", __func__);
             // Don't need to cancel read if FD is likely dead
-            goto thread_exit;
+            break;
         }
 
         // If we woke up for Wayland FD, read events
         if (fds[0].revents & POLLIN) {
             if (wl_display_read_events(m_display) == -1) {
                 error_log("%s: wl_display_read_events() failed. Exiting thread.", __func__);
-                goto thread_exit;
+                break;
             }
             // Dispatch the read events which trigger callbacks
             if (wl_display_dispatch_pending(m_display) == -1) {
                 error_log("%s: wl_display_dispatch_pending() failed after read. Exiting thread.", __func__);
-                goto thread_exit;
+                break;
             }
         } else {
             // Woke up but not for Wayland FD (shouldn't happen with poll=-1 unless interrupted)
@@ -1464,7 +1484,6 @@ void WaylandIdleMonitor::WaylandMonitorThread() {
         }
     } // end while
 
-thread_exit:
     debug_log("INFO: %s: Wayland monitor thread exiting.", __func__);
     // Cleanup of Wayland resources happens in Stop() or ~WaylandIdleMonitor()
     // which is called after this thread is joined.

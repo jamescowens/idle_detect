@@ -180,6 +180,17 @@ private:
     //! \brief Timeout for idle notification in milliseconds
     int m_notification_timeout_ms;
 
+    //!
+    //! \brief Private method that performs the fallible portion of Start(): initializing Wayland, validating the
+    //! required interfaces, creating the idle notification object, and launching the monitor thread.
+    //!
+    //! This method performs no cleanup of its own. Start() owns the teardown of both the Wayland resources and the
+    //! interrupt pipe on failure. m_notification_timeout_ms must already be stored by Start() before this is called.
+    //!
+    //! \return true if the monitor thread was started, false on any failure.
+    //!
+    bool StartInternal();
+
     //! \brief Private method to initialize Wayland and set up the idle notification.
     bool InitializeWayland();
 
@@ -191,6 +202,13 @@ private:
 
     //! \brief Private method to create the idle notification object.
     void CreateIdleNotification();
+
+    //!
+    //! \brief Prepares the Wayland read queue, dispatching pending events until the queue is locked.
+    //!
+    //! \return true on success, false if dispatch failed and the monitor thread should exit.
+    //!
+    bool PrepareRead();
 
     //! \brief Private method to run the Wayland event loop in a separate thread.
     void WaylandMonitorThread();
