@@ -213,6 +213,21 @@ private:
     //!
     bool StartInternal();
 
+    //!
+    //! \brief Private method that reaps a monitor thread which exited on its own, returning the object to the
+    //! state it has before a first-ever Start().
+    //!
+    //! A monitor thread that exits unexpectedly clears m_initialized itself, but it cannot join itself or close
+    //! the interrupt pipe, so it leaves m_monitor_thread joinable and both pipe FDs open. Start() must therefore
+    //! call this before it does anything else: re-running Start() over that state would leak the pipe FDs and
+    //! move-assign onto a joinable std::thread, which calls std::terminate(). It is a no-op when there is no
+    //! thread to reap, which is the ordinary first-ever Start() path.
+    //!
+    //! \return true if the object is ready for a fresh Start(), false if a previous thread could not be reaped
+    //! and its resources must therefore be left alone.
+    //!
+    bool ReapFailedThread();
+
     //! \brief Private method to initialize Wayland and set up the idle notification.
     bool InitializeWayland();
 

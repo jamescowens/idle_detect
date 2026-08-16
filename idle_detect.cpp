@@ -1114,6 +1114,16 @@ bool WaylandIdleMonitor::Start(int notification_timeout_ms) {
         return true; // Already running
     }
 
+    // m_initialized being clear does not mean this object is clean. A monitor thread that exited unexpectedly
+    // clears m_initialized itself but cannot join itself or close the interrupt pipe, so it leaves a joinable
+    // std::thread and two open FDs behind. Reap that before touching anything else: the pipe2() below would
+    // otherwise overwrite the live FDs and the thread launch would move-assign onto a joinable std::thread,
+    // which calls std::terminate(). This is a no-op on the first-ever Start().
+    if (!ReapFailedThread()) {
+        error_log("%s: Could not reap the previous Wayland monitor thread. Not restarting.", __func__);
+        return false;
+    }
+
     m_notification_timeout_ms = notification_timeout_ms;
 
     // Create pipe for interrupting poll() before initializing Wayland
@@ -1193,6 +1203,50 @@ bool WaylandIdleMonitor::StartInternal() {
         error_log("%s: Unknown error starting Wayland monitor thread.", __func__);
         return false;
     }
+
+    return true;
+}
+
+// ReapFailedThread method. Called by Start() before any setup work; see the header for why.
+bool WaylandIdleMonitor::ReapFailedThread() {
+    // Nothing to reap. This is both the first-ever Start() and the Start()-after-a-clean-Stop() path, since
+    // Stop() joins the thread itself.
+    if (!m_monitor_thread.joinable()) {
+        return true;
+    }
+
+    // Never reap from within the monitor thread. join() on self throws resource_deadlock_would_occur, and the
+    // teardown below would destroy the Wayland resources the caller is still standing on.
+    if (m_monitor_thread.get_id() == std::this_thread::get_id()) {
+        error_log("WARN: %s: called from within the Wayland monitor thread. Not reaping.", __func__);
+        return false;
+    }
+
+    error_log("WARN: %s: Reaping a Wayland monitor thread that exited on its own before restarting.", __func__);
+
+    try {
+        m_monitor_thread.join();
+    } catch (const std::system_error& e) {
+        // The thread may still be alive, so its Wayland resources must not be torn down here and the object
+        // must not be restarted. Leaving m_monitor_thread joinable is deliberate: the caller aborts the start.
+        error_log("%s: Error joining the previous Wayland monitor thread: %s", __func__, e.what());
+        return false;
+    }
+
+    // Past the join this is exactly the teardown Stop() performs, and for the same reason: the thread is gone,
+    // so nothing else can be touching the Wayland connection or the interrupt pipe. The FD guards are what keep
+    // this and a subsequent Stop() from double-closing.
+    CleanupWayland();
+
+    if (m_interrupt_pipe_fd[0] != -1) { close(m_interrupt_pipe_fd[0]); m_interrupt_pipe_fd[0] = -1; }
+    if (m_interrupt_pipe_fd[1] != -1) { close(m_interrupt_pipe_fd[1]); m_interrupt_pipe_fd[1] = -1; }
+
+    // Reset the state flags so the caller sees a pristine object. Start() sets these again itself, but a
+    // half-reset object between the two would report a stale idle time through IsIdle()/GetIdleSeconds().
+    m_interrupt_monitor.store(false);
+    m_globals_lost.store(false);
+    m_is_idle.store(false);
+    m_idle_start_time.store(0);
 
     return true;
 }
