@@ -1224,6 +1224,26 @@ bool WaylandIdleMonitor::ReapFailedThread() {
 
     error_log("WARN: %s: Reaping a Wayland monitor thread that exited on its own before restarting.", __func__);
 
+    // joinable() cannot distinguish "finished but not joined" from "still alive and blocked in poll()". Only the
+    // former is reachable today, because the thread clears m_initialized on its way out and Start() returns early
+    // while that flag is still set. Signal the interrupt anyway so this join is bounded by the same mechanism
+    // Stop() uses, rather than resting on that reasoning once the endpoint pool drives Start()/Stop() per
+    // endpoint. Setting m_interrupt_monitor also makes a still-live thread skip its unexpected-exit tail, which
+    // is correct here: this is a requested teardown, and the flags are reset below regardless.
+    m_interrupt_monitor.store(true);
+
+    if (m_interrupt_pipe_fd[1] != -1) {
+        char buf = 'X';
+        ssize_t written = write(m_interrupt_pipe_fd[1], &buf, 1);
+
+        if (written <= 0 && errno != EAGAIN) {
+            error_log("%s: Failed to write to interrupt pipe while reaping: %s (%d)",
+                      __func__,
+                      strerror(errno),
+                      errno);
+        }
+    }
+
     try {
         m_monitor_thread.join();
     } catch (const std::system_error& e) {
@@ -1440,8 +1460,13 @@ void WaylandIdleMonitor::OnGlobalRemoved(uint32_t name) {
     }
 
     // Without either global this monitor can no longer report idle time, so flag it as failed. The monitor
-    // thread breaks out of its loop on this, and the connection is rebuilt rather than left reporting against a
-    // global that no longer exists. This is intentionally not m_interrupt_monitor, which means "asked to stop".
+    // thread breaks out of its loop on this and marks the monitor unavailable, so GetIdleTimeSeconds() falls
+    // back to the other detection paths instead of serving a frozen value against a global that no longer
+    // exists. This is intentionally not m_interrupt_monitor, which means "asked to stop".
+    //
+    // Note the monitor is not rebuilt automatically today: Start() has a single caller in main(). Rebuilding is
+    // the job of the endpoint pool that replaces that call site, which reconciles sources against discovery and
+    // will restart a failed one. ReapFailedThread() exists to make that restart safe.
     m_globals_lost.store(true);
 }
 
