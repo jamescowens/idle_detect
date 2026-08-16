@@ -54,6 +54,19 @@ The split is deliberate: `idle_source.*` and `session_discovery.*` contain zero 
 
 Independently mergeable. Land this even if the rest slips. Based on Penumbra69's patch from issue #11, **excluding** its GNOME eager-startup skip, which is a separate behavioral decision and is superseded by Phase 3's discovery logic.
 
+> **Status: COMPLETE (13 code commits, `a36c839`..`0a02914`).** Adversarial review during execution surfaced nine further defects, all pre-existing, fixed in the same phase because they sit in the code being restructured and several undermine the design's goals directly. Beyond Tasks 1-3 below, Phase 0 also delivered:
+>
+> - `45eb6cf` — `wl_display_cancel_read()` on the `EINTR` path. The poll loop restarted without releasing the read lock, driving libwayland's `reader_count` to 2 and deadlocking the next `wl_display_read_events()` in `pthread_cond_wait`.
+> - `1ebd1a8` — `HandleGlobalRemove` destroys the proxies instead of only nulling them. `CleanupWayland()`'s destroys are gated on non-null, so an orphaned proxy was skipped forever, and `wl_display_disconnect()` does not free live proxies.
+> - `38966ce` — null-check `wl_registry_bind()` results. `debug_log` is a function template, so its `wl_proxy_get_version()` argument was evaluated unconditionally regardless of the debug flag.
+> - `f9402d3` — clear `m_initialized` when the monitor thread exits unexpectedly. It was cleared in exactly one place, so a compositor hangup left `IsAvailable()` true and `GetIdleSeconds()` serving a frozen value for the daemon's life, pinning DC permanently paused or permanently running.
+> - `4615fef` — do not enter the evdev read loop without a device handle. `g_exit_code` is not monotonic, so a recorder thread could skip initialization and still enter the loop.
+> - `e45e09b` — preserve the failure exit code. `Shutdown(const int& = 0)` reset `g_exit_code` to 0, so four error paths exited successfully and defeated `Restart=on-failure`.
+> - `73eda70`, `999e7d9`, `0a02914` — three regressions the above introduced, found by a second review pass: an `m_globals_lost` latch across a successful init, a `std::terminate` from move-assigning onto a joinable `std::thread` on restart, and an unbounded reap join.
+> - `a02f2e0`, `50a7886` — restart-loop containment. `Shutdown(1)` is semantically right, but `RestartSec=5s` plus `ExecStartPre=/bin/sleep 5` against systemd's default 10s window meant the burst limit never tripped. Bounded via `StartLimitIntervalSec`/`StartLimitBurst`, and "no pointing devices" was made **non-fatal** — it is re-evaluated every second from the monitor thread, tty monitoring does not depend on it, and the downstream consumers are empty-safe.
+>
+> Verified throughout: clean build with zero warnings, 101/101 tests, zero `goto` in the tracked codebase, and **valgrind reporting 0 errors on both the normal and the issue-#11 failure path**.
+
 ### Task 1: Centralize failed-init cleanup and destroy Wayland proxies
 
 **Files:**
@@ -370,8 +383,24 @@ Replace everything in `Start()` from `// Initialize Wayland connection` through 
 
 - [ ] **Step 4: Verify no `goto` remains**
 
-Run: `grep -n "goto\|start_failed" idle_detect.cpp`
+Run: `git ls-files -z '*.cpp' '*.h' | xargs -0 grep -nw "goto"`
 Expected: no output.
+
+**Scope correction.** An earlier revision of this task covered only the five `goto start_failed`
+jumps in `Start()` and asserted the grep above would then come back clean. It would not have.
+`idle_detect.cpp` had **eleven** gotos in two clusters, and `event_detect.cpp` had a twelfth:
+
+- 5 × `goto start_failed` in `Start()` — the extraction above.
+- 6 × `goto thread_exit` in `WaylandMonitorThread()`. Five sit directly in the outer `while`
+  body, where `break` is exactly equivalent because `thread_exit:` only logs before the function
+  ends. **The sixth is inside the nested `while (wl_display_prepare_read(...) != 0)` loop, where
+  `break` is a bug** — it would exit only the inner loop and fall through to `wl_display_flush()`
+  and `poll()` on a display that just failed to dispatch. That one became a `PrepareRead()`
+  helper returning `bool`, called as `if (!PrepareRead()) { break; }`.
+- 1 × `goto cleanup` in `event_detect.cpp`'s libevdev read loop, replaced by RAII
+  (`ScopedFileDescriptor` + a `unique_ptr<libevdev, decltype(&libevdev_free)>`). This also
+  removed a latent **double `close(fd)`**: the old libevdev-init failure path closed the
+  descriptor and then fell through to the `cleanup:` label, which closed it again.
 
 - [ ] **Step 5: Build and smoke test**
 
