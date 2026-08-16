@@ -861,6 +861,167 @@ void EnsureXErrorHandlersInstalled()
 }
 
 //!
+//! \brief Serializes the file descriptor 2 redirection below, so that two captures can never save and
+//! restore each other's descriptor.
+//!
+//! Uncontended today, because every X resolution runs on the main loop thread -- the same invariant the
+//! XInitThreads() commentary above depends on. It is taken anyway because the failure mode if that ever
+//! changes is not a lost log line but a permanently redirected stderr.
+//!
+std::mutex mtx_x_connect_stderr_capture;
+
+//!
+//! \brief Routes anything written straight to file descriptor 2 during an X connection attempt into this
+//! process's own logging.
+//!
+//! The message this exists for is "Authorization required, but no authorization protocol specified",
+//! which is the X server's refusal reason relayed by libxcb. Verified with strace: libxcb emits it with a
+//! bare write(2, ...) from inside XOpenDisplay(), two lines per attempt. That bypasses everything -- it is
+//! not an Xlib protocol error, so XSetErrorHandler() never sees it; it is not an I/O error, so
+//! XSetIOErrorHandler() never sees it; it is not stdio, so no stream can be rebound; and libxcb exposes no
+//! logging hook. Redirecting the descriptor is the only interception point that exists.
+//!
+//! Captured text is re-emitted at error level rather than debug level, even though a rejected candidate is
+//! ordinary and the rest of this function reports rejection at debug level. The reason is that the capture
+//! is indiscriminate: for the duration of the open, ANY thread's stderr lands in it, including one of our
+//! own error_log() lines. Re-emitting at debug level would delete that line outright on a default
+//! configuration. Volume is bounded by the pool's validation backoff, which stops offering a candidate
+//! that keeps failing.
+//!
+//! The object must be constructed OUTSIDE the sigsetjmp region in OpenXDisplayGuarded(), which is why it
+//! lives in the caller's frame. siglongjmp() runs no destructors, so a capture in scope at the jump would
+//! leave stderr pointing at the capture buffer for the rest of the process's life. In the caller's frame
+//! the jump is invisible: OpenXDisplayGuarded() returns normally on the jump path and this destructor runs
+//! as usual.
+//!
+class XConnectStderrCapture
+{
+public:
+    //!
+    //! \brief Redirects file descriptor 2 to an in-memory buffer for the lifetime of this object.
+    //!
+    //! Every step is allowed to fail, and failure means no capture rather than no connection attempt: the
+    //! reading is the point, and the chatter is a diagnostic.
+    //!
+    //! \param display_label Display being opened, used to attribute the captured text.
+    //!
+    explicit XConnectStderrCapture(const char* display_label)
+        : m_display_label(display_label)
+        , m_lock(mtx_x_connect_stderr_capture)
+        , m_capture_fd(-1)
+        , m_saved_stderr_fd(-1)
+    {
+        m_capture_fd = memfd_create("x_connect_stderr", MFD_CLOEXEC);
+
+        if (m_capture_fd == -1) {
+            return;
+        }
+
+        m_saved_stderr_fd = dup(STDERR_FILENO);
+
+        if (m_saved_stderr_fd == -1 || dup2(m_capture_fd, STDERR_FILENO) == -1) {
+            if (m_saved_stderr_fd != -1) {
+                close(m_saved_stderr_fd);
+                m_saved_stderr_fd = -1;
+            }
+
+            close(m_capture_fd);
+            m_capture_fd = -1;
+        }
+    }
+
+    //!
+    //! \brief Restores file descriptor 2 and logs whatever was captured.
+    //!
+    ~XConnectStderrCapture()
+    {
+        if (m_capture_fd == -1) {
+            return;
+        }
+
+        // Restored before anything is logged, so that the logging of the captured text does not land in
+        // the capture buffer.
+        dup2(m_saved_stderr_fd, STDERR_FILENO);
+        close(m_saved_stderr_fd);
+
+        const std::string captured = ReadCaptured();
+
+        close(m_capture_fd);
+
+        if (captured.empty()) {
+            return;
+        }
+
+        error_log("WARNING: %s: X display '%s' wrote to stderr while connecting: %s",
+                  __func__,
+                  m_display_label,
+                  captured.c_str());
+    }
+
+    XConnectStderrCapture(const XConnectStderrCapture&) = delete;
+    XConnectStderrCapture& operator=(const XConnectStderrCapture&) = delete;
+
+private:
+    //!
+    //! \brief Reads the capture buffer back and flattens it into a single log line.
+    //! \return Captured text with its line breaks turned into separators, empty if nothing was written.
+    //!
+    std::string ReadCaptured() const
+    {
+        if (lseek(m_capture_fd, 0, SEEK_SET) == static_cast<off_t>(-1)) {
+            return {};
+        }
+
+        std::string captured;
+        char buffer[512];
+        ssize_t bytes_read = 0;
+
+        // Bounded so that a library that decides to write without limit cannot be turned into unbounded
+        // memory growth here.
+        while (captured.size() < 4096 && (bytes_read = read(m_capture_fd, buffer, sizeof(buffer))) > 0) {
+            captured.append(buffer, static_cast<size_t>(bytes_read));
+        }
+
+        // libxcb writes the reason and its newline as separate writes, so the raw text is full of line
+        // breaks that would fragment one diagnostic into several journal entries. Runs of whitespace are
+        // collapsed rather than merely translated, because the refusal reason arrives twice per open --
+        // once per address libxcb tries -- and the seam between the two is several characters of nothing.
+        std::string flattened;
+        bool in_whitespace = false;
+
+        for (const char c : captured) {
+            const bool is_whitespace = (c == '\n' || c == '\r' || c == '\t' || c == ' ');
+
+            if (is_whitespace) {
+                in_whitespace = true;
+                continue;
+            }
+
+            if (in_whitespace && !flattened.empty()) {
+                flattened.push_back(' ');
+            }
+
+            in_whitespace = false;
+            flattened.push_back(c);
+        }
+
+        return flattened;
+    }
+
+    //! \brief Display being opened. Borrowed for the lifetime of this object.
+    const char* m_display_label;
+
+    //! \brief Held for the whole redirect, so two captures cannot interleave.
+    std::unique_lock<std::mutex> m_lock;
+
+    //! \brief In-memory buffer standing in for stderr, or -1 if the capture could not be set up.
+    int m_capture_fd;
+
+    //! \brief The real stderr, restored on destruction.
+    int m_saved_stderr_fd;
+};
+
+//!
 //! \brief Opens an X display, surviving a connection that dies during the handshake.
 //!
 //! The guard is what distinguishes this from a bare XOpenDisplay(). An I/O error raised inside the open
@@ -1013,7 +1174,15 @@ int64_t GetIdleTimeXss(const std::string& display, int max_connect_retries) {
         // Cleared before every attempt: a previous attempt's dead connection must not condemn this one.
         t_x_display_died = false;
 
-        x_display = OpenXDisplayGuarded(display_name);
+        {
+            // Scoped so the capture is torn down and its contents logged before the retry decision
+            // below, and constructed here rather than inside OpenXDisplayGuarded() because a destructor
+            // in that frame would not run on the siglongjmp path.
+            XConnectStderrCapture capture(display_label);
+
+            x_display = OpenXDisplayGuarded(display_name);
+        }
+
         if (x_display) break;
         if (attempt < max_attempts) {
             debug_log("INFO: %s: Could not open X display '%s' (attempt %d/%d). Retrying...",
@@ -2257,11 +2426,22 @@ static fs::path GetUserConfigPath() {
 //! calls. The D-Bus connection underneath it is GIO's shared per-process session bus connection, which is
 //! established once and reused.
 //!
+//! The XAUTHORITY hint is applied here, before Reconcile(), because Reconcile() is what connects: an X
+//! candidate is validated by opening it, and an X display opened without the credentials the graphical
+//! session is actually using is rejected as unusable no matter how correctly it was discovered. Applying it
+//! is a process-wide mutation and is therefore written out at this level rather than buried inside
+//! BuildDiscoveryInputs() or GetIdleTimeXss(); see ApplyXAuthorityHint() for why setenv() is the only
+//! mechanism Xlib leaves available.
+//!
 static void ReconcileIdleSources()
 {
     const IdleDetect::ShellMonitor shell_monitor;
 
-    IdleDetect::g_idle_source_pool.Reconcile(IdleDetect::DiscoverEndpoints(IdleDetect::BuildDiscoveryHints()),
+    const IdleDetect::DiscoveryInputs inputs = IdleDetect::BuildDiscoveryInputs();
+
+    IdleDetect::ApplyXAuthorityHint(inputs.m_xauthority);
+
+    IdleDetect::g_idle_source_pool.Reconcile(IdleDetect::DiscoverEndpoints(inputs.m_hints),
                                              shell_monitor.DetectShellKind());
 }
 

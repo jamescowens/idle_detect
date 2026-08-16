@@ -13,6 +13,7 @@
 #include <session_discovery.h>
 
 #include <memory>
+#include <optional>
 #include <string>
 
 //
@@ -354,7 +355,29 @@ private:
 //
 
 //!
-//! \brief Gathers endpoint discovery hints from the running system.
+//! \brief Everything one discovery pass gathers from the running system.
+//!
+//! The X authority file is carried alongside the hints rather than inside them, because it is not a hint:
+//! DiscoveryHints is the input to DiscoverEndpoints(), which finds endpoints and does not connect to
+//! anything, whereas this value decides whether a connection to a discovered X display can authenticate.
+//! Keeping it out of that struct also keeps session_discovery.h free of a field nothing there reads.
+//!
+struct DiscoveryInputs {
+    //! \brief Endpoint discovery hints, ready to hand to DiscoverEndpoints().
+    DiscoveryHints m_hints;
+
+    //!
+    //! \brief XAUTHORITY as the systemd user manager currently exports it, if it exports one.
+    //!
+    //! Hand it to ApplyXAuthorityHint() before any X display is opened. It is deliberately not applied
+    //! by the function that reads it: see ApplyXAuthorityHint() for why the mutation is named at the
+    //! call site instead.
+    //!
+    std::optional<std::string> m_xauthority;
+};
+
+//!
+//! \brief Gathers endpoint discovery hints, and the X authority file, from the running system.
 //!
 //! Every hint is independently unreliable and none of them is load-bearing: DiscoverEndpoints() takes
 //! their union and each resulting candidate is validated by connecting to it. Four are gathered here --
@@ -368,20 +391,66 @@ private:
 //! daemon started before its GUI session -- the failure this whole design exists to fix -- does not have
 //! one at all.
 //!
+//! XAUTHORITY comes out of that same single Properties.Get result. It is the identical staleness problem
+//! one variable over: a discovered DISPLAY is useless if the credentials to authenticate to it are the
+//! ones the process was executed with, which for a daemon started before its GUI session means none at
+//! all. Parsing it out of the result already in hand costs nothing; a second round trip to fetch it
+//! separately would cost a synchronous D-Bus call on every tick.
+//!
 //! That property is annotated EmitsChangedSignal("false"), so it is READ ON DEMAND on every call rather
 //! than subscribed to once and cached. A PropertiesChanged subscription would simply never fire, leaving
 //! the cache frozen at whatever the first read saw, which is the same staleness bug in a new place.
 //!
 //! An unreachable or absent systemd user manager is an ordinary outcome rather than an error: whatever
-//! hints were gathered are returned, and the socket scans carry discovery by themselves.
+//! was gathered is returned, and the socket scans carry discovery by themselves.
 //!
 //! DiscoveryHints::m_logind_displays is deliberately left empty. It is documented as optional enrichment,
 //! and every display a logind graphical session could name is already reachable through the X socket scan
 //! or the manager environment.
 //!
-//! \return Populated hints. Any field may be empty.
+//! \return Populated inputs. Any field may be empty.
 //!
-DiscoveryHints BuildDiscoveryHints();
+DiscoveryInputs BuildDiscoveryInputs();
+
+//!
+//! \brief Points this process at the X authority file the graphical session is actually using.
+//!
+//! MECHANISM. This calls setenv("XAUTHORITY", ...), which mutates process state. That is not the first
+//! choice, it is the only one Xlib offers. XOpenDisplay() resolves the authority file internally through
+//! XauFileName(), which reads getenv("XAUTHORITY") and falls back to $HOME/.Xauthority; there is no
+//! per-connection authority argument anywhere in the Xlib API. The one alternative, XSetAuthorization(),
+//! is no better on the point that matters -- it is also process-global -- and is considerably worse
+//! everywhere else, since it would require this process to parse the authority file with libXau and pick
+//! the right entry for each display's address family itself, adding a dependency and a second copy of
+//! logic libX11 already has. XCB's xcb_connect_to_display_with_auth_info() does take per-connection
+//! authority, but the idle query is XScreenSaver through Xlib, so that path is not available here either.
+//!
+//! Given a process-global mutation, three rules contain it:
+//!
+//!   - It is applied only when the value actually differs from the current one, so the steady state is a
+//!     comparison and no write at all. In practice this writes once, when the graphical session appears.
+//!   - An absent hint never unsets anything. The manager environment is a hint, not authority: a manager
+//!     that exports no XAUTHORITY says nothing about the value we already have, and clearing it would
+//!     break a daemon that was started from inside the session with a perfectly good one.
+//!   - A hint naming a file this process cannot read is not applied either, which keeps a value that
+//!     works from being replaced by one that does not during the window where the display manager has
+//!     announced the file but not yet created it.
+//!
+//! It is called from the reconcile path rather than from inside GetIdleTimeXss(), so that the mutation
+//! appears at the top level ahead of the pass that connects, instead of being hidden inside a function
+//! whose name promises a reading. Both satisfy "before the open"; only one is visible to a reader.
+//!
+//! THREADING. setenv() is not thread safe against a concurrent getenv() in another thread. Two things
+//! bound that here. Discovery runs on the main loop thread only, and the environment array itself is only
+//! ever grown once, on the first call that adds XAUTHORITY where the process had none: glibc copies the
+//! array on that first growth rather than freeing the old one, and every later update replaces the
+//! variable's string in a slot that already exists, without freeing the string a concurrent reader may
+//! be holding. The residual exposure is a reader that observes the change mid-write, which costs one
+//! failed X connection on the tick it happens.
+//!
+//! \param xauthority Value from the systemd user manager, or std::nullopt if it exports none.
+//!
+void ApplyXAuthorityHint(const std::optional<std::string>& xauthority);
 
 //!
 //! \brief Creates the production endpoint source factory for IdleSourcePool.

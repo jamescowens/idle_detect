@@ -9,6 +9,7 @@
 
 #include <gio/gio.h>
 
+#include <cstdlib>
 #include <memory>
 #include <optional>
 #include <unistd.h>
@@ -83,27 +84,48 @@ bool SessionBusNameHasOwner(const char* name)
 }
 
 //!
-//! \brief Reads the DISPLAY assignments out of the systemd user manager's Environment property.
+//! \brief The parts of the systemd user manager's environment that a discovery pass uses.
 //!
-//! This is the one discovery hint that describes the session as it is now rather than as it was when this
-//! process was executed, which is why it is worth a synchronous D-Bus call on every discovery pass. The
-//! property is annotated EmitsChangedSignal("false"), so there is no subscription available to replace
-//! that call with; caching the first read instead would reintroduce exactly the staleness the read exists
-//! to avoid.
+struct ManagerEnvironment {
+    //! \brief Every DISPLAY assignment found, in the order the manager reported them.
+    std::vector<std::string> m_displays;
+
+    //! \brief The last XAUTHORITY assignment found, if any.
+    std::optional<std::string> m_xauthority;
+};
+
+//!
+//! \brief Reads the assignments a discovery pass needs out of the systemd user manager's Environment
+//! property.
+//!
+//! This is the one discovery input that describes the session as it is now rather than as it was when
+//! this process was executed, which is why it is worth a synchronous D-Bus call on every discovery pass.
+//! The property is annotated EmitsChangedSignal("false"), so there is no subscription available to
+//! replace that call with; caching the first read instead would reintroduce exactly the staleness the
+//! read exists to avoid.
+//!
+//! Everything this function needs comes out of ONE Properties.Get, because the property is the whole
+//! environment block: DISPLAY and XAUTHORITY are two prefixes matched against the same array of strings.
+//! Splitting them into a call each would double the per-tick D-Bus cost to learn two facts that arrive
+//! together and that are useless apart -- a display nothing can authenticate to is not an endpoint.
 //!
 //! Every DISPLAY assignment found is returned rather than just one. systemd resolves duplicates by
 //! letting the last assignment win, but discovery is over-inclusive by design and every candidate is
 //! validated by connecting to it, so returning all of them costs at most one failed connect on a
 //! duplicate that no longer exists, and avoids having to guess which assignment is the live one.
 //!
+//! XAUTHORITY is the opposite case and takes the last assignment only, matching what systemd itself
+//! would resolve the variable to. There is nothing to be over-inclusive with: it is applied to the
+//! process, not probed, so there is no cheap way to try several and no way to tell which one worked.
+//!
 //! Failure at any step is silent beyond a debug log: an absent or unresponsive user manager simply
-//! contributes no hint, and the socket scans carry the discovery on their own.
+//! contributes nothing, and the socket scans carry the discovery on their own.
 //!
-//! \return DISPLAY values, empty if the manager is unreachable or exports none.
+//! \return What was found, all fields empty if the manager is unreachable or exports none of them.
 //!
-std::vector<std::string> ReadDisplaysFromSystemdUserManager()
+ManagerEnvironment ReadSystemdUserManagerEnvironment()
 {
-    std::vector<std::string> displays;
+    ManagerEnvironment environment;
 
     GError* connect_error = nullptr;
     GDBusConnection* connection = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, &connect_error);
@@ -121,7 +143,7 @@ std::vector<std::string> ReadDisplaysFromSystemdUserManager()
                       __func__);
         }
 
-        return displays;
+        return environment;
     }
 
     GError* call_error = nullptr;
@@ -155,7 +177,8 @@ std::vector<std::string> ReadDisplaysFromSystemdUserManager()
             // type would otherwise be a g_variant_get_strv() precondition failure rather than a missed
             // hint.
             if (g_variant_is_of_type(boxed, G_VARIANT_TYPE_STRING_ARRAY)) {
-                const std::string prefix = "DISPLAY=";
+                const std::string display_prefix = "DISPLAY=";
+                const std::string xauthority_prefix = "XAUTHORITY=";
 
                 gsize count = 0;
                 const gchar** entries = g_variant_get_strv(boxed, &count);
@@ -164,18 +187,32 @@ std::vector<std::string> ReadDisplaysFromSystemdUserManager()
                     for (gsize i = 0; i < count; ++i) {
                         const std::string entry(entries[i]);
 
-                        if (entry.rfind(prefix, 0) != 0) {
-                            continue;
-                        }
+                        // WAYLAND_DISPLAY= does not begin with DISPLAY=, so the prefixes cannot collide
+                        // and the arms below are genuinely exclusive.
+                        if (entry.rfind(display_prefix, 0) == 0) {
+                            const std::string value = entry.substr(display_prefix.size());
 
-                        const std::string value = entry.substr(prefix.size());
+                            if (!value.empty()) {
+                                debug_log("INFO: %s: systemd user manager environment provides "
+                                          "DISPLAY=%s.",
+                                          __func__,
+                                          value.c_str());
 
-                        if (!value.empty()) {
-                            debug_log("INFO: %s: systemd user manager environment provides DISPLAY=%s.",
-                                      __func__,
-                                      value.c_str());
+                                environment.m_displays.push_back(value);
+                            }
+                        } else if (entry.rfind(xauthority_prefix, 0) == 0) {
+                            const std::string value = entry.substr(xauthority_prefix.size());
 
-                            displays.push_back(value);
+                            if (!value.empty()) {
+                                debug_log("INFO: %s: systemd user manager environment provides "
+                                          "XAUTHORITY=%s.",
+                                          __func__,
+                                          value.c_str());
+
+                                // Last assignment wins, which is how systemd itself resolves the
+                                // variable. Unlike DISPLAY there is no probing this one.
+                                environment.m_xauthority = value;
+                            }
                         }
                     }
 
@@ -199,7 +236,7 @@ std::vector<std::string> ReadDisplaysFromSystemdUserManager()
 
     g_object_unref(connection);
 
-    return displays;
+    return environment;
 }
 
 //!
@@ -489,30 +526,35 @@ std::string ShellIdleSource::Describe() const
 // Production wiring for IdleSourcePool
 // -----------------------------------------------------------------------------------------------------
 
-DiscoveryHints BuildDiscoveryHints()
+DiscoveryInputs BuildDiscoveryInputs()
 {
-    DiscoveryHints hints;
+    DiscoveryInputs inputs;
 
     // An unset XDG_RUNTIME_DIR leaves the path empty, which DiscoverEndpoints() reads as "skip the
     // Wayland socket scan" rather than as "scan the current directory".
     std::optional<std::string> runtime_dir = GetEnvVariable("XDG_RUNTIME_DIR");
 
     if (runtime_dir.has_value() && !runtime_dir->empty()) {
-        hints.m_xdg_runtime_dir = *runtime_dir;
+        inputs.m_hints.m_xdg_runtime_dir = *runtime_dir;
     } else {
         debug_log("INFO: %s: XDG_RUNTIME_DIR is not set. No Wayland sockets will be discovered.", __func__);
     }
 
-    hints.m_x11_socket_dir = "/tmp/.X11-unix";
+    inputs.m_hints.m_x11_socket_dir = "/tmp/.X11-unix";
 
     // This is what lets the X socket scan reject the other users' sockets and the display manager's
     // root-owned greeter socket that share that world-visible directory. Leaving it unset would not
     // disable the filter, it would invert it, so DiscoverEndpoints() skips the scan entirely without it.
-    hints.m_uid = getuid();
+    inputs.m_hints.m_uid = getuid();
 
-    for (const std::string& display : ReadDisplaysFromSystemdUserManager()) {
-        hints.m_env_displays.push_back(display);
+    // One D-Bus round trip, two answers. See ReadSystemdUserManagerEnvironment().
+    ManagerEnvironment manager_environment = ReadSystemdUserManagerEnvironment();
+
+    for (const std::string& display : manager_environment.m_displays) {
+        inputs.m_hints.m_env_displays.push_back(display);
     }
+
+    inputs.m_xauthority = std::move(manager_environment.m_xauthority);
 
     // The process environment is a hint as well, and no more than a hint: it is frozen at exec, which is
     // the whole reason the manager environment is consulted above. It is still worth including, because a
@@ -521,10 +563,63 @@ DiscoveryHints BuildDiscoveryHints()
     std::optional<std::string> env_display = GetEnvVariable("DISPLAY");
 
     if (env_display.has_value() && !env_display->empty()) {
-        hints.m_env_displays.push_back(*env_display);
+        inputs.m_hints.m_env_displays.push_back(*env_display);
     }
 
-    return hints;
+    return inputs;
+}
+
+void ApplyXAuthorityHint(const std::optional<std::string>& xauthority)
+{
+    // An absent hint is not an instruction to clear the variable. See the header: the manager
+    // environment is a hint, and a hint that says nothing must not overrule what we already have.
+    if (!xauthority.has_value() || xauthority->empty()) {
+        return;
+    }
+
+    const char* current = getenv("XAUTHORITY");
+
+    // Copied rather than held as a pointer into the environment, so that the logging below cannot
+    // depend on whether setenv() left the string it replaced alive.
+    const std::string previous = (current != nullptr) ? std::string(current) : std::string("<unset>");
+
+    // The whole point of the difference check: in the steady state this function is a string compare
+    // and writes nothing, so the process environment is mutated once per session rather than once per
+    // tick.
+    if (current != nullptr && *xauthority == current) {
+        return;
+    }
+
+    // R_OK rather than F_OK, because reading it is exactly what Xlib is about to do. A hint that names a
+    // file we cannot read is worse than no hint at all when the value already in place works, which is
+    // the case during the window where the display manager has exported the path but not yet created
+    // the file.
+    if (access(xauthority->c_str(), R_OK) != 0) {
+        debug_log("INFO: %s: Ignoring XAUTHORITY hint '%s': it is not readable. Keeping the current "
+                  "value '%s'.",
+                  __func__,
+                  xauthority->c_str(),
+                  previous.c_str());
+
+        return;
+    }
+
+    if (setenv("XAUTHORITY", xauthority->c_str(), 1) != 0) {
+        error_log("WARNING: %s: Could not set XAUTHORITY to '%s'. X displays that require authorization "
+                  "will not be readable.",
+                  __func__,
+                  xauthority->c_str());
+
+        return;
+    }
+
+    // Worth a normal-level line rather than a debug one: it happens about once in the life of the
+    // process, and it is the moment a daemon that started before its graphical session becomes able to
+    // authenticate to that session's X displays at all.
+    normal_log("INFO: %s: XAUTHORITY set to '%s' from the systemd user manager environment (was '%s').",
+               __func__,
+               xauthority->c_str(),
+               previous.c_str());
 }
 
 EndpointSourceFactory MakeEndpointSourceFactory(int notification_timeout_ms)
