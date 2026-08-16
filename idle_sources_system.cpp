@@ -9,7 +9,11 @@
 
 #include <gio/gio.h>
 
+#include <memory>
+#include <optional>
+#include <unistd.h>
 #include <utility>
+#include <vector>
 
 namespace IdleDetect {
 
@@ -76,6 +80,179 @@ bool SessionBusNameHasOwner(const char* name)
     debug_log("INFO: %s: D-Bus name %s owned? %s", __func__, name, (has_owner == TRUE) ? "Yes" : "No");
 
     return has_owner == TRUE;
+}
+
+//!
+//! \brief Reads the DISPLAY assignments out of the systemd user manager's Environment property.
+//!
+//! This is the one discovery hint that describes the session as it is now rather than as it was when this
+//! process was executed, which is why it is worth a synchronous D-Bus call on every discovery pass. The
+//! property is annotated EmitsChangedSignal("false"), so there is no subscription available to replace
+//! that call with; caching the first read instead would reintroduce exactly the staleness the read exists
+//! to avoid.
+//!
+//! Every DISPLAY assignment found is returned rather than just one. systemd resolves duplicates by
+//! letting the last assignment win, but discovery is over-inclusive by design and every candidate is
+//! validated by connecting to it, so returning all of them costs at most one failed connect on a
+//! duplicate that no longer exists, and avoids having to guess which assignment is the live one.
+//!
+//! Failure at any step is silent beyond a debug log: an absent or unresponsive user manager simply
+//! contributes no hint, and the socket scans carry the discovery on their own.
+//!
+//! \return DISPLAY values, empty if the manager is unreachable or exports none.
+//!
+std::vector<std::string> ReadDisplaysFromSystemdUserManager()
+{
+    std::vector<std::string> displays;
+
+    GError* connect_error = nullptr;
+    GDBusConnection* connection = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, &connect_error);
+
+    if (!connection) {
+        if (connect_error) {
+            debug_log("INFO: %s: Cannot connect to the session bus to read the systemd user manager "
+                      "environment: %s",
+                      __func__,
+                      connect_error->message);
+            g_error_free(connect_error);
+        } else {
+            debug_log("INFO: %s: Cannot connect to the session bus to read the systemd user manager "
+                      "environment (unknown error).",
+                      __func__);
+        }
+
+        return displays;
+    }
+
+    GError* call_error = nullptr;
+    GVariant* result = g_dbus_connection_call_sync(connection,
+                                                   "org.freedesktop.systemd1",
+                                                   "/org/freedesktop/systemd1",
+                                                   "org.freedesktop.DBus.Properties",
+                                                   "Get",
+                                                   g_variant_new("(ss)",
+                                                                 "org.freedesktop.systemd1.Manager",
+                                                                 "Environment"),
+                                                   G_VARIANT_TYPE("(v)"),
+                                                   G_DBUS_CALL_FLAGS_NONE,
+                                                   500, // Timeout (ms)
+                                                   nullptr,
+                                                   &call_error);
+
+    if (call_error) {
+        // No user manager, or one that does not expose this property, is an ordinary state rather than
+        // an error. A tty-only login over ssh is the common case.
+        debug_log("INFO: %s: Could not read the systemd user manager Environment property: %s",
+                  __func__,
+                  call_error->message);
+        g_error_free(call_error);
+    } else if (result) {
+        GVariant* boxed = nullptr;
+        g_variant_get(result, "(v)", &boxed);
+
+        if (boxed != nullptr) {
+            // The property is documented as "as", but this is data from another process, and a wrong
+            // type would otherwise be a g_variant_get_strv() precondition failure rather than a missed
+            // hint.
+            if (g_variant_is_of_type(boxed, G_VARIANT_TYPE_STRING_ARRAY)) {
+                const std::string prefix = "DISPLAY=";
+
+                gsize count = 0;
+                const gchar** entries = g_variant_get_strv(boxed, &count);
+
+                if (entries != nullptr) {
+                    for (gsize i = 0; i < count; ++i) {
+                        const std::string entry(entries[i]);
+
+                        if (entry.rfind(prefix, 0) != 0) {
+                            continue;
+                        }
+
+                        const std::string value = entry.substr(prefix.size());
+
+                        if (!value.empty()) {
+                            debug_log("INFO: %s: systemd user manager environment provides DISPLAY=%s.",
+                                      __func__,
+                                      value.c_str());
+
+                            displays.push_back(value);
+                        }
+                    }
+
+                    // Shallow free. The strings themselves belong to the variant.
+                    g_free(entries);
+                }
+            } else {
+                debug_log("INFO: %s: systemd user manager Environment property is not a string array.",
+                          __func__);
+            }
+
+            g_variant_unref(boxed);
+        }
+
+        g_variant_unref(result);
+    } else {
+        error_log("%s: Call to read the systemd user manager Environment property returned no result and "
+                  "no error.",
+                  __func__);
+    }
+
+    g_object_unref(connection);
+
+    return displays;
+}
+
+//!
+//! \brief Builds and validates the source for a Wayland endpoint candidate.
+//!
+//! Validation is the connect-and-bind that Start() performs. Its default budget of one attempt is taken
+//! rather than the startup budget, because the pool re-offers a candidate that failed on every subsequent
+//! reconcile tick, and a synchronous retry here would stall every other candidate behind it.
+//!
+//! \param socket_name Wayland socket to bind to.
+//! \param notification_timeout_ms Idle notification threshold in milliseconds.
+//! \return Started source, or nullptr if the candidate is not a usable endpoint right now.
+//!
+std::unique_ptr<IdleSource> MakeWaylandEndpointSource(const std::string& socket_name,
+                                                      int notification_timeout_ms)
+{
+    auto source = std::make_unique<WaylandIdleSource>(socket_name);
+
+    if (!source->Start(notification_timeout_ms)) {
+        debug_log("INFO: %s: Wayland candidate %s did not start. It is either not a compositor socket or "
+                  "the compositor does not implement ext_idle_notifier_v1.",
+                  __func__,
+                  source->Describe().c_str());
+
+        return nullptr;
+    }
+
+    return source;
+}
+
+//!
+//! \brief Builds and validates the source for an X11 endpoint candidate.
+//!
+//! X11IdleSource is stateless and has nothing to start, so the reading itself is the validation. This is
+//! also the only thing that distinguishes a live display from a stale socket left behind by a dead X
+//! server, which the socket scan cannot tell apart.
+//!
+//! \param display Canonical X display string.
+//! \return Source, or nullptr if the display did not answer.
+//!
+std::unique_ptr<IdleSource> MakeX11EndpointSource(const std::string& display)
+{
+    auto source = std::make_unique<X11IdleSource>(display);
+
+    if (source->ResolveIdleSeconds() == IDLE_ERROR) {
+        debug_log("INFO: %s: X candidate %s did not answer an XScreenSaver query.",
+                  __func__,
+                  source->Describe().c_str());
+
+        return nullptr;
+    }
+
+    return source;
 }
 
 } // anonymous namespace
@@ -283,6 +460,106 @@ std::string ShellIdleSource::Describe() const
     }
 
     return "shell:none";
+}
+
+// -----------------------------------------------------------------------------------------------------
+// Production wiring for IdleSourcePool
+// -----------------------------------------------------------------------------------------------------
+
+DiscoveryHints BuildDiscoveryHints()
+{
+    DiscoveryHints hints;
+
+    // An unset XDG_RUNTIME_DIR leaves the path empty, which DiscoverEndpoints() reads as "skip the
+    // Wayland socket scan" rather than as "scan the current directory".
+    std::optional<std::string> runtime_dir = GetEnvVariable("XDG_RUNTIME_DIR");
+
+    if (runtime_dir.has_value() && !runtime_dir->empty()) {
+        hints.m_xdg_runtime_dir = *runtime_dir;
+    } else {
+        debug_log("INFO: %s: XDG_RUNTIME_DIR is not set. No Wayland sockets will be discovered.", __func__);
+    }
+
+    hints.m_x11_socket_dir = "/tmp/.X11-unix";
+
+    // This is what lets the X socket scan reject the other users' sockets and the display manager's
+    // root-owned greeter socket that share that world-visible directory. Leaving it unset would not
+    // disable the filter, it would invert it, so DiscoverEndpoints() skips the scan entirely without it.
+    hints.m_uid = getuid();
+
+    for (const std::string& display : ReadDisplaysFromSystemdUserManager()) {
+        hints.m_env_displays.push_back(display);
+    }
+
+    // The process environment is a hint as well, and no more than a hint: it is frozen at exec, which is
+    // the whole reason the manager environment is consulted above. It is still worth including, because a
+    // daemon started from inside a graphical session has a correct DISPLAY here even on a setup where
+    // nothing ever imported it into the systemd user manager.
+    std::optional<std::string> env_display = GetEnvVariable("DISPLAY");
+
+    if (env_display.has_value() && !env_display->empty()) {
+        hints.m_env_displays.push_back(*env_display);
+    }
+
+    return hints;
+}
+
+EndpointSourceFactory MakeEndpointSourceFactory(int notification_timeout_ms)
+{
+    // The timeout is captured rather than threaded through Reconcile(), so that the pool never has to
+    // carry a parameter that only one kind of source uses.
+    return [notification_timeout_ms](const Endpoint& endpoint) -> std::unique_ptr<IdleSource> {
+        switch (endpoint.m_kind) {
+        case EndpointKind::WAYLAND:
+            return MakeWaylandEndpointSource(endpoint.m_identifier, notification_timeout_ms);
+        case EndpointKind::X11:
+            return MakeX11EndpointSource(endpoint.m_identifier);
+        }
+
+        return nullptr;
+    };
+}
+
+ShellSourceFactory MakeShellSourceFactory()
+{
+    // ShellMonitor holds no state and no connection, so capturing one by value costs nothing and keeps
+    // the bus probe below reading as what it is: a question asked of the monitor rather than a free
+    // function pulled out of the air.
+    return [monitor = ShellMonitor()](ShellKind kind) -> std::unique_ptr<IdleSource> {
+        if (kind == ShellKind::NONE) {
+            return nullptr;
+        }
+
+        auto source = std::make_unique<ShellIdleSource>(kind);
+
+        // Only GNOME reads this flag, and only this file can answer it. A KDE shell is left at the
+        // source's default rather than paying a D-Bus round trip for a value nothing will look at.
+        //
+        // The other flag ShellIdleSource carries, whether a live Wayland endpoint exists, is
+        // deliberately not set here: IdleSourcePool pushes it through ShellSourceContext at the end of
+        // every Reconcile(), including this one. See MakeShellSourceFactory()'s header commentary for
+        // why the factory must not try to answer that question itself.
+        if (kind == ShellKind::GNOME) {
+            const bool has_idle_monitor = monitor.HasGnomeIdleMonitor();
+
+            if (!has_idle_monitor) {
+                normal_log("INFO: %s: GNOME shell detected without org.gnome.Mutter.IdleMonitor. It will "
+                           "contribute inhibition only, and its endpoints will supply the idle value.",
+                           __func__);
+            }
+
+            source->SetGnomeIdleMonitorPresent(has_idle_monitor);
+        }
+
+        return source;
+    };
+}
+
+InhibitionQuery MakeInhibitionQuery()
+{
+    return [monitor = ShellMonitor()](ShellKind kind) -> bool {
+        return monitor.IsInhibited(kind);
+    };
 }
 
 } // namespace IdleDetect

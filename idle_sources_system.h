@@ -9,6 +9,8 @@
 
 #include <idle_detect.h>
 #include <idle_source.h>
+#include <idle_source_pool.h>
+#include <session_discovery.h>
 
 #include <memory>
 #include <string>
@@ -293,6 +295,111 @@ private:
     //!
     bool m_gnome_idle_monitor_present;
 };
+
+// -----------------------------------------------------------------------------------------------------
+// Production wiring for IdleSourcePool
+// -----------------------------------------------------------------------------------------------------
+//
+// IdleSourcePool is deliberately dependency-free and takes everything that touches the system through
+// injected callables. The four functions below are the production implementations of those callables and
+// of the discovery inputs, and they are the only place where the pool's abstract types are bound to real
+// D-Bus, Wayland and X11 contact. A test builds the same pool with its own lambdas and links none of it.
+//
+
+//!
+//! \brief Gathers endpoint discovery hints from the running system.
+//!
+//! Every hint is independently unreliable and none of them is load-bearing: DiscoverEndpoints() takes
+//! their union and each resulting candidate is validated by connecting to it. Four are gathered here --
+//! $XDG_RUNTIME_DIR for the Wayland socket scan, /tmp/.X11-unix for the X socket scan, our uid so that
+//! scan can reject other users' sockets, and the DISPLAY assignments the systemd user manager exports.
+//!
+//! The last of those is what makes a D-Bus call worth making. The user manager's Environment property is
+//! updated when the graphical session starts, by the display manager or by an equivalent
+//! "systemctl --user import-environment DISPLAY", so it describes the session that exists NOW. The
+//! process's own DISPLAY is added as one more hint, but only as a hint: it is frozen at exec, and a
+//! daemon started before its GUI session -- the failure this whole design exists to fix -- does not have
+//! one at all.
+//!
+//! That property is annotated EmitsChangedSignal("false"), so it is READ ON DEMAND on every call rather
+//! than subscribed to once and cached. A PropertiesChanged subscription would simply never fire, leaving
+//! the cache frozen at whatever the first read saw, which is the same staleness bug in a new place.
+//!
+//! An unreachable or absent systemd user manager is an ordinary outcome rather than an error: whatever
+//! hints were gathered are returned, and the socket scans carry discovery by themselves.
+//!
+//! DiscoveryHints::m_logind_displays is deliberately left empty. It is documented as optional enrichment,
+//! and every display a logind graphical session could name is already reachable through the X socket scan
+//! or the manager environment.
+//!
+//! \return Populated hints. Any field may be empty.
+//!
+DiscoveryHints BuildDiscoveryHints();
+
+//!
+//! \brief Creates the production endpoint source factory for IdleSourcePool.
+//!
+//! Validation lives in the factory because what "validated" means is protocol-specific:
+//!
+//!   - A Wayland candidate is validated by connecting to its socket and binding ext_idle_notifier_v1,
+//!     which is what WaylandIdleSource::Start() does. It is called with that method's one-attempt
+//!     default rather than the fifteen-attempt startup budget, because the pool re-runs discovery on
+//!     every reconcile tick and calls this factory again for any candidate still being offered. The
+//!     reconcile loop is the retry loop; see the commentary on WaylandIdleSource::Start().
+//!
+//!   - An X11 candidate is validated by taking one reading, since X11IdleSource is stateless and has
+//!     nothing to start. A reading of IDLE_ERROR rejects the candidate.
+//!
+//! A rejected candidate yields nullptr, which the pool does not cache: the candidate is offered again on
+//! the next tick and built again then, so a compositor or X server that was still starting up is picked
+//! up shortly afterwards rather than being locked out for the life of the process.
+//!
+//! \param notification_timeout_ms Idle notification threshold handed to each new Wayland source.
+//! \return Factory suitable for IdleSourcePool's constructor.
+//!
+EndpointSourceFactory MakeEndpointSourceFactory(int notification_timeout_ms);
+
+//!
+//! \brief Creates the production shell source factory for IdleSourcePool.
+//!
+//! ShellIdleSource carries two flags that its ShellKind alone does not determine, and they are set from
+//! two different places on purpose, because two different things know them:
+//!
+//!   - Whether mutter's IdleMonitor is on the bus is a session bus fact, and this file is the only place
+//!     that can answer it. The factory probes it with ShellMonitor::HasGnomeIdleMonitor() and stamps it
+//!     onto the source before returning it. The probe is made only for a GNOME shell, because that flag
+//!     is read only by the GNOME arm of ShellIdleSource::ResolveIdleSeconds(); paying a D-Bus round trip
+//!     to answer a question nobody asks would be pure cost.
+//!
+//!   - Whether a live Wayland endpoint exists -- which is what separates KDE on Wayland, where Plasma 6
+//!     ksmserver has no GetSessionIdleTime, from KDE on X11, where it does -- is NOT set here, and the
+//!     omission is deliberate rather than an oversight. IdleSourcePool pushes it through
+//!     ShellSourceContext at the end of every Reconcile(), including the Reconcile() that created the
+//!     source, so it is already correct before any GetIdleSeconds() can observe it.
+//!
+//! The second one is not something the factory could do better if it tried. It is handed a ShellKind and
+//! nothing else, and the fact in question is not "was a Wayland endpoint discovered" but "did a Wayland
+//! endpoint validate, and is it live right now" -- which only the pool knows, because only the pool owns
+//! the sources. The two answers a factory could reach for are both wrong: the candidate set counts
+//! endpoints that failed to validate, and getenv("WAYLAND_DISPLAY") is precisely the frozen-at-exec read
+//! this design exists to eliminate. Setting the flag in both places would also make the pool's push and
+//! the factory's guess two sources of truth for one fact, with the staler one winning whenever the
+//! factory ran last.
+//!
+//! \return Factory suitable for IdleSourcePool's constructor.
+//!
+ShellSourceFactory MakeShellSourceFactory();
+
+//!
+//! \brief Creates the production inhibition query for IdleSourcePool, wrapping ShellMonitor::IsInhibited().
+//!
+//! The pool calls this on every GetIdleSeconds() with the shell kind it currently tracks, including
+//! ShellKind::NONE. That case is answered without any bus traffic, since nothing that does not exist can
+//! be inhibiting.
+//!
+//! \return Query suitable for IdleSourcePool's constructor.
+//!
+InhibitionQuery MakeInhibitionQuery();
 
 } // namespace IdleDetect
 
