@@ -2178,6 +2178,30 @@ static fs::path GetUserConfigPath() {
 }
 
 //!
+//! \brief Runs one discovery-and-reconcile pass over the global idle source pool.
+//!
+//! Both inputs are re-derived from the running system on every call, and that is the entire point. The hints
+//! change when a compositor or X server starts or stops, and the shell's bus name ownership changes when the
+//! desktop shell starts or stops, so anything cached here would be the frozen-at-exec answer this design
+//! exists to eliminate, merely relocated.
+//!
+//! Finding nothing is a normal outcome rather than a failure, so this reports nothing and cannot fail. An
+//! empty pool makes GetIdleTimeSeconds() report IDLE_NO_GUI_SESSION, which the main loop already handles by
+//! deferring to event_detect, and the very next pass picks the session up once it exists.
+//!
+//! ShellMonitor holds no state and no connection, so it is constructed per call rather than kept alive across
+//! calls. The D-Bus connection underneath it is GIO's shared per-process session bus connection, which is
+//! established once and reused.
+//!
+static void ReconcileIdleSources()
+{
+    const IdleDetect::ShellMonitor shell_monitor;
+
+    IdleDetect::g_idle_source_pool.Reconcile(IdleDetect::DiscoverEndpoints(IdleDetect::BuildDiscoveryHints()),
+                                             shell_monitor.DetectShellKind());
+}
+
+//!
 //! \brief main
 //! \param argc
 //! \param argv. Currently one argument is expected, which is the config file path.
@@ -2376,11 +2400,24 @@ int main(int argc, char* argv[])
         return 1;
     }
 
-    // The one-shot Wayland monitor that used to be started here is gone. It was started only when
-    // getenv("WAYLAND_DISPLAY") was set at exec, bound to whatever socket that variable named, and never
-    // revisited, so it could neither find a compositor that appeared later nor follow one that moved. The
-    // idle source pool supersedes it: it holds one monitor per discovered endpoint and is reconciled against
-    // discovery while the daemon runs.
+    // --- Initial discovery pass ---
+    //
+    // This replaces the one-shot Wayland monitor that used to be started here, which ran only when
+    // getenv("WAYLAND_DISPLAY") was set at exec, bound itself to whatever socket that named, and was never
+    // revisited.
+    //
+    // Startup is not special. Finding nothing here is a normal state, not a failure and not a reason to
+    // exit: the graphical session may simply not exist yet, which is the ordinary case for a user unit
+    // ordered after graphical-session.target on a machine that boots to a display manager. The main loop
+    // reconciles again on every iteration and picks the session up whenever it appears.
+    normal_log("INFO: %s: Running initial idle source discovery...", __func__);
+
+    ReconcileIdleSources();
+
+    normal_log("INFO: %s: Initial discovery found %u endpoint source(s)%s.",
+               __func__,
+               IdleDetect::g_idle_source_pool.EndpointSourceCount(),
+               IdleDetect::g_idle_source_pool.HasShellSource() ? " and a desktop shell source" : "");
 
     // --- Main Loop ---
     bool first_check = true;
@@ -2393,6 +2430,13 @@ int main(int argc, char* argv[])
     bool using_event_detect_as_only_source = false;
 
     while (!g_shutdown_requested.load()) {
+        // Reconcile before resolving, so this iteration's reading comes from the sources that exist now. This
+        // is the self-heal path: a graphical session that appears after the daemon started is picked up here,
+        // within one check interval, with no restart and no external wrapper watching for it. It is equally
+        // the teardown path, since an endpoint whose socket is gone is evicted rather than left reporting
+        // against a compositor that no longer exists.
+        ReconcileIdleSources();
+
         int64_t idle_seconds = IdleDetect::GetIdleTimeSeconds();
 
         if (idle_seconds >= 0) {
@@ -2602,6 +2646,15 @@ int main(int argc, char* argv[])
         __func__);
 
     // --- Shutdown sequence ---
+
+    // --- Tear down the idle sources ---
+    //
+    // Done before the control monitor stops, so that the compositor connections and monitor threads the pool
+    // owns are joined while the process is still otherwise intact. Shutdown() is idempotent and leaves the
+    // pool reusable, so the destructor that runs at exit finds nothing left to do.
+    normal_log("INFO: %s: Stopping idle sources...", __func__);
+    IdleDetect::g_idle_source_pool.Shutdown();
+    normal_log("INFO: %s: Idle sources stopped.", __func__);
 
     // --- Stop Idle Detect Control Monitor thread ---
     if (control_monitor_started && g_idle_detect_control_monitor.m_idle_detect_control_monitor_thread.joinable()) {
