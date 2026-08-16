@@ -119,6 +119,32 @@ else
    exit 1
 fi
 
+# --- Remove the Retired Wrapper Script ---
+# idle_detect_wrapper.sh was installed into the bin directory by releases up to
+# 0.9.1.0. It is no longer built or installed -- the user service ExecStart runs
+# the binary directly -- but nothing removes the copy an earlier release left
+# behind, because 'cmake --install' only ever writes files and its manifest lists
+# only what the current build produces. Left alone it lingers forever, and an
+# operator reading the bin directory reasonably concludes it is still live.
+#
+# Deliberately narrow: only this exact filename is touched, the removal is
+# reported, and a failure is a warning rather than an error. The file is inert
+# either way, so nothing about the installation depends on it being gone and an
+# install must not fail over it.
+#
+# ${INSTALL_PREFIX}/bin matches where CMake put it, since the project installs
+# binaries to ${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR} and this script does
+# not override CMAKE_INSTALL_BINDIR from its default of "bin".
+STALE_WRAPPER="${INSTALL_PREFIX}/bin/idle_detect_wrapper.sh"
+if [ -e "$STALE_WRAPPER" ]; then
+    echo "INFO: Found retired wrapper script from a previous installation: ${STALE_WRAPPER}"
+    if rm -f "$STALE_WRAPPER"; then
+        echo "INFO: Removed ${STALE_WRAPPER} (no longer used; ExecStart runs the binary directly)."
+    else
+        echo "WARN: Could not remove ${STALE_WRAPPER}. It is unused and inert; remove it manually."
+    fi
+fi
+
 # --- Systemd Reload (System) ---
 echo "INFO: Reloading systemd manager configuration..."
 systemctl daemon-reload
