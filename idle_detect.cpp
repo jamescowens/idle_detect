@@ -1503,13 +1503,14 @@ void WaylandIdleMonitor_HandleGlobal(void *data, wl_registry *registry, uint32_t
     WaylandIdleMonitor *monitor = static_cast<WaylandIdleMonitor*>(data);
     debug_log("INFO: %s: Global: %s v%u (name %u)", __func__, interface, version, name);
 
-    if (strcmp(interface, wl_seat_interface.name) == 0) {
+    if (strcmp(interface, wl_seat_interface.name) == 0 && monitor->m_seat == nullptr) {
         monitor->m_seat_id = name;
         monitor->m_seat = static_cast<wl_seat*>(
             wl_registry_bind(registry, name, &wl_seat_interface, std::min(version, 5u)) // Request v5 for release
             );
         debug_log("INFO: %s: Bound wl_seat (name %u) version %u.", __func__, name, wl_proxy_get_version((wl_proxy*)monitor->m_seat));
-    } else if (strcmp(interface, ext_idle_notifier_v1_interface.name) == 0) {
+    } else if (strcmp(interface, ext_idle_notifier_v1_interface.name) == 0 &&
+               monitor->m_idle_notifier == nullptr) {
         monitor->m_idle_notifier_id = name;
         monitor->m_idle_notifier = static_cast<ext_idle_notifier_v1*>(
             wl_registry_bind(registry, name, &ext_idle_notifier_v1_interface, std::min(version, 1u)) // Request v1 or v2? Start with 1.
