@@ -110,6 +110,8 @@ set(SOURCES_IDLE_DETECT
     "idle_detect.h"
     "idle_source.h"
     "idle_source.cpp"
+    "idle_source_pool.h"
+    "idle_source_pool.cpp"
     "session_discovery.h"
     "session_discovery.cpp"
     # idle_sources_system.* makes the actual D-Bus/Wayland/X11 contact and must never be added to
@@ -397,9 +399,11 @@ if(BUILD_TESTING)
         tests/event_message_tests.cpp
         tests/config_tests.cpp
         tests/idle_aggregation_tests.cpp
+        tests/idle_source_pool_tests.cpp
         tests/session_discovery_tests.cpp
         util.cpp
         idle_source.cpp
+        idle_source_pool.cpp
         session_discovery.cpp
     )
 

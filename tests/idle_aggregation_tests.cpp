@@ -127,7 +127,8 @@ TEST(IdleAggregation, BothSentinelsExcludedTogether)
 // which the '<' -> '>' mutation kills together, so it has no independent kill power.
 //
 // The real multi-endpoint and shell-fusion regression test belongs at the IdleSourcePool
-// layer and does not exist yet.
+// layer, and lives there: see IdleSourcePool.MultipleEndpointsReportActiveOneDespiteIdleShell
+// in tests/idle_source_pool_tests.cpp.
 //
 
 TEST(IdleAggregation, MinimumCanBeTheLastValue)

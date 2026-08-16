@@ -203,7 +203,7 @@ public:
 //! chain would make every endpoint report the shell's idle time and silently discard a second endpoint's
 //! real activity. Inhibition is likewise not resolved here; ShellMonitor evaluates it separately.
 //!
-class ShellIdleSource : public IdleSource
+class ShellIdleSource : public IdleSource, public ShellSourceContext
 {
 public:
     //!
@@ -226,7 +226,9 @@ public:
     //! and none on Wayland. The old code made that distinction with getenv("WAYLAND_DISPLAY"), which is the
     //! frozen-at-exec environment read this design exists to eliminate. The owner of this source knows the
     //! live endpoint set, so it tells the source instead: a live Wayland endpoint means the compositor this
-    //! shell is driving is a Wayland compositor.
+    //! shell is driving is a Wayland compositor. That is what ShellSourceContext, which this class
+    //! implements for the purpose, is for: IdleSourcePool calls this on every reconcile with the
+    //! state of its live endpoint sources.
     //!
     //! Both misclassifications are benign, which is why this indirect signal is acceptable. A KDE X11
     //! session sharing the machine with an unrelated Wayland compositor (a nested weston, a headless remote
@@ -236,7 +238,7 @@ public:
     //!
     //! \param present true if at least one live Wayland endpoint exists.
     //!
-    void SetWaylandEndpointPresent(bool present);
+    void SetWaylandEndpointPresent(bool present) override;
 
     //!
     //! \brief Records whether mutter's IdleMonitor is on the bus, which is how this source learns that a

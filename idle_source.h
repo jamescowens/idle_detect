@@ -107,6 +107,34 @@ public:
 };
 
 //!
+//! \brief Optional mix-in for a shell source whose resolution depends on a fact only its owner
+//! knows: whether any live Wayland endpoint exists.
+//!
+//! It is a separate interface rather than a method on IdleSource because it is not a property of
+//! sources in general -- an endpoint source is told what it is by its own construction -- and it is
+//! pushed rather than pulled because the pool that owns the shell source is also the thing that
+//! owns the endpoint set. The alternative the design exists to eliminate is the shell source
+//! reading getenv("WAYLAND_DISPLAY") for itself, which is a frozen-at-exec answer to a question
+//! whose answer changes while the daemon runs.
+//!
+//! Declared here rather than in idle_source_pool.h so that a source implementing it need not
+//! include the pool it is owned by. Implemented by ShellIdleSource; see the commentary on
+//! ShellIdleSource::SetWaylandEndpointPresent() for what the flag means and why misclassifying it
+//! is benign.
+//!
+class ShellSourceContext
+{
+public:
+    virtual ~ShellSourceContext() = default;
+
+    //!
+    //! \brief Records whether any live Wayland endpoint source currently exists.
+    //! \param present true if at least one live Wayland endpoint exists
+    //!
+    virtual void SetWaylandEndpointPresent(bool present) = 0;
+};
+
+//!
 //! \brief Combines resolved source values into the single value returned to the main loop.
 //!
 //! Inhibition short-circuits to zero. Sentinels are excluded from the minimum, because
