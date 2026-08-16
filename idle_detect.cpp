@@ -1438,7 +1438,14 @@ void WaylandIdleMonitor::WaylandMonitorThread() {
         poll_ret = poll(fds, 2, -1); // No timeout
 
         if (poll_ret < 0) {
-            if (errno == EINTR) { continue; } // Interrupted by unrelated signal
+            if (errno == EINTR) {
+                // Interrupted by an unrelated signal. The read lock taken by wl_display_prepare_read() must be
+                // released before restarting the loop, otherwise the next prepare_read() increments the reader
+                // count a second time for this thread and wl_display_read_events() blocks forever waiting for a
+                // reader that will never arrive.
+                wl_display_cancel_read(m_display);
+                continue;
+            }
             error_log("%s: poll() failed: %s (%d). Exiting thread.", __func__, strerror(errno), errno);
             wl_display_cancel_read(m_display); // Need to cancel before error exit? Yes.
             break;
