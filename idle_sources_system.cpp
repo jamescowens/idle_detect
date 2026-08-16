@@ -141,7 +141,14 @@ X11IdleSource::X11IdleSource(std::string display)
 
 int64_t X11IdleSource::ResolveIdleSeconds()
 {
-    return GetIdleTimeXss(m_display);
+    // One attempt, not the six that GetIdleTimeXss() defaults to. That default was sized for a single startup
+    // connection to the process's own DISPLAY, where waiting 2.5 seconds for an X server that is still coming
+    // up happens once. Here the question is narrower: a display that is not answering right now is simply not
+    // an endpoint right now. Discovery re-offers it on the next reconcile tick and this runs again, so the
+    // reconcile loop already supplies the retries. Keeping them inside the call would instead make every dead
+    // display stall the whole pool for 2.5 seconds, on every tick, since this call is synchronous and N
+    // displays are resolved in sequence.
+    return GetIdleTimeXss(m_display, 1);
 }
 
 std::string X11IdleSource::Describe() const

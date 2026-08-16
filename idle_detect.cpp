@@ -56,8 +56,9 @@ std::atomic<bool> g_shutdown_requested = false;
 //! Global flag for exit code
 std::atomic<int> g_exit_code;
 
-const int MAX_X_CONNECT_RETRIES = 6;  // e.g., 6 attempts
-const int X_RETRY_DELAY_MS = 500;     // e.g., 500ms between attempts (~3 sec total)
+// The attempt count is no longer a constant: it is a parameter of GetIdleTimeXss(), defaulting to
+// IdleDetect::X_STARTUP_CONNECT_RETRIES. See idle_detect.h for why.
+const int X_RETRY_DELAY_MS = 500;     // e.g., 500ms between attempts
 
 //! \brief Function to safely get XDG_RUNTIME_DIR environment variable.
 std::optional<std::string> GetXdgRuntimeDir() {
@@ -653,7 +654,7 @@ static bool IsKdeSession() {
 // Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this from X11IdleSource.
 //
 // The local Display* is named x_display rather than display so it does not shadow the display name parameter.
-int64_t GetIdleTimeXss(const std::string& display) {
+int64_t GetIdleTimeXss(const std::string& display, int max_connect_retries) {
     debug_log("INFO: %s: Using XScreenSaver on display '%s'.",
               __func__,
               display.empty() ? "<default>" : display.c_str());
@@ -664,14 +665,17 @@ int64_t GetIdleTimeXss(const std::string& display) {
     // what an empty parameter continues to mean.
     const char* display_name = display.empty() ? nullptr : display.c_str();
 
-    for (int attempt = 1; attempt <= MAX_X_CONNECT_RETRIES; ++attempt) {
+    // A caller asking for zero or fewer attempts still means "try", not "do nothing".
+    const int max_attempts = (max_connect_retries > 1) ? max_connect_retries : 1;
+
+    for (int attempt = 1; attempt <= max_attempts; ++attempt) {
         x_display = XOpenDisplay(display_name);
         if (x_display) break;
-        if (attempt < MAX_X_CONNECT_RETRIES) {
-            error_log("WARNING: %s: Could not open X display (attempt %d/%d). Retrying...", __func__, attempt, MAX_X_CONNECT_RETRIES);
+        if (attempt < max_attempts) {
+            error_log("WARNING: %s: Could not open X display (attempt %d/%d). Retrying...", __func__, attempt, max_attempts);
             std::this_thread::sleep_for(std::chrono::milliseconds(X_RETRY_DELAY_MS));
         } else {
-            error_log("%s: Could not open X display after %d attempts.", __func__, MAX_X_CONNECT_RETRIES);
+            error_log("%s: Could not open X display after %d attempts.", __func__, max_attempts);
             return -1;
         }
     }
@@ -775,7 +779,10 @@ int64_t GetIdleTimeSeconds() {
             return 0; // Treat as active if inhibited
         } else {
             // Not inhibited, get input idle time from XScreenSaver
-            // Empty display preserves the environment-derived behavior this call site has always had.
+            // Empty display preserves the environment-derived behavior this call site has always had, and the
+            // defaulted retry budget preserves the historical six attempts. This is the legacy single-display
+            // path querying the process's own DISPLAY, so waiting out an X server that is still starting is
+            // the right trade here; it is not the trade a per-endpoint resolver makes.
             return GetIdleTimeXss(std::string {}); // Returns >= 0 on success, -1 on error
         }
     }

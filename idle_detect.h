@@ -58,15 +58,31 @@ bool CheckKdeInhibition();
 bool CheckGnomeInhibition();
 
 //!
+//! \brief XOpenDisplay retry budget that reproduces the historical behavior: six attempts, 500 ms apart, for
+//! up to 2.5 seconds of waiting.
+//!
+//! That budget was sized for one connection to the process's own DISPLAY at startup. It is deliberately NOT
+//! the budget a per-endpoint resolver should use; see X11IdleSource::ResolveIdleSeconds().
+//!
+constexpr int X_STARTUP_CONNECT_RETRIES = 6;
+
+//!
 //! \brief Queries XScreenSaver for the idle time of a specific X display.
 //!
 //! The connection is opened and closed within the call, so this is stateless and cannot go stale.
 //!
+//! The retry budget is a parameter because the cost of an unreachable display depends on the caller. A single
+//! startup query against the process's own DISPLAY can afford to wait out an X server that is still starting.
+//! A resolver run against N discovered displays on every reconcile tick cannot: the call is synchronous, so
+//! one dead display stalls every other endpoint behind it, every tick.
+//!
 //! \param display X display string, e.g. ":1". Empty uses the DISPLAY environment variable, which is the
 //!        historical behavior.
+//! \param max_connect_retries XOpenDisplay attempts before giving up. Values below one are treated as one.
+//!        Defaults to the historical startup budget so existing callers are unaffected.
 //! \return Idle seconds >= 0, or -1 on error.
 //!
-int64_t GetIdleTimeXss(const std::string& display);
+int64_t GetIdleTimeXss(const std::string& display, int max_connect_retries = X_STARTUP_CONNECT_RETRIES);
 
 //!
 //! \brief The IdleDetectControlMonitor class is a singleton that monitors the idle_detect control pipe. It is used to
