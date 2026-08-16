@@ -2,6 +2,18 @@
 Description=BOINC Idle Detection Service
 After=graphical-session.target
 
+# Bound the restart loop, for the same reason as dc_event_detection.service. The
+# wrapper exits non-zero after waiting 30s for a session bus and DISPLAY/
+# WAYLAND_DISPLAY, and idle_detect itself exits non-zero on permanent config
+# failures, so a restart cycle here is roughly 40s (ExecStartPre sleep + wrapper
+# wait + RestartSec). The systemd user manager also defaults to a 10s rate-limit
+# window, so the burst limit would never trip and a session that never goes
+# graphical would restart-loop forever. A 300s window lets systemd give up after 5
+# failed starts and mark the unit failed, where it is visible in
+# 'systemctl --user status'.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 ExecStartPre=/bin/sleep 5

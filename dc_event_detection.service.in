@@ -2,6 +2,17 @@
 Description=DC Event Detection Service
 After=multi-user.target dev-shm.mount
 
+# Bound the restart loop. event_detect exits non-zero on permanent environmental
+# failures (no pointing devices to monitor, unusable data directory), and a full
+# restart cycle here takes about 10s (ExecStartPre sleep + RestartSec). Under the
+# systemd default 10s rate-limit window at most one start lands per window, so the
+# burst limit never trips and such a failure would restart-loop forever, logging an
+# error every 10s. A 300s window lets systemd give up after 5 failed starts and put
+# the unit in the failed state, where it is visible in 'systemctl status'. Transient
+# failures still recover, since they succeed well before the burst is exhausted.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
 
