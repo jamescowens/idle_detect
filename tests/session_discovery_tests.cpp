@@ -108,6 +108,23 @@ TEST(NormalizeX11Display, RejectsRemoteDisplays)
     EXPECT_FALSE(NormalizeX11Display("somehost:0").has_value());
 }
 
+TEST(NormalizeX11Display, StripsLeadingZeros)
+{
+    // Without this, ":007" and ":7" are two distinct Endpoints for one display, and both get
+    // probed.
+    EXPECT_EQ(NormalizeX11Display(":007").value(), ":7");
+    EXPECT_EQ(NormalizeX11Display("X007").value(), ":7");
+    EXPECT_EQ(NormalizeX11Display(":010").value(), ":10");
+}
+
+TEST(NormalizeX11Display, KeepsZeroDisplay)
+{
+    // Stripping zeros must not strip the display number away entirely.
+    EXPECT_EQ(NormalizeX11Display(":0").value(), ":0");
+    EXPECT_EQ(NormalizeX11Display(":00").value(), ":0");
+    EXPECT_EQ(NormalizeX11Display("X0").value(), ":0");
+}
+
 //
 // Wayland socket discovery
 //
@@ -132,7 +149,12 @@ TEST(DiscoverEndpoints, IgnoresWaylandLockFiles)
 {
     TempDir runtime;
     MakeSocket(runtime.Path() / "wayland-0");
-    std::ofstream(runtime.Path() / "wayland-0.lock").put('\n');
+
+    // A real socket, not a regular file. In production wayland-0.lock is a regular file and
+    // the socket check alone would reject it, which would leave the ".lock" suffix guard
+    // completely untested. Making it a socket here means the suffix guard is the only thing
+    // that can reject this entry.
+    MakeSocket(runtime.Path() / "wayland-0.lock");
 
     DiscoveryHints hints;
     hints.m_xdg_runtime_dir = runtime.Path();
@@ -169,6 +191,29 @@ TEST(DiscoverEndpoints, IgnoresNonSocketFilesNamedLikeWayland)
     EXPECT_TRUE(DiscoverEndpoints(hints).empty());
 }
 
+TEST(DiscoverEndpoints, IgnoresRuntimeDirSocketsThatAreNotWaylandSockets)
+{
+    TempDir runtime;
+
+    // A real $XDG_RUNTIME_DIR is dense with unix sockets that have nothing to do with a
+    // compositor. Without the "wayland-" prefix guard every one of these is offered up as a
+    // Wayland endpoint and then probed.
+    MakeSocket(runtime.Path() / "bus");
+    MakeSocket(runtime.Path() / "pipewire-0");
+    MakeSocket(runtime.Path() / "gnupg");
+    MakeSocket(runtime.Path() / "wayland-0");
+
+    DiscoveryHints hints;
+    hints.m_xdg_runtime_dir = runtime.Path();
+    hints.m_uid = getuid();
+
+    auto endpoints = DiscoverEndpoints(hints);
+
+    ASSERT_EQ(endpoints.size(), 1u);
+    EXPECT_EQ(endpoints.begin()->m_kind, EndpointKind::WAYLAND);
+    EXPECT_EQ(endpoints.begin()->m_identifier, "wayland-0");
+}
+
 TEST(DiscoverEndpoints, MissingRuntimeDirIsNotAnError)
 {
     DiscoveryHints hints;
@@ -198,6 +243,44 @@ TEST(DiscoverEndpoints, FindsX11SocketOwnedByUs)
     EXPECT_EQ(endpoints.begin()->m_identifier, ":1");
 }
 
+TEST(DiscoverEndpoints, IgnoresNonSocketFilesNamedLikeAnXSocket)
+{
+    TempDir x11;
+    std::ofstream(x11.Path() / "X1").put('\n');
+
+    DiscoveryHints hints;
+    hints.m_x11_socket_dir = x11.Path();
+    hints.m_uid = getuid();
+
+    // The regular file is named like an X socket and is owned by us, so the socket check is
+    // the only guard that can reject it.
+    EXPECT_TRUE(DiscoverEndpoints(hints).empty());
+}
+
+TEST(DiscoverEndpoints, IgnoresX11DirSocketsNotNamedLikeAnXSocket)
+{
+    TempDir x11;
+    MakeSocket(x11.Path() / "X1");
+
+    // Y1 and notX are what a reader expects this guard to be about, but they are rejected
+    // twice over: the name check here and NormalizeX11Display(), which accepts only ':' and
+    // 'X' leading characters. ":9" is the name that isolates the guard, because it survives
+    // normalization and would be admitted as display :9 if the guard were removed.
+    MakeSocket(x11.Path() / "Y1");
+    MakeSocket(x11.Path() / "notX");
+    MakeSocket(x11.Path() / ":9");
+
+    DiscoveryHints hints;
+    hints.m_x11_socket_dir = x11.Path();
+    hints.m_uid = getuid();
+
+    auto endpoints = DiscoverEndpoints(hints);
+
+    ASSERT_EQ(endpoints.size(), 1u);
+    EXPECT_EQ(endpoints.begin()->m_kind, EndpointKind::X11);
+    EXPECT_EQ(endpoints.begin()->m_identifier, ":1");
+}
+
 TEST(DiscoverEndpoints, RejectsX11SocketOwnedByAnotherUser)
 {
     TempDir x11;
@@ -210,6 +293,50 @@ TEST(DiscoverEndpoints, RejectsX11SocketOwnedByAnotherUser)
     hints.m_uid = getuid() + 1;
 
     EXPECT_TRUE(DiscoverEndpoints(hints).empty());
+}
+
+TEST(DiscoveryHints, DefaultUidIsExplicitlyInvalidRatherThanRoot)
+{
+    // 0 is a legal uid, so it cannot double as "unset". A default of 0 does not disable the
+    // ownership filter for a caller that forgets this field, it inverts it: our own sockets
+    // are rejected and the display manager's root-owned greeter socket is accepted.
+    DiscoveryHints hints;
+
+    EXPECT_EQ(hints.m_uid, static_cast<uid_t>(-1));
+    EXPECT_NE(hints.m_uid, static_cast<uid_t>(0));
+}
+
+TEST(DiscoverEndpoints, UnsetUidHintYieldsNoX11Endpoints)
+{
+    TempDir x11;
+    MakeSocket(x11.Path() / "X1");
+
+    DiscoveryHints hints;
+    hints.m_x11_socket_dir = x11.Path();
+    // m_uid deliberately left at its default.
+
+    // The socket is a valid X socket owned by this very process, so it is exactly what the
+    // scan would return if the scan ran. An unset uid must mean "skip the scan", never
+    // "guess the caller's uid and scan anyway", which is the tempting-but-wrong fix: it
+    // silently trusts whatever this process happens to run as.
+    EXPECT_TRUE(DiscoverEndpoints(hints).empty());
+}
+
+TEST(DiscoverEndpoints, UnsetUidHintStillHonorsDisplayHints)
+{
+    TempDir x11;
+    MakeSocket(x11.Path() / "X1");
+
+    DiscoveryHints hints;
+    hints.m_x11_socket_dir = x11.Path();
+    hints.m_env_displays = {":4"};
+    // m_uid deliberately left at its default.
+
+    // Skipping the socket scan must not disable the hints that carry no ownership question.
+    auto endpoints = DiscoverEndpoints(hints);
+
+    ASSERT_EQ(endpoints.size(), 1u);
+    EXPECT_EQ(endpoints.begin()->m_identifier, ":4");
 }
 
 TEST(DiscoverEndpoints, UsesEnvDisplayHintWhenSocketIsNotOurs)
