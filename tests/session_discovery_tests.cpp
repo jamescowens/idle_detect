@@ -73,6 +73,32 @@ private:
 
 int TempDir::s_counter = 0;
 
+//!
+//! \brief RAII working directory change, so a test can prove that a relative path was NOT resolved
+//! against the working directory.
+//!
+class ScopedWorkingDirectory
+{
+public:
+    explicit ScopedWorkingDirectory(const fs::path& path)
+        : m_previous(fs::current_path())
+    {
+        fs::current_path(path);
+    }
+
+    ~ScopedWorkingDirectory()
+    {
+        std::error_code ec;
+        fs::current_path(m_previous, ec);
+    }
+
+    ScopedWorkingDirectory(const ScopedWorkingDirectory&) = delete;
+    ScopedWorkingDirectory& operator=(const ScopedWorkingDirectory&) = delete;
+
+private:
+    fs::path m_previous;
+};
+
 } // namespace
 
 //
@@ -212,6 +238,233 @@ TEST(DiscoverEndpoints, IgnoresRuntimeDirSocketsThatAreNotWaylandSockets)
     ASSERT_EQ(endpoints.size(), 1u);
     EXPECT_EQ(endpoints.begin()->m_kind, EndpointKind::WAYLAND);
     EXPECT_EQ(endpoints.begin()->m_identifier, "wayland-0");
+}
+
+//
+// Wayland hints. The directory scan matches the "wayland-" prefix, which is a convention rather
+// than a rule, so a compositor that named its socket anything else is reachable only through a
+// WAYLAND_DISPLAY hint. Losing these is a coverage regression, not a cosmetic one.
+//
+
+TEST(DiscoverEndpoints, FindsWaylandSocketNamedByRelativeHint)
+{
+    TempDir runtime;
+
+    // "weston --socket=mysession". The prefix guard in the directory scan rejects this name, so the
+    // hint is the only thing that can find it.
+    MakeSocket(runtime.Path() / "mysession");
+
+    DiscoveryHints hints;
+    hints.m_xdg_runtime_dir = runtime.Path();
+    hints.m_uid = getuid();
+    hints.m_wayland_display_hints = {"mysession"};
+
+    auto endpoints = DiscoverEndpoints(hints);
+
+    ASSERT_EQ(endpoints.size(), 1u);
+    EXPECT_EQ(endpoints.begin()->m_kind, EndpointKind::WAYLAND);
+    EXPECT_EQ(endpoints.begin()->m_identifier, "mysession");
+}
+
+TEST(DiscoverEndpoints, FindsWaylandSocketNamedByAbsoluteHintOutsideRuntimeDir)
+{
+    TempDir runtime;
+    TempDir elsewhere;
+    MakeSocket(elsewhere.Path() / "compositor-socket");
+
+    DiscoveryHints hints;
+    hints.m_xdg_runtime_dir = runtime.Path();
+    hints.m_uid = getuid();
+
+    // The Wayland specification allows WAYLAND_DISPLAY to be an absolute path, and libwayland uses it
+    // as given rather than resolving it against $XDG_RUNTIME_DIR. A socket in another directory
+    // entirely is therefore legal and is invisible to every scan discovery performs.
+    hints.m_wayland_display_hints = {(elsewhere.Path() / "compositor-socket").string()};
+
+    auto endpoints = DiscoverEndpoints(hints);
+
+    ASSERT_EQ(endpoints.size(), 1u);
+    EXPECT_EQ(endpoints.begin()->m_kind, EndpointKind::WAYLAND);
+
+    // Identified by the full path, because that is the string wl_display_connect() has to be handed:
+    // the basename alone would send it looking in $XDG_RUNTIME_DIR, where this socket is not.
+    EXPECT_EQ(endpoints.begin()->m_identifier,
+              fs::canonical(elsewhere.Path() / "compositor-socket").string());
+}
+
+TEST(DiscoverEndpoints, DeduplicatesAbsoluteWaylandHintAgainstTheDirectoryScan)
+{
+    TempDir runtime;
+    MakeSocket(runtime.Path() / "wayland-0");
+
+    DiscoveryHints hints;
+    hints.m_xdg_runtime_dir = runtime.Path();
+    hints.m_uid = getuid();
+
+    // The same socket the scan finds, spelled as an absolute path. Two spellings of one path must not
+    // become two endpoints: that would start two Wayland monitors against one compositor, each with
+    // its own connection and thread, and report the same screen twice into the aggregate.
+    hints.m_wayland_display_hints = {(runtime.Path() / "wayland-0").string()};
+
+    auto endpoints = DiscoverEndpoints(hints);
+
+    ASSERT_EQ(endpoints.size(), 1u);
+    EXPECT_EQ(endpoints.begin()->m_identifier, "wayland-0");
+}
+
+TEST(DiscoverEndpoints, DeduplicatesRelativeWaylandHintAgainstTheDirectoryScan)
+{
+    TempDir runtime;
+    MakeSocket(runtime.Path() / "wayland-0");
+
+    DiscoveryHints hints;
+    hints.m_xdg_runtime_dir = runtime.Path();
+    hints.m_uid = getuid();
+    hints.m_wayland_display_hints = {"wayland-0"};
+
+    auto endpoints = DiscoverEndpoints(hints);
+
+    ASSERT_EQ(endpoints.size(), 1u);
+    EXPECT_EQ(endpoints.begin()->m_identifier, "wayland-0");
+}
+
+TEST(DiscoverEndpoints, ResolvesWaylandHintWithASubdirectory)
+{
+    TempDir runtime;
+    fs::create_directories(runtime.Path() / "nested");
+    MakeSocket(runtime.Path() / "nested" / "wayland-1");
+
+    DiscoveryHints hints;
+    hints.m_xdg_runtime_dir = runtime.Path();
+    hints.m_uid = getuid();
+    hints.m_wayland_display_hints = {"nested/wayland-1"};
+
+    auto endpoints = DiscoverEndpoints(hints);
+
+    ASSERT_EQ(endpoints.size(), 1u);
+
+    // Identified by its resolved path rather than collapsed to the basename. Collapsing would name a
+    // socket directly in $XDG_RUNTIME_DIR, which is not where this one is, so the endpoint would be
+    // unreachable again by a different route.
+    EXPECT_EQ(endpoints.begin()->m_identifier,
+              fs::canonical(runtime.Path() / "nested" / "wayland-1").string());
+}
+
+TEST(DiscoverEndpoints, FollowsASymlinkedWaylandHintToASocketTheScanCannotSee)
+{
+    TempDir runtime;
+    TempDir elsewhere;
+    MakeSocket(elsewhere.Path() / "compositor-socket");
+    fs::create_symlink(elsewhere.Path() / "compositor-socket", runtime.Path() / "mysession");
+
+    DiscoveryHints hints;
+    hints.m_xdg_runtime_dir = runtime.Path();
+    hints.m_uid = getuid();
+    hints.m_wayland_display_hints = {"mysession"};
+
+    auto endpoints = DiscoverEndpoints(hints);
+
+    // Nothing but the hint can reach this socket: it is outside the runtime directory, so the scan does
+    // not see it, and the symlink standing in for it inside the runtime directory is not a socket, so an
+    // lstat() of the hinted path rejects it too. The connect this candidate is validated by follows
+    // symlinks, so resolving the hint the same way is what keeps the two consistent.
+    ASSERT_EQ(endpoints.size(), 1u);
+    EXPECT_EQ(endpoints.begin()->m_kind, EndpointKind::WAYLAND);
+    EXPECT_EQ(endpoints.begin()->m_identifier,
+              fs::canonical(elsewhere.Path() / "compositor-socket").string());
+}
+
+TEST(DiscoverEndpoints, SymlinkedWaylandHintCollapsesOntoTheSocketItPointsAt)
+{
+    TempDir runtime;
+    MakeSocket(runtime.Path() / "wayland-0");
+    fs::create_symlink("wayland-0", runtime.Path() / "mysession");
+
+    DiscoveryHints hints;
+    hints.m_xdg_runtime_dir = runtime.Path();
+    hints.m_uid = getuid();
+    hints.m_wayland_display_hints = {"mysession"};
+
+    auto endpoints = DiscoverEndpoints(hints);
+
+    // The hint and the directory scan name one compositor by two routes. Treating them as two endpoints
+    // would open two connections and run two monitor threads against a single compositor, and report the
+    // same screen into the aggregate twice. The symlink itself is not a socket -- the scan's lstat()
+    // rejects it -- so following it is also the only way the hint resolves at all.
+    ASSERT_EQ(endpoints.size(), 1u);
+    EXPECT_EQ(endpoints.begin()->m_identifier, "wayland-0");
+}
+
+TEST(DiscoverEndpoints, IgnoresWaylandHintThatNamesNoSocket)
+{
+    TempDir runtime;
+
+    // A regular file at the hinted path, so the socket check is the only guard that can reject it.
+    std::ofstream(runtime.Path() / "not-a-socket").put('\n');
+
+    DiscoveryHints hints;
+    hints.m_xdg_runtime_dir = runtime.Path();
+    hints.m_uid = getuid();
+    hints.m_wayland_display_hints = {"not-a-socket", "never-existed", "/absolutely/not/there", ""};
+
+    EXPECT_TRUE(DiscoverEndpoints(hints).empty());
+}
+
+TEST(DiscoverEndpoints, IgnoresRelativeWaylandHintWithNoRuntimeDir)
+{
+    TempDir working;
+    MakeSocket(working.Path() / "mysession");
+
+    // The socket exists in the process's working directory and nowhere else. That is what gives this
+    // test teeth: dropping the guard makes "" / "mysession" resolve to a working-directory-relative
+    // path, which lstat() then finds, so the endpoint appears. Without the socket being reachable that
+    // way the test would pass whatever the code did.
+    ScopedWorkingDirectory working_directory(working.Path());
+
+    DiscoveryHints hints;
+    // m_xdg_runtime_dir deliberately left empty, as it is when XDG_RUNTIME_DIR is unset.
+    hints.m_uid = getuid();
+    hints.m_wayland_display_hints = {"mysession"};
+
+    // A relative name has no meaning without the directory it is relative to, and discovery must not
+    // depend on where the daemon happened to be started from.
+    EXPECT_TRUE(DiscoverEndpoints(hints).empty());
+}
+
+TEST(DiscoverEndpoints, AbsoluteWaylandHintSurvivesAnUnsetRuntimeDir)
+{
+    TempDir elsewhere;
+    MakeSocket(elsewhere.Path() / "wayland-9");
+
+    DiscoveryHints hints;
+    // m_xdg_runtime_dir deliberately left empty.
+    hints.m_uid = getuid();
+    hints.m_wayland_display_hints = {(elsewhere.Path() / "wayland-9").string()};
+
+    // An absolute path needs no runtime directory to resolve against, so the missing one that
+    // disqualifies a relative hint must not disqualify this one.
+    auto endpoints = DiscoverEndpoints(hints);
+
+    ASSERT_EQ(endpoints.size(), 1u);
+    EXPECT_EQ(endpoints.begin()->m_identifier, fs::canonical(elsewhere.Path() / "wayland-9").string());
+}
+
+TEST(DiscoverEndpoints, UnionsWaylandHintsWithTheDirectoryScan)
+{
+    TempDir runtime;
+    MakeSocket(runtime.Path() / "wayland-0");
+    MakeSocket(runtime.Path() / "mysession");
+
+    DiscoveryHints hints;
+    hints.m_xdg_runtime_dir = runtime.Path();
+    hints.m_uid = getuid();
+    hints.m_wayland_display_hints = {"mysession"};
+
+    auto endpoints = DiscoverEndpoints(hints);
+
+    ASSERT_EQ(endpoints.size(), 2u);
+    EXPECT_EQ(endpoints.count((Endpoint{EndpointKind::WAYLAND, "wayland-0"})), 1u);
+    EXPECT_EQ(endpoints.count((Endpoint{EndpointKind::WAYLAND, "mysession"})), 1u);
 }
 
 TEST(DiscoverEndpoints, MissingRuntimeDirIsNotAnError)

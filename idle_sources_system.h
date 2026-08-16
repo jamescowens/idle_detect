@@ -380,16 +380,22 @@ struct DiscoveryInputs {
 //! \brief Gathers endpoint discovery hints, and the X authority file, from the running system.
 //!
 //! Every hint is independently unreliable and none of them is load-bearing: DiscoverEndpoints() takes
-//! their union and each resulting candidate is validated by connecting to it. Four are gathered here --
+//! their union and each resulting candidate is validated by connecting to it. Five are gathered here --
 //! $XDG_RUNTIME_DIR for the Wayland socket scan, /tmp/.X11-unix for the X socket scan, our uid so that
-//! scan can reject other users' sockets, and the DISPLAY assignments the systemd user manager exports.
+//! scan can reject other users' sockets, and the DISPLAY and WAYLAND_DISPLAY assignments the systemd
+//! user manager exports.
 //!
-//! The last of those is what makes a D-Bus call worth making. The user manager's Environment property is
+//! The last two are what make a D-Bus call worth making. The user manager's Environment property is
 //! updated when the graphical session starts, by the display manager or by an equivalent
 //! "systemctl --user import-environment DISPLAY", so it describes the session that exists NOW. The
-//! process's own DISPLAY is added as one more hint, but only as a hint: it is frozen at exec, and a
-//! daemon started before its GUI session -- the failure this whole design exists to fix -- does not have
-//! one at all.
+//! process's own DISPLAY and WAYLAND_DISPLAY are added as two more hints, but only as hints: they are
+//! frozen at exec, and a daemon started before its GUI session -- the failure this whole design exists
+//! to fix -- does not have them at all.
+//!
+//! WAYLAND_DISPLAY earns its place despite the runtime directory scan finding the ordinary compositor
+//! socket without it, because that scan matches names beginning with "wayland-" and a socket name is
+//! free-form: "weston --socket=mysession", a nested compositor, or a socket outside the runtime
+//! directory are all invisible to it and named by nothing else.
 //!
 //! XAUTHORITY comes out of that same single Properties.Get result. It is the identical staleness problem
 //! one variable over: a discovered DISPLAY is useless if the credentials to authenticate to it are the

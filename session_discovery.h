@@ -43,6 +43,26 @@ struct DiscoveryHints {
     //! \brief DISPLAY values read from the systemd user manager Environment property.
     std::vector<std::string> m_env_displays;
 
+    //!
+    //! \brief WAYLAND_DISPLAY values, from the systemd user manager Environment property and from the
+    //! process environment.
+    //!
+    //! The runtime directory scan finds only sockets whose names begin with "wayland-", which is a
+    //! convention rather than a rule. A compositor is free to name its socket anything --
+    //! "weston --socket=mysession", a nested compositor, a remote desktop session -- and such an
+    //! endpoint is invisible to that scan. This hint is the only thing that can name it, and dropping
+    //! it costs coverage that a getenv() of WAYLAND_DISPLAY used to provide.
+    //!
+    //! It is a hint like every other field here, never authority: it is unioned with the scan,
+    //! deduplicated against it, and the resulting candidate is validated by connecting.
+    //!
+    //! Per the Wayland specification a value may be an absolute path, used as given, or a name
+    //! relative to $XDG_RUNTIME_DIR. Both forms are accepted, and a relative one is resolved against
+    //! m_xdg_runtime_dir -- the same resolution libwayland's wl_display_connect() performs on the same
+    //! string, so a hint that resolves to a socket here resolves to that socket there.
+    //!
+    std::vector<std::string> m_wayland_display_hints;
+
     //! \brief Display values from logind graphical sessions. Optional enrichment only.
     std::vector<std::string> m_logind_displays;
 
@@ -67,6 +87,13 @@ struct DiscoveryHints {
 //!
 //! Discovery is deliberately over-inclusive; callers validate each candidate by connecting
 //! to it. No single hint is load-bearing.
+//!
+//! A Wayland endpoint reached through DiscoveryHints::m_wayland_display_hints is resolved to its real
+//! path first, and is then identified by its socket's basename when that socket lives directly in
+//! m_xdg_runtime_dir, so that it collapses onto the identical endpoint the directory scan finds rather
+//! than being reported twice under two spellings of one path. Anything else -- a socket elsewhere, or
+//! one reached through a subdirectory -- is identified by that resolved absolute path, which is also a
+//! string wl_display_connect() accepts.
 //!
 //! The one exception is DiscoveryHints::m_uid: if it is left at its invalid default the X
 //! socket directory scan is skipped entirely rather than run against an unusable filter. The

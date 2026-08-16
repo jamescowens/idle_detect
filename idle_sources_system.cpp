@@ -90,6 +90,9 @@ struct ManagerEnvironment {
     //! \brief Every DISPLAY assignment found, in the order the manager reported them.
     std::vector<std::string> m_displays;
 
+    //! \brief Every WAYLAND_DISPLAY assignment found, in the order the manager reported them.
+    std::vector<std::string> m_wayland_displays;
+
     //! \brief The last XAUTHORITY assignment found, if any.
     std::optional<std::string> m_xauthority;
 };
@@ -178,6 +181,7 @@ ManagerEnvironment ReadSystemdUserManagerEnvironment()
             // hint.
             if (g_variant_is_of_type(boxed, G_VARIANT_TYPE_STRING_ARRAY)) {
                 const std::string display_prefix = "DISPLAY=";
+                const std::string wayland_display_prefix = "WAYLAND_DISPLAY=";
                 const std::string xauthority_prefix = "XAUTHORITY=";
 
                 gsize count = 0;
@@ -199,6 +203,17 @@ ManagerEnvironment ReadSystemdUserManagerEnvironment()
                                           value.c_str());
 
                                 environment.m_displays.push_back(value);
+                            }
+                        } else if (entry.rfind(wayland_display_prefix, 0) == 0) {
+                            const std::string value = entry.substr(wayland_display_prefix.size());
+
+                            if (!value.empty()) {
+                                debug_log("INFO: %s: systemd user manager environment provides "
+                                          "WAYLAND_DISPLAY=%s.",
+                                          __func__,
+                                          value.c_str());
+
+                                environment.m_wayland_displays.push_back(value);
                             }
                         } else if (entry.rfind(xauthority_prefix, 0) == 0) {
                             const std::string value = entry.substr(xauthority_prefix.size());
@@ -554,6 +569,10 @@ DiscoveryInputs BuildDiscoveryInputs()
         inputs.m_hints.m_env_displays.push_back(display);
     }
 
+    for (const std::string& wayland_display : manager_environment.m_wayland_displays) {
+        inputs.m_hints.m_wayland_display_hints.push_back(wayland_display);
+    }
+
     inputs.m_xauthority = std::move(manager_environment.m_xauthority);
 
     // The process environment is a hint as well, and no more than a hint: it is frozen at exec, which is
@@ -564,6 +583,16 @@ DiscoveryInputs BuildDiscoveryInputs()
 
     if (env_display.has_value() && !env_display->empty()) {
         inputs.m_hints.m_env_displays.push_back(*env_display);
+    }
+
+    // WAYLAND_DISPLAY is treated exactly as DISPLAY is, and for exactly the same reasons. It is a hint
+    // and never authority -- reading it as authority, once, at exec, is the bug this design exists to
+    // remove -- but it is the only input that can name a compositor socket the runtime directory scan
+    // cannot recognize, because that scan matches the "wayland-" prefix and a socket name is free-form.
+    std::optional<std::string> env_wayland_display = GetEnvVariable("WAYLAND_DISPLAY");
+
+    if (env_wayland_display.has_value() && !env_wayland_display->empty()) {
+        inputs.m_hints.m_wayland_display_hints.push_back(*env_wayland_display);
     }
 
     return inputs;

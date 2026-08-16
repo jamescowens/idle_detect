@@ -90,6 +90,81 @@ bool IsOwnedBy(const fs::path& path, uid_t uid)
 }
 
 //!
+//! \brief Turns a WAYLAND_DISPLAY hint into an endpoint, if it names a socket that exists.
+//!
+//! Both forms the Wayland specification allows are handled, because both occur: an absolute path is
+//! taken as written, and a relative name is resolved against the runtime directory. That is precisely
+//! what libwayland's wl_display_connect() does with the same string, so a hint that resolves to a socket
+//! here names the same socket there.
+//!
+//! Whatever the form, the path is then resolved to its real location before anything is decided about
+//! it. That is what the eventual connect() does with the same string, and it is what lets two spellings
+//! of one socket -- "wayland-0", "/run/user/1000/wayland-0", a symlink aliasing either -- collapse into
+//! one endpoint instead of starting one compositor connection and monitor thread each.
+//!
+//! The identifier is then the socket's basename when the socket sits directly in the runtime directory,
+//! which is what deduplicates it against the directory scan, and the resolved absolute path otherwise.
+//! Both are strings wl_display_connect() accepts, so the endpoint stays reachable either way, and both
+//! are stable across ticks, which matters because the identifier is what keys the pool's source and
+//! backoff maps.
+//!
+//! A relative hint with no runtime directory to resolve against is dropped rather than guessed at, for
+//! the same reason DiscoverEndpoints() skips the X socket scan without a uid: an input that cannot be
+//! evaluated must not be evaluated approximately. Resolving it against the process's working directory
+//! instead would make discovery depend on where the daemon was started from.
+//!
+//! \param runtime_dir $XDG_RUNTIME_DIR, or empty if it is unknown
+//! \param hint raw WAYLAND_DISPLAY value
+//! \return the endpoint, or std::nullopt if the hint does not resolve to an existing socket
+//!
+std::optional<Endpoint> ResolveWaylandHint(const fs::path& runtime_dir, const std::string& hint)
+{
+    if (hint.empty()) {
+        return std::nullopt;
+    }
+
+    const fs::path hint_path(hint);
+    fs::path socket_path;
+
+    if (hint_path.is_absolute()) {
+        socket_path = hint_path;
+    } else {
+        if (runtime_dir.empty()) {
+            return std::nullopt;
+        }
+
+        socket_path = runtime_dir / hint_path;
+    }
+
+    // A path that cannot be resolved does not exist, which is the same outcome as not being a socket, so
+    // there is nothing to distinguish here.
+    std::error_code path_error;
+    const fs::path resolved = fs::canonical(socket_path, path_error);
+
+    if (path_error) {
+        return std::nullopt;
+    }
+
+    // The same check the directory scan applies. A hint naming something that is not a socket -- a stale
+    // path, a lock file, a directory -- is not an endpoint, and this is the only filter there is, since a
+    // hint carries no name convention to test against.
+    if (!IsSocket(resolved)) {
+        return std::nullopt;
+    }
+
+    if (!runtime_dir.empty()) {
+        std::error_code dir_error;
+        const fs::path resolved_runtime_dir = fs::canonical(runtime_dir, dir_error);
+
+        if (!dir_error && resolved.parent_path() == resolved_runtime_dir) {
+            return Endpoint{EndpointKind::WAYLAND, resolved.filename().string()};
+        }
+    }
+
+    return Endpoint{EndpointKind::WAYLAND, resolved.string()};
+}
+
+//!
 //! \brief Adds an X display hint to the set if it normalizes successfully.
 //!
 void InsertX11Candidate(std::set<Endpoint>& endpoints, const std::string& raw)
@@ -164,6 +239,21 @@ std::set<Endpoint> DiscoverEndpoints(const DiscoveryHints& hints)
             }
 
             endpoints.insert(Endpoint{EndpointKind::WAYLAND, name});
+        }
+    }
+
+    // --- Wayland: names the environment declares, which the scan above cannot see. ---
+    //
+    // The scan matches on the "wayland-" prefix, which is a convention and not a rule, so a compositor
+    // started as "weston --socket=mysession", a nested one, or one whose socket is outside the runtime
+    // directory is reachable only through this hint. Unlike the X socket scan there is no ownership
+    // filter here, and none is needed: these values are declarations from our own environment rather
+    // than an enumeration of a world-visible directory, and connecting is what validates them.
+    for (const std::string& hint : hints.m_wayland_display_hints) {
+        std::optional<Endpoint> endpoint = ResolveWaylandHint(hints.m_xdg_runtime_dir, hint);
+
+        if (endpoint.has_value()) {
+            endpoints.insert(*endpoint);
         }
     }
 
