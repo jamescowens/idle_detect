@@ -235,6 +235,28 @@ public:
 };
 
 //!
+//! \brief Consecutive failed shell idle queries before the first suppressed report. Each report doubles
+//! the interval, up to SHELL_QUERY_FAILURE_REPORT_MAX_INTERVAL.
+//!
+constexpr int SHELL_QUERY_FAILURE_REPORT_INITIAL_INTERVAL = 1;
+
+//!
+//! \brief Ceiling on how many consecutive failed shell idle queries pass between normal-level reports.
+//!
+//! The shell source resolves once per main loop iteration, which is once per second, so any failure that
+//! logs unconditionally logs forever. This is the same bound ENDPOINT_RETRY_BACKOFF_MAX_TICKS puts on a
+//! candidate endpoint that can never validate, applied to the one source that is not a candidate and
+//! therefore never passes through that ladder. It was needed: a KDE shell misclassified as being on X11
+//! called a D-Bus method Plasma 6 had removed and logged the failure at error level on every tick,
+//! measured at 20 lines in a 20 second run and unbounded thereafter.
+//!
+//! Only the LOGGING is throttled, never the query. The endpoint ladder defers the work as well, because a
+//! candidate that will not validate has no value to offer in the meantime, whereas a shell that starts
+//! answering again must be read on the tick it recovers rather than at the convenience of a backoff.
+//!
+constexpr int SHELL_QUERY_FAILURE_REPORT_MAX_INTERVAL = 64;
+
+//!
 //! \brief The ShellIdleSource class is the idle source for the per-user desktop shell.
 //!
 //! It is deliberately NOT tied to any endpoint. With N endpoints and one shell, at most one endpoint is the
@@ -258,24 +280,31 @@ public:
     void SetKind(ShellKind kind);
 
     //!
-    //! \brief Records whether any Wayland endpoint is currently live, which is how this source learns that a
-    //! KDE shell is a Wayland shell.
+    //! \brief Records whether a Wayland endpoint CANDIDATE was discovered, which is how this source learns
+    //! that a KDE shell is a Wayland shell.
     //!
     //! Plasma 6 removed ksmserver's GetSessionIdleTime on Wayland, so a KDE shell has an idle value on X11
     //! and none on Wayland. The old code made that distinction with getenv("WAYLAND_DISPLAY"), which is the
-    //! frozen-at-exec environment read this design exists to eliminate. The owner of this source knows the
-    //! live endpoint set, so it tells the source instead: a live Wayland endpoint means the compositor this
-    //! shell is driving is a Wayland compositor. That is what ShellSourceContext, which this class
-    //! implements for the purpose, is for: IdleSourcePool calls this on every reconcile with the
-    //! state of its live endpoint sources.
+    //! frozen-at-exec environment read this design exists to eliminate. The owner of this source runs
+    //! discovery on every tick, so it tells the source instead. That is what ShellSourceContext, which this
+    //! class implements for the purpose, is for: IdleSourcePool calls this at the end of every reconcile.
     //!
-    //! Both misclassifications are benign, which is why this indirect signal is acceptable. A KDE X11
-    //! session sharing the machine with an unrelated Wayland compositor (a nested weston, a headless remote
-    //! desktop) suppresses a shell value whose reading is XSS-derived and therefore duplicated by the X11
-    //! endpoint that is already reporting it. In the other direction the shell would contribute IDLE_ERROR,
-    //! which aggregation excludes. Inhibition is unaffected either way, since it does not run through here.
+    //! THE SIGNAL IS THE CANDIDATE SET, NOT THE LIVE SOURCE SET, AND THE TWO ARE NOT INTERCHANGEABLE.
+    //! "A Wayland session exists" is the question this source is asking, and a wayland-* socket in
+    //! $XDG_RUNTIME_DIR answers it. "A Wayland idle source is working" additionally requires the compositor
+    //! to advertise ext_idle_notifier_v1, the connection to be up at this instant, and the candidate not to
+    //! be serving out a validation backoff -- none of which has any bearing on which protocol the session
+    //! speaks. Reading the second as the first is not a rare edge: it made this very machine, a Plasma 6
+    //! Wayland desktop, take the X11 arm below and call a removed D-Bus method once per tick, logging an
+    //! error each time, for as long as no Wayland source happened to be live.
     //!
-    //! \param present true if at least one live Wayland endpoint exists.
+    //! Misclassification in the remaining direction stays benign, which is what makes the indirect signal
+    //! acceptable. A KDE X11 session sharing the machine with an unrelated Wayland compositor (a nested
+    //! weston, a headless remote desktop) suppresses a shell value that ksmserver derives from XScreenSaver
+    //! anyway, and which the X11 endpoint source is therefore already reporting. Inhibition is unaffected,
+    //! since it does not run through here.
+    //!
+    //! \param present true if at least one Wayland endpoint candidate was discovered.
     //!
     void SetWaylandEndpointPresent(bool present) override;
 
@@ -300,6 +329,14 @@ public:
     //! \brief Resolves the shell's idle time per the source-chain table: KDE on X11 uses ksmserver, which
     //! handles inhibition internally so no separate check is added; GNOME uses Mutter's IdleMonitor; KDE on
     //! Wayland, and GNOME without mutter, have no idle value and contribute inhibition only.
+    //!
+    //! Two quite different things reach the caller as IDLE_ERROR, and this method keeps them apart in the
+    //! log even though the sentinel cannot. An arm that supplies no value BY DESIGN says so at debug level
+    //! and is otherwise silent, because there is nothing wrong with a Plasma 6 Wayland shell. An arm that
+    //! ATTEMPTED a query and failed is a fault worth reporting, and is reported through the throttle
+    //! described on SHELL_QUERY_FAILURE_REPORT_MAX_INTERVAL: this runs once per main loop iteration, so an
+    //! unconditional line here is an unbounded line.
+    //!
     //! \return Idle seconds >= 0, or IDLE_ERROR when this shell supplies no value.
     //!
     int64_t ResolveIdleSeconds() override;
@@ -322,15 +359,38 @@ public:
     std::string Describe() const override;
 
 private:
+    //!
+    //! \brief Records the outcome of an idle query this source actually made, throttling the reporting of
+    //! consecutive failures, and returns the value unchanged so callers can tail-return it.
+    //!
+    //! Placed on the results of attempted queries only. An arm that declines to query has nothing to
+    //! report and calls NoteNoQueryAttempted() instead, so that a healthy shell with no idle value never
+    //! enters the failure ladder.
+    //!
+    //! \param value Value the query produced, >= 0 or IDLE_ERROR.
+    //! \return value, unchanged.
+    //!
+    int64_t NoteQueryOutcome(int64_t value);
+
+    //!
+    //! \brief Clears the failure ladder for an arm that supplies no idle value by design.
+    //!
+    //! A run of failures ends when the querying stops, not only when it succeeds. Leaving the ladder
+    //! standing would make the first failure after a spell of Wayland operation report a consecutive count
+    //! accumulated before it, and would suppress the report that failure deserves.
+    //!
+    void NoteNoQueryAttempted();
+
     //! \brief Shell kind this source resolves for.
     ShellKind m_kind;
 
     //!
-    //! \brief Whether a live Wayland endpoint exists. See SetWaylandEndpointPresent().
+    //! \brief Whether a Wayland endpoint candidate was discovered. See SetWaylandEndpointPresent().
     //!
     //! Defaults to false, so a shell source constructed before its owner has run discovery attempts the
     //! ksmserver call once rather than suppressing it. That call returns an error on Plasma 6 Wayland, which
-    //! aggregation excludes.
+    //! aggregation excludes. IdleSourcePool pushes the real value at the end of the very Reconcile() that
+    //! created the source, so the default is observable only if a source is resolved outside a pool.
     //!
     bool m_wayland_endpoint_present;
 
@@ -342,6 +402,21 @@ private:
     //! it, and a wrong guess costs one excluded IDLE_ERROR.
     //!
     bool m_gnome_idle_monitor_present;
+
+    //!
+    //! \brief Consecutive attempted idle queries that returned IDLE_ERROR. Reset by any success, and by an
+    //! arm that makes no attempt at all.
+    //!
+    int m_consecutive_query_failures;
+
+    //!
+    //! \brief Failures currently passing between normal-level reports. Retained so the next interval is a
+    //! doubling of a real value rather than a shift by a failure count that grows without bound.
+    //!
+    int m_query_failure_report_interval;
+
+    //! \brief Failures still to be suppressed before the next normal-level report.
+    int m_query_failures_until_report;
 };
 
 // -----------------------------------------------------------------------------------------------------
@@ -493,20 +568,24 @@ EndpointSourceFactory MakeEndpointSourceFactory(int notification_timeout_ms);
 //!     is read only by the GNOME arm of ShellIdleSource::ResolveIdleSeconds(); paying a D-Bus round trip
 //!     to answer a question nobody asks would be pure cost.
 //!
-//!   - Whether a live Wayland endpoint exists -- which is what separates KDE on Wayland, where Plasma 6
+//!   - Whether this is a Wayland session -- which is what separates KDE on Wayland, where Plasma 6
 //!     ksmserver has no GetSessionIdleTime, from KDE on X11, where it does -- is NOT set here, and the
 //!     omission is deliberate rather than an oversight. IdleSourcePool pushes it through
 //!     ShellSourceContext at the end of every Reconcile(), including the Reconcile() that created the
 //!     source, so it is already correct before any GetIdleSeconds() can observe it.
 //!
 //! The second one is not something the factory could do better if it tried. It is handed a ShellKind and
-//! nothing else, and the fact in question is not "was a Wayland endpoint discovered" but "did a Wayland
-//! endpoint validate, and is it live right now" -- which only the pool knows, because only the pool owns
-//! the sources. The two answers a factory could reach for are both wrong: the candidate set counts
-//! endpoints that failed to validate, and getenv("WAYLAND_DISPLAY") is precisely the frozen-at-exec read
-//! this design exists to eliminate. Setting the flag in both places would also make the pool's push and
-//! the factory's guess two sources of truth for one fact, with the staler one winning whenever the
-//! factory ran last.
+//! nothing else, and the fact in question is "was a Wayland endpoint discovered on this tick" -- which the
+//! pool knows because discovery hands it the candidate set, and which the factory cannot see. The one
+//! answer a factory could reach for, getenv("WAYLAND_DISPLAY"), is precisely the frozen-at-exec read this
+//! design exists to eliminate. Setting the flag in both places would also make the pool's push and the
+//! factory's guess two sources of truth for one fact, with the staler one winning whenever the factory ran
+//! last.
+//!
+//! Note that the pool answers this from CANDIDATES rather than from live sources, which is not a detail:
+//! a Wayland session whose compositor we cannot read is still a Wayland session, and inferring the
+//! protocol from whether a source validated sent a Plasma 6 Wayland shell down the X11 arm. See
+//! ShellIdleSource::SetWaylandEndpointPresent().
 //!
 //! \return Factory suitable for IdleSourcePool's constructor.
 //!

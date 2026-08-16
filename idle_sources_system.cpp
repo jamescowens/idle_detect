@@ -461,6 +461,9 @@ ShellIdleSource::ShellIdleSource(ShellKind kind)
     : m_kind(kind)
     , m_wayland_endpoint_present(false)
     , m_gnome_idle_monitor_present(true)
+    , m_consecutive_query_failures(0)
+    , m_query_failure_report_interval(0)
+    , m_query_failures_until_report(0)
 {}
 
 void ShellIdleSource::SetKind(ShellKind kind)
@@ -486,14 +489,19 @@ int64_t ShellIdleSource::ResolveIdleSeconds()
         // ext_idle_notifier_v1 is the idle source instead and this shell contributes inhibition only.
         // On X11 ksmserver still answers, and it folds inhibition into the value it returns, so no
         // separate inhibition check is added here.
+        //
+        // The flag is set from the Wayland endpoint CANDIDATES the pool was offered, not from the Wayland
+        // sources that are live: what decides whether ksmserver has the method is which protocol the
+        // session speaks, and a compositor we cannot read an idle time out of is still a compositor. See
+        // SetWaylandEndpointPresent().
         if (m_wayland_endpoint_present) {
-            debug_log("INFO: %s: KDE shell alongside a live Wayland endpoint. No shell idle value; the "
-                      "Wayland endpoint supplies it and the shell supplies inhibition.",
+            debug_log("INFO: %s: KDE shell in a Wayland session. No shell idle value; the Wayland "
+                      "endpoint supplies it and the shell supplies inhibition.",
                       __func__);
             break;
         }
 
-        return GetIdleTimeKdeDBus();
+        return NoteQueryOutcome(GetIdleTimeKdeDBus());
     case ShellKind::GNOME:
         // Mutter's IdleMonitor answers on both GNOME X11 and GNOME Wayland, so the Wayland distinction
         // KDE needs does not apply. What does apply is whether mutter is the window manager at all: a
@@ -508,12 +516,87 @@ int64_t ShellIdleSource::ResolveIdleSeconds()
             break;
         }
 
-        return GetIdleTimeWaylandGnomeViaDBus();
+        return NoteQueryOutcome(GetIdleTimeWaylandGnomeViaDBus());
     case ShellKind::NONE:
         break;
     }
 
+    // Every path that reaches here declined to query, so nothing failed. Clearing the ladder is what keeps
+    // "this shell has no idle value" from being reported as a fault, and keeps a real fault after it from
+    // inheriting a count and a suppression interval it did not earn.
+    NoteNoQueryAttempted();
+
     return IDLE_ERROR;
+}
+
+int64_t ShellIdleSource::NoteQueryOutcome(int64_t value)
+{
+    if (value >= 0) {
+        // A recovery is worth one line, and only when there was something to recover from. The count is
+        // included because it is the only place the size of the outage appears at normal level: the
+        // failures in the middle of the run were suppressed by the very throttle this reports the end of.
+        if (m_consecutive_query_failures > 0) {
+            normal_log("INFO: %s: Shell idle source %s is answering again after %d consecutive failed "
+                       "quer(ies).",
+                       __func__,
+                       Describe().c_str(),
+                       m_consecutive_query_failures);
+        }
+
+        m_consecutive_query_failures = 0;
+        m_query_failure_report_interval = 0;
+        m_query_failures_until_report = 0;
+
+        return value;
+    }
+
+    ++m_consecutive_query_failures;
+
+    // Still inside the suppression window opened by the last report. The failure is not lost, it is debug
+    // material: one line per second at normal level is what this exists to prevent.
+    if (m_query_failures_until_report > 0) {
+        --m_query_failures_until_report;
+
+        debug_log("INFO: %s: Shell idle source %s failed to produce a reading (%d consecutive).",
+                  __func__,
+                  Describe().c_str(),
+                  m_consecutive_query_failures);
+
+        return value;
+    }
+
+    // Doubling the previous interval rather than shifting by the failure count, which grows for as long as
+    // the daemon runs and would be undefined as a shift distance long before the result was clamped. This
+    // is the same ladder RecordCandidateFailure() applies to a candidate endpoint, and it is deliberately
+    // the same: reports land on the 1st, 3rd, 6th, 11th, 20th, 37th and 70th consecutive failure, and one
+    // per SHELL_QUERY_FAILURE_REPORT_MAX_INTERVAL failures thereafter.
+    int interval = (m_query_failure_report_interval == 0)
+            ? SHELL_QUERY_FAILURE_REPORT_INITIAL_INTERVAL
+            : m_query_failure_report_interval * 2;
+
+    if (interval > SHELL_QUERY_FAILURE_REPORT_MAX_INTERVAL) {
+        interval = SHELL_QUERY_FAILURE_REPORT_MAX_INTERVAL;
+    }
+
+    m_query_failure_report_interval = interval;
+    m_query_failures_until_report = interval;
+
+    normal_log("INFO: %s: Shell idle source %s failed to produce a reading (%d consecutive). Further "
+               "failures are debug only until %d more have occurred. The shell still contributes "
+               "inhibition, and other sources are unaffected.",
+               __func__,
+               Describe().c_str(),
+               m_consecutive_query_failures,
+               interval);
+
+    return value;
+}
+
+void ShellIdleSource::NoteNoQueryAttempted()
+{
+    m_consecutive_query_failures = 0;
+    m_query_failure_report_interval = 0;
+    m_query_failures_until_report = 0;
 }
 
 bool ShellIdleSource::IsAlive() const

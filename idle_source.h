@@ -129,7 +129,7 @@ public:
 
 //!
 //! \brief Optional mix-in for a shell source whose resolution depends on a fact only its owner
-//! knows: whether any live Wayland endpoint exists.
+//! knows: whether the session this shell belongs to is a Wayland session.
 //!
 //! It is a separate interface rather than a method on IdleSource because it is not a property of
 //! sources in general -- an endpoint source is told what it is by its own construction -- and it is
@@ -149,8 +149,18 @@ public:
     virtual ~ShellSourceContext() = default;
 
     //!
-    //! \brief Records whether any live Wayland endpoint source currently exists.
-    //! \param present true if at least one live Wayland endpoint exists
+    //! \brief Records whether the owner has been offered any Wayland endpoint CANDIDATE, which is how a
+    //! shell source learns that it is a Wayland shell.
+    //!
+    //! Candidates rather than working sources, and the distinction is load bearing. "A Wayland session
+    //! exists" is what the shell is asking, and a compositor socket answers it. "We have a working
+    //! Wayland idle source" is a narrower claim that is false in ordinary situations which say nothing
+    //! about the session's protocol -- a compositor that does not advertise ext_idle_notifier_v1, a
+    //! candidate part way up a validation backoff, a source that has died and not yet been rebuilt.
+    //! Answering the first with the second told a Plasma 6 Wayland shell it was on X11, and sent it to
+    //! a D-Bus method Plasma 6 had removed once per tick forever.
+    //!
+    //! \param present true if at least one Wayland endpoint candidate was discovered
     //!
     virtual void SetWaylandEndpointPresent(bool present) = 0;
 };

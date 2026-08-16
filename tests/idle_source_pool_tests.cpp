@@ -379,6 +379,29 @@ void ReconcileTicks(PoolHarness& harness, int ticks, const std::set<Endpoint>& e
 }
 
 //!
+//! \brief Runs the given number of reconcile ticks against an unchanging candidate set and a shell that
+//! stays present.
+//!
+//! Separate from ReconcileTicks() rather than a defaulted argument on it, because the two are used for
+//! opposite purposes: the endpoint tests want a shell that is out of the way, while the shell-context tests
+//! need one that survives the run, and a shell observed as NONE for three consecutive ticks is dropped.
+//!
+//! \param harness harness owning the pool
+//! \param ticks number of reconciles to run
+//! \param endpoints candidate set offered on each tick
+//! \param shell shell kind observed on each tick
+//!
+void ReconcileTicksWithShell(PoolHarness& harness,
+                             int ticks,
+                             const std::set<Endpoint>& endpoints,
+                             ShellKind shell)
+{
+    for (int tick = 0; tick < ticks; ++tick) {
+        harness.Pool().Reconcile(endpoints, shell);
+    }
+}
+
+//!
 //! \brief Reconciles until the endpoint is offered to the factory again, and reports how many ticks
 //! that took.
 //!
@@ -1145,6 +1168,116 @@ TEST(IdleSourcePool, WaylandEndpointPresenceIsPushedToTheShellSource)
     harness.Pool().Reconcile({g_x11_one}, ShellKind::KDE);
 
     EXPECT_FALSE(harness.ShellSource()->WaylandEndpointPresent());
+}
+
+TEST(IdleSourcePool, AWaylandCandidateThatFailsValidationStillMarksTheShellAsWayland)
+{
+    // The defect this pins down, and the reason the flag is derived from candidates rather than from live
+    // sources. "Is this a Wayland session?" and "do we have a working Wayland idle source?" are different
+    // questions, and only the first one is the shell's.
+    //
+    // A Wayland candidate that never validates is the ORDINARY case, not an exotic one: the compositor may
+    // not advertise ext_idle_notifier_v1, the candidate may be serving out a validation backoff, or the
+    // source may have died and not yet been rebuilt. Reading any of those as "not a Wayland session" put a
+    // Plasma 6 Wayland shell on the X11 arm, where it called a D-Bus method Plasma 6 had removed on every
+    // single tick.
+    PoolHarness harness;
+
+    harness.SetShellValue(50);
+
+    // Deliberately not scripted, so the factory rejects it exactly as a compositor without
+    // ext_idle_notifier_v1 would.
+    harness.Pool().Reconcile({g_wayland_zero}, ShellKind::KDE);
+
+    ASSERT_EQ(harness.Pool().EndpointSourceCount(), 0u);
+    ASSERT_NE(harness.ShellSource(), nullptr);
+    EXPECT_TRUE(harness.ShellSource()->WaylandEndpointPresent());
+
+    // And it stays marked while the candidate goes on failing, including once the backoff has stopped the
+    // factory from even being offered it. A flag that decayed with the retry ladder would produce the
+    // original flood on a slower clock.
+    ReconcileTicksWithShell(harness, 20, {g_wayland_zero}, ShellKind::KDE);
+
+    EXPECT_EQ(harness.Pool().EndpointSourceCount(), 0u);
+    EXPECT_TRUE(harness.ShellSource()->WaylandEndpointPresent());
+}
+
+TEST(IdleSourcePool, AnAllX11CandidateSetDoesNotMarkTheShellAsWayland)
+{
+    // The other half of the rule. Candidates are a wider signal than live sources, so it has to be shown
+    // that they are not so wide as to be useless: a session with no Wayland candidate at all must leave the
+    // shell on the X11 arm, where a KDE shell really does have a GetSessionIdleTime to call.
+    PoolHarness harness;
+
+    harness.SetShellValue(50);
+    harness.ScriptEndpoint(g_x11_one, 100);
+
+    // A validated X11 endpoint and an X11 candidate that fails validation. Neither is Wayland, and a
+    // failing candidate must not be mistaken for one.
+    harness.Pool().Reconcile({g_x11_one, g_x11_two}, ShellKind::KDE);
+
+    ASSERT_EQ(harness.Pool().EndpointSourceCount(), 1u);
+    ASSERT_NE(harness.ShellSource(), nullptr);
+    EXPECT_FALSE(harness.ShellSource()->WaylandEndpointPresent());
+
+    ReconcileTicksWithShell(harness, 10, {g_x11_one, g_x11_two}, ShellKind::KDE);
+
+    EXPECT_FALSE(harness.ShellSource()->WaylandEndpointPresent());
+
+    // The shell keeps its value, which is what the X11 arm exists for.
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), 50);
+}
+
+TEST(IdleSourcePool, TheWaylandFlagFollowsCandidatesAcrossReconciles)
+{
+    // The flag tracks the candidate set on every tick rather than latching in either direction, and it does
+    // so without any endpoint ever validating. A user who logs out of a Wayland session into an X11 one
+    // must get a shell that resumes querying ksmserver, and vice versa.
+    PoolHarness harness;
+
+    harness.SetShellValue(50);
+    harness.Pool().Reconcile({g_x11_one}, ShellKind::KDE);
+
+    ASSERT_NE(harness.ShellSource(), nullptr);
+    ASSERT_EQ(harness.Pool().EndpointSourceCount(), 0u);
+    EXPECT_FALSE(harness.ShellSource()->WaylandEndpointPresent());
+
+    // A compositor socket appears. Nothing validates, and the answer changes anyway.
+    harness.Pool().Reconcile({g_x11_one, g_wayland_zero}, ShellKind::KDE);
+
+    EXPECT_TRUE(harness.ShellSource()->WaylandEndpointPresent());
+
+    // The socket goes away.
+    harness.Pool().Reconcile({g_x11_one}, ShellKind::KDE);
+
+    EXPECT_FALSE(harness.ShellSource()->WaylandEndpointPresent());
+
+    // And back, this time as the only candidate there is.
+    harness.Pool().Reconcile({g_wayland_zero}, ShellKind::KDE);
+
+    EXPECT_TRUE(harness.ShellSource()->WaylandEndpointPresent());
+
+    // An empty candidate set is not a Wayland session either. Reconcile() must recompute rather than leave
+    // the last answer standing.
+    harness.Pool().Reconcile({}, ShellKind::KDE);
+
+    EXPECT_FALSE(harness.ShellSource()->WaylandEndpointPresent());
+}
+
+TEST(IdleSourcePool, AShellSourceBuiltThisTickAlreadyKnowsTheSessionIsWayland)
+{
+    // The ordering that makes the fix effective in production. The pool pushes context at the END of
+    // Reconcile(), so a shell source created on the same tick a Wayland candidate first appeared must be
+    // told before the main loop can resolve it. Getting this wrong costs one misrouted query per shell
+    // creation, which is once per session -- small, but it is the very first query the daemon makes.
+    PoolHarness harness;
+
+    harness.SetShellValue(50);
+    harness.Pool().Reconcile({g_wayland_zero}, ShellKind::KDE);
+
+    ASSERT_NE(harness.ShellSource(), nullptr);
+    EXPECT_TRUE(harness.ShellSource()->WaylandEndpointPresent());
+    EXPECT_GT(harness.ShellSource()->ContextUpdates(), 0);
 }
 
 //

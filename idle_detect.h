@@ -43,6 +43,12 @@ int64_t GetIdleTimeSeconds();
 //! must NOT add a separate inhibition check on top of this value. Note that Plasma 6 removed
 //! GetSessionIdleTime on Wayland, where this call returns an error rather than a value.
 //!
+//! EVERYTHING THIS LOGS ABOUT A FAILURE IS AT DEBUG LEVEL, and a caller that wants an operator to see a
+//! failure must report it itself. The reasoning is the same as for WaylandIdleSource::Start(): this is
+//! called from the shell idle source once per main loop iteration, so a normal or error line here is a line
+//! every second for the life of the process. Only the caller can tell one failed reading from a run of
+//! them, and ShellIdleSource does, throttling its report onto a doubling ladder.
+//!
 //! \return Idle seconds >= 0, or -1 on error.
 //!
 int64_t GetIdleTimeKdeDBus();
@@ -52,6 +58,9 @@ int64_t GetIdleTimeKdeDBus();
 //!
 //! Unlike the KDE call above this does NOT account for idle inhibition, which must be checked separately
 //! with CheckGnomeInhibition().
+//!
+//! Failures are logged at debug level only, on the same contract as GetIdleTimeKdeDBus() and for the same
+//! reason.
 //!
 //! \return Idle seconds >= 0, or -1 on error.
 //!

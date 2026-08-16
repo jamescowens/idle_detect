@@ -20,6 +20,7 @@ IdleSourcePool::IdleSourcePool(EndpointSourceFactory endpoint_factory,
     , m_inhibition_query(std::move(inhibition_query))
     , m_shell_kind(ShellKind::NONE)
     , m_shell_absence_observations(0)
+    , m_wayland_candidate_present(false)
 {}
 
 IdleSourcePool::~IdleSourcePool()
@@ -177,6 +178,27 @@ void IdleSourcePool::Reconcile(const std::set<Endpoint>& endpoints, ShellKind sh
     // compute the user explicitly asked to hold off -- while the source it belongs to was retained.
     m_shell_kind = effective_shell;
 
+    // --- Record whether this is a Wayland SESSION, which is not the same question as whether a
+    // --- Wayland source works.
+    //
+    // "A Wayland session exists" is answered by the CANDIDATE set: a wayland-* socket in
+    // $XDG_RUNTIME_DIR, or a WAYLAND_DISPLAY the session declares, means a Wayland compositor is what
+    // this user is sitting in front of. "We have a working Wayland idle source" is answered by
+    // m_endpoint_sources, and it is a strictly narrower thing: it additionally requires the compositor
+    // to advertise ext_idle_notifier_v1, the connection to be up right now, and the candidate not to be
+    // serving out a validation backoff.
+    //
+    // Only the first question is the shell's. See UpdateShellSourceContext() for what happens when the
+    // two are conflated, which is the defect this line fixes.
+    m_wayland_candidate_present = false;
+
+    for (const Endpoint& endpoint : endpoints) {
+        if (endpoint.m_kind == EndpointKind::WAYLAND) {
+            m_wayland_candidate_present = true;
+            break;
+        }
+    }
+
     UpdateShellSourceContext();
 }
 
@@ -237,6 +259,11 @@ void IdleSourcePool::Shutdown()
     // shell whose disappearance could be part-way confirmed.
     m_shell_kind = ShellKind::NONE;
     m_shell_absence_observations = 0;
+
+    // A shut-down pool has been offered no candidates, so it knows of no Wayland session. The next
+    // Reconcile() re-derives this from the candidate set it is handed, before any shell source can read
+    // it.
+    m_wayland_candidate_present = false;
 }
 
 size_t IdleSourcePool::EndpointSourceCount() const
@@ -372,18 +399,28 @@ void IdleSourcePool::UpdateShellSourceContext()
         return;
     }
 
-    // Live sources, not candidates: a Wayland candidate that failed to validate is not a compositor
-    // this shell could be driving.
-    bool wayland_endpoint_present = false;
-
-    for (const auto& entry : m_endpoint_sources) {
-        if (entry.first.m_kind == EndpointKind::WAYLAND) {
-            wayland_endpoint_present = true;
-            break;
-        }
-    }
-
-    context->SetWaylandEndpointPresent(wayland_endpoint_present);
+    // CANDIDATES, NOT LIVE SOURCES, AND THE DIFFERENCE IS THE WHOLE POINT OF THIS FLAG.
+    //
+    // What the shell is asking is "am I a Wayland shell", because that is what decides whether a KDE
+    // shell still has a GetSessionIdleTime to call. The honest answer is "a Wayland compositor is
+    // running", and a socket in $XDG_RUNTIME_DIR is exactly that evidence. Whether WE can read an idle
+    // time out of that compositor is a different and much narrower question, and it is false in
+    // several ordinary situations that have nothing to do with the session's protocol: the compositor
+    // may not advertise ext_idle_notifier_v1 at all, the candidate may be part way up a validation
+    // backoff ladder, or its source may have died and not yet been rebuilt.
+    //
+    // Answering the first question with the second is what this fixes, and it was measured. On a
+    // Plasma 6 Wayland desktop where no Wayland source was live, the shell concluded it was KDE on X11
+    // and called GetIdleTimeKdeDBus() on every tick. Plasma 6 removed that method on Wayland, so every
+    // call failed and logged: 20 error lines in a 20 second run, unbounded for the life of the process,
+    // for a session whose protocol had never been in doubt.
+    //
+    // Misclassifying in the other direction stays benign, which is what makes candidates the right
+    // input rather than merely the safer one. A KDE X11 session that happens to share the machine with
+    // an unrelated Wayland compositor -- a nested weston, a headless remote desktop -- suppresses a
+    // shell value that ksmserver derives from XScreenSaver anyway, and which the X11 endpoint source is
+    // therefore already reporting. Nothing is lost, and inhibition does not run through here at all.
+    context->SetWaylandEndpointPresent(m_wayland_candidate_present);
 }
 
 } // namespace IdleDetect

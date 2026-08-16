@@ -276,6 +276,11 @@ private:
     //! \brief Pushes the context only the pool knows onto the shell source, if that source wants
     //! it. Called with mtx_pool held.
     //!
+    //! The context in question is whether this is a WAYLAND SESSION, and the pool answers it from the
+    //! candidate set rather than from its live sources. Those are two different questions -- "a Wayland
+    //! session exists" and "we have a working Wayland idle source" -- and only the first one is the
+    //! shell's. See the commentary in the definition for the failure that conflating them produced.
+    //!
     void UpdateShellSourceContext();
 
     //! \brief Guards the source containers against concurrent reconcile and query.
@@ -324,6 +329,17 @@ private:
     //! unbroken run.
     //!
     int m_shell_absence_observations;
+
+    //!
+    //! \brief Whether the most recent Reconcile() was offered any Wayland endpoint CANDIDATE.
+    //!
+    //! Deliberately not "whether a Wayland source is live". A Wayland socket in $XDG_RUNTIME_DIR means
+    //! the user's session is a Wayland session, whether or not this daemon can read an idle time out of
+    //! the compositor behind it, and it is the session's protocol that the shell source needs to know.
+    //! Held as state rather than recomputed on demand because the shell source is updated at the end of
+    //! Reconcile(), by which point the candidate set is out of scope.
+    //!
+    bool m_wayland_candidate_present;
 };
 
 } // namespace IdleDetect

@@ -353,6 +353,11 @@ void SendPipeNotification(const std::filesystem::path& pipe_path,
 }
 
 // Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this for the shell idle source.
+//
+// Everything this reports about a failure is at debug level, and that is a contract with the one caller
+// rather than an oversight; see the header for the reasoning. The short version is that this runs once per
+// main loop iteration, so an error line here is an error line every second, and the operator-visible report
+// belongs to ShellIdleSource, which is the only thing that can count consecutive failures and throttle them.
 int64_t GetIdleTimeKdeDBus() {
     debug_log("INFO: %s: Querying org.kde.ksmserver GetSessionIdleTime via D-Bus.", __func__);
 
@@ -364,10 +369,10 @@ int64_t GetIdleTimeKdeDBus() {
     connection = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, &dbus_error);
     if (!connection) {
         if (dbus_error) {
-            error_log("%s: Failed to connect to session bus for KDE idle query: %s", __func__, dbus_error->message);
+            debug_log("INFO: %s: Failed to connect to session bus for KDE idle query: %s", __func__, dbus_error->message);
             g_error_free(dbus_error);
         } else {
-            error_log("%s: Failed to connect to session bus for KDE idle query (unknown error).", __func__);
+            debug_log("INFO: %s: Failed to connect to session bus for KDE idle query (unknown error).", __func__);
         }
         return -1; // Return error
     }
@@ -387,8 +392,9 @@ int64_t GetIdleTimeKdeDBus() {
                                               &dbus_error);
 
     if (dbus_error) {
-        // Error during D-Bus call
-        error_log("%s: Error calling %s on %s: %s", __func__, method_name, interface_name, dbus_error->message);
+        // Error during D-Bus call. Debug level: this is the arm a Plasma 6 Wayland session takes if it is
+        // ever misrouted here, and it would otherwise log once per second forever.
+        debug_log("INFO: %s: Error calling %s on %s: %s", __func__, method_name, interface_name, dbus_error->message);
         g_error_free(dbus_error);
         idle_time_seconds = -1; // Error
     } else if (dbus_result) {
@@ -408,7 +414,7 @@ int64_t GetIdleTimeKdeDBus() {
         g_variant_unref(dbus_result); // Clean up reply variant
     } else {
         // Should not happen if error is null, but handle defensively
-        error_log("%s: Call to %s on %s returned no result and no error.", __func__, method_name, interface_name);
+        debug_log("INFO: %s: Call to %s on %s returned no result and no error.", __func__, method_name, interface_name);
         idle_time_seconds = -1; // Treat as error
     }
 
@@ -542,6 +548,9 @@ bool CheckGnomeInhibition() {
 // Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this for the shell idle source.
 //
 // Note that this does NOT take idle inhibit into account, unlike the corresponding KDE D-Bus call.
+//
+// Failures are reported at debug level for the same reason as in GetIdleTimeKdeDBus() above: this runs once
+// per main loop iteration, and the throttled operator-visible report is ShellIdleSource's.
 int64_t GetIdleTimeWaylandGnomeViaDBus() {
     // Assumes IsGnomeSession() has already confirmed this is appropriate to call
     debug_log("INFO: %s: Querying GNOME Mutter IdleMonitor via D-Bus.",
@@ -555,12 +564,12 @@ int64_t GetIdleTimeWaylandGnomeViaDBus() {
     connection = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, &dbus_error);
     if (!connection) {
         if (dbus_error) {
-            error_log("%s: Error connecting to session bus for Gnome idle query: %s",
+            debug_log("INFO: %s: Error connecting to session bus for Gnome idle query: %s",
                       __func__,
                       dbus_error->message);
             g_error_free(dbus_error);
         } else {
-            error_log("%s: Error connecting to session bus for Gnome idle query (unknown error).",
+            debug_log("INFO: %s: Error connecting to session bus for Gnome idle query (unknown error).",
                       __func__);
         }
         return -1; // Return -1 on connection error
@@ -578,12 +587,13 @@ int64_t GetIdleTimeWaylandGnomeViaDBus() {
                                               500, nullptr, &dbus_error);
 
     if (dbus_error) {
-        error_log("%s: Error calling %s on %s: %s",
+        debug_log("INFO: %s: Error calling %s on %s: %s",
                   __func__,
                   method_name,
                   interface_name,
                   dbus_error->message);
         g_error_free(dbus_error);
+        g_object_unref(connection);
         return -1;
     } else if (dbus_result) {
         uint64_t idle_time_ms = 0;
@@ -595,10 +605,11 @@ int64_t GetIdleTimeWaylandGnomeViaDBus() {
                   idle_time_seconds);
         g_variant_unref(dbus_result);
     } else {
-        error_log("%s: Call to %s on %s returned no result and no error.",
+        debug_log("INFO: %s: Call to %s on %s returned no result and no error.",
                   __func__,
                   method_name,
                   interface_name);
+        g_object_unref(connection);
         return -1;
     }
 
