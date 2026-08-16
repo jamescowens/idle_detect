@@ -1,7 +1,9 @@
 # GUI Session Readiness and Multi-Endpoint Idle Detection
 
 **Date:** 2026-08-16
-**Status:** Design approved, pending implementation plan
+**Status:** Implemented on `gui_session_readiness`. Corrected in place where the implementation
+disproved the design; the corrections are marked "as implemented" and are load-bearing, not
+editorial.
 **Related issues:** [#12](https://github.com/jamescowens/idle_detect/issues/12) (root cause), [#11](https://github.com/jamescowens/idle_detect/issues/11) (prerequisite)
 
 ## Problem
@@ -137,21 +139,24 @@ N endpoints**.
 ```
 ┌─ Layer 1: Desktop Shell (per-user singleton, D-Bus) ───────────┐
 │  org.kde.ksmserver / org.gnome.Mutter.IdleMonitor              │
-│  Lifecycle: user@UID.service     Trigger: NameOwnerChanged     │
+│  org.gnome.SessionManager (inhibition without an idle value)   │
+│  Lifecycle: user@UID.service     Trigger: NameHasOwner probe   │
 │  Supplies: inhibition (global override), idle on X11/GNOME     │
 └────────────────────────────────────────────────────────────────┘
 ┌─ Layer 2: Graphical Endpoints (0..N, protocol) ────────────────┐
 │  wayland-* sockets in $XDG_RUNTIME_DIR   →  ext_idle_notifier  │
 │  X displays (union of hints)             →  XScreenSaver       │
-│  Trigger: inotify on $XDG_RUNTIME_DIR + periodic reconcile     │
+│  Trigger: full discovery union, every reconcile                │
 └────────────────────────────────────────────────────────────────┘
                             ↓
      inhibited ? 0 : min(resolved values of all live sources)
 ```
 
-`NameOwnerChanged` on the user bus is the "GUI session established" trigger. It is
-signal-driven, requires no polling, and directly observes the event that matters — the
-desktop shell claiming its well-known name.
+Ownership of the shell's well-known name on the user bus is the "GUI session established"
+signal. It directly observes the event that matters — the desktop shell claiming its name — and
+it is the same question whether it is subscribed to or asked. As implemented it is asked, once
+per reconcile, alongside endpoint discovery; see "Triggers and data flow" for why, and for the
+debounce that asking rather than subscribing turned out to need.
 
 ### Layer overlap is intentional and safe
 
@@ -208,11 +213,21 @@ Each chain resolves to exactly one value. Only these resolved values enter `min(
 | Source | Chain |
 |---|---|
 | Shell — KDE on X11 | `GetIdleTimeKdeDBus()` — inhibition handled internally, **no** separate check |
-| Shell — GNOME (X11 or Wayland) | Mutter D-Bus `IdleMonitor` → `-1` |
+| Shell — GNOME with mutter (X11 or Wayland) | Mutter D-Bus `IdleMonitor` → `-1` |
+| Shell — GNOME without mutter | No idle value; contributes inhibition only |
 | Shell — KDE on Wayland | No idle value (`ksmserver GetSessionIdleTime` is gone on Plasma 6); contributes inhibition only |
 | Shell — absent | No idle value, no inhibition |
 | Endpoint — Wayland | `ext_idle_notifier_v1` → `-1` |
 | Endpoint — X11 | `GetIdleTimeXss()` → `-1` |
+
+Which of the two KDE rows applies is decided by whether discovery offered a **Wayland endpoint
+candidate**, not by whether a Wayland source is live. The two are different questions, and only
+the first one is about the session's protocol.
+
+The two "contributes inhibition only" rows resolve to `-1`, which aggregation excludes, and that
+is a correct outcome rather than a fault. Logging must keep them apart even though the sentinel
+cannot: an arm that supplies no value by design says so at debug level, while an arm that
+attempted a query and failed is reported on a throttled ladder.
 
 Inhibition is evaluated separately from the chains and is a **global override**:
 `CheckKdeInhibition()` or `CheckGnomeInhibition()` per shell kind, short-circuiting the
@@ -243,47 +258,97 @@ This structure reproduces current behavior in every case:
 
 New files, since `idle_detect.cpp` is already 2054 lines.
 
-### `EndpointDiscovery` — `session_discovery.h/cpp`
+The file attributions below are as implemented. The split is sharper than first sketched, along
+one line: anything that makes system contact — D-Bus via GIO, Wayland, X11 — is confined to
+`idle_sources_system.h/cpp`, and everything else is kept free of those dependencies so it links
+into `idle_detect_tests`, which links none of those libraries. That is why `ShellMonitor` and the
+three concrete `IdleSource` implementations live in the system file while the interface, the
+discovery union, and the pool do not.
 
-Maintains the endpoint set from a union of individually-distrusted hints:
+### `DiscoverEndpoints()` — `session_discovery.h/cpp`
+
+Produces the endpoint set from a union of individually-distrusted hints:
 
 - `wayland-*` sockets in `$XDG_RUNTIME_DIR`, excluding `*.lock`
-- `DISPLAY` from the systemd user manager `Environment` property (read on demand)
+- `DISPLAY` **and `WAYLAND_DISPLAY`** from the systemd user manager `Environment` property (read
+  on demand), plus this process's own two as further hints. `WAYLAND_DISPLAY` earns its place
+  because the socket scan matches a naming convention rather than a rule: `weston
+  --socket=mysession`, a nested compositor, or a socket outside the runtime directory is named by
+  nothing else. `XAUTHORITY` comes out of the same single `Properties.Get` result, since a
+  discovered `DISPLAY` is useless without credentials that are not the ones the process was
+  executed with.
 - `/tmp/.X11-unix/X*` filtered by `st_uid == getuid()`
-- logind `Session.Display` for `Class=user` ∧ `Type ∈ {wayland,x11}` — **optional enrichment**
+- logind `Session.Display` for `Class=user` ∧ `Type ∈ {wayland,x11}` — **optional enrichment**,
+  and as implemented not gathered at all: every display it could name is already reachable
+  through the X socket scan or the manager environment, so the field exists and is left empty.
 
-Union, dedupe, then **validate by connecting**. No hint is required to be present. Triggered
-by inotify on `$XDG_RUNTIME_DIR` plus the reconcile timer.
+Union, dedupe, then **validate by connecting**. No hint is required to be present. Validation is
+performed by the pool's endpoint factory rather than here, since what "validated" means is
+protocol-specific; this function is a pure, dependency-free set operation over hints, which is
+what makes it unit-testable against temp dirs.
+
+Re-run in full on every reconcile, which as implemented is every main-loop iteration. The inotify
+watch on `$XDG_RUNTIME_DIR` was not built: at a one-second reconcile it would save a directory
+scan and add a second code path with its own failure modes.
 
 The X11 hints are unreliable in complementary ways, which is why they are unioned: a
 user-started `Xvnc` leaves a user-owned socket the `st_uid` filter finds, while a
 display-manager-started console X may leave a root-owned socket the filter misses but which
 the `Environment` `DISPLAY` hint supplies.
 
-### `ShellMonitor` — `session_discovery.h/cpp`
+### `ShellMonitor` — `idle_sources_system.h/cpp`
 
-Watches `NameOwnerChanged` for `org.kde.ksmserver` and `org.gnome.Mutter.IdleMonitor`.
-Exposes shell kind, inhibition state, and the D-Bus idle value where one exists.
+Detects the shell by bus name ownership and exposes shell kind and inhibition state. As
+implemented it **polls** `NameHasOwner` for `org.kde.ksmserver`, `org.gnome.Mutter.IdleMonitor`
+and `org.gnome.SessionManager` on every reconcile rather than subscribing to `NameOwnerChanged`;
+see "Triggers and data flow" for why, and for the debounce that a polled probe turned out to
+need. It holds no state and no connection and is constructed per call, GIO's shared session bus
+connection being what is actually reused.
 
-### `IdleSource` — `idle_source.h/cpp`
+`org.gnome.SessionManager` is a third name the original sketch did not have. Presence for
+inhibition and presence for an idle value are different questions: gnome-session answers
+`IsInhibited` and is present in every gnome-session desktop, while mutter answers the idle time
+and is present only when the window manager actually is mutter. GNOME Flashback with Metacity has
+the first and not the second, and probing only for Mutter would silently drop its inhibition.
 
-Abstract interface; each instance owns its full priority chain and resolves to one value.
+### `IdleSource` — `idle_source.h/cpp`, implementations in `idle_sources_system.h/cpp`
+
+Abstract interface; each instance owns its full priority chain and resolves to one value. The
+interface and the aggregation rule are dependency-free and live in `idle_source.h/cpp`; the three
+implementations below all make system contact and therefore live in the system file.
 
 - **`WaylandIdleSource`** — one per Wayland endpoint. Today's `WaylandIdleMonitor`, made
   instance-clean. One `wl_display`, one thread, one proxy graph per instance. No globals.
 - **`X11IdleSource`** — one per X display. Wraps XScreenSaver. Stateless: `GetIdleTimeXss()`
   already does `XOpenDisplay` → query → `XCloseDisplay` on every call, so the connection
-  does not outlive the call.
+  does not outlive the call. Note that this makes the source unable to detect its own death, not
+  immune to dying; see "Error handling".
 - **`ShellIdleSource`** — at most one, driven by `ShellMonitor`. Resolves per the shell rows
-  of the source-chain table. Not tied to any endpoint.
+  of the source-chain table. Not tied to any endpoint. Which shell row applies is not determined
+  by shell kind alone, so the pool pushes the two facts it cannot know — whether this is a
+  Wayland session, and whether mutter's `IdleMonitor` is on the bus — through a small
+  `ShellSourceContext` interface. The Wayland one is derived from the endpoint **candidates**,
+  not from live Wayland sources: a compositor we cannot read an idle time out of is still a
+  compositor, and inferring the protocol from whether a source validated sent a Plasma 6 Wayland
+  shell down the KDE-on-X11 arm, to a D-Bus method Plasma 6 had removed, once per tick.
 
-### `IdleSourcePool`
+### `IdleSourcePool` — `idle_source_pool.h/cpp`
 
-Owns all sources, reconciles endpoint sources against `EndpointDiscovery` and the shell
+Owns all sources, reconciles endpoint sources against `DiscoverEndpoints()` and the shell
 source against `ShellMonitor`, applies the aggregation rules, and evaluates the inhibition
 override ahead of them.
 
-The reconcile backstop interval is a named constant, `RECONCILE_INTERVAL_SECONDS = 30`.
+It has its own file, and that file is dependency-free: every piece of system contact arrives
+through factories injected by `idle_detect.cpp` and implemented in `idle_sources_system.cpp`. The
+pool's logic is the part of this design most likely to break in a way no compiler catches — a
+source torn down and rebuilt on unrelated churn, a validation failure cached so an endpoint never
+comes back, a shell value leaking into an endpoint's reading. Put in the system file, none of that
+could be tested; put here, all of it is.
+
+Reconcile runs **every main-loop iteration**, which is `check_interval_seconds`, currently fixed
+at 1 s and not configurable. There is no `RECONCILE_INTERVAL_SECONDS`, and no separate reconcile
+timer: the main loop reconciles and then resolves, so every reading comes from the sources that
+exist now. See "Triggers and data flow" for what bounds the cost of that.
 
 ### `GetIdleTimeSeconds()`
 
@@ -336,18 +401,49 @@ mechanism reasons about tty only as "no GUI endpoints found → return `-2`".
 
 ## Triggers and data flow
 
-No polling in steady state.
+Everything is driven by the reconcile pass, and the reconcile pass runs on the main loop.
 
-| Event | Source | Action |
+| Event | Detected by | Action |
 |---|---|---|
-| Shell name acquired/lost | `NameOwnerChanged` on user bus | Re-evaluate shell kind; rebuild affected chains |
-| Wayland socket created/removed | inotify on `$XDG_RUNTIME_DIR` | Add/evict Wayland source |
-| Connection error on a source | The source itself | Immediate teardown and evict |
-| Reconcile tick (~30 s) | Timer | Self-heal backstop; re-run full discovery union |
+| Shell name acquired/lost | `NameHasOwner` probe, each reconcile | Re-evaluate shell kind; create, replace or drop the shell source |
+| Wayland socket created/removed | `$XDG_RUNTIME_DIR` scan, each reconcile | Add/evict Wayland source |
+| X socket or `DISPLAY` appearing/disappearing | Socket scan and manager environment, each reconcile | Add/evict X11 source |
+| Source reports itself dead | `IdleSource::IsAlive()`, each reconcile | Immediate teardown; endpoint becomes newly-seen |
+| Source silently stops working | `DEAD_SOURCE_ERROR_THRESHOLD` consecutive `-1` resolutions | Teardown; endpoint becomes newly-seen |
+| Reconcile tick (1 s) | Main loop | Re-run the full discovery union and the shell probe |
 
-The reconcile tick is a backstop, not the mechanism. If every signal source fails, the
-daemon still converges within ~30 s rather than hanging in tty mode forever. That is the
-property the current wrapper lacks.
+**The reconcile tick is the mechanism, not a backstop.** The signal-driven design above it —
+`NameOwnerChanged` subscriptions, an inotify watch on `$XDG_RUNTIME_DIR` — was not built, and the
+polled equivalent is better here rather than merely simpler. Convergence is one second instead of
+thirty, there is one code path rather than a fast one plus a self-heal one that is exercised only
+when the fast one has already failed, and a daemon that starts before its GUI session — the case
+this design exists to fix — needs no special handling because the state it starts in is the same
+state it is in on every other tick.
+
+What was thirty seconds' job, bounding the cost of a session that never comes up, is done instead
+by **per-candidate exponential backoff**. A candidate that fails validation is retried after 1
+reconcile tick, then 2, 4, 8, and so on to a ceiling of `ENDPOINT_RETRY_BACKOFF_MAX_TICKS` = 64,
+with the ladder cleared the moment it validates or leaves the candidate set. That bounds a
+permanently-bad candidate at one attempt per 64 ticks forever, which is the case that actually
+costs something: a stale `wayland-9` socket with no listener produced 87 journal lines in 8
+seconds before this existed, and GNOME is not exotic — it advertises no `ext_idle_notifier_v1` at
+all, so every Wayland candidate in a GNOME session is a permanent validation failure. A slow
+global tick would have throttled the healthy path to pay for the broken one; the backoff charges
+the broken candidate alone.
+
+Two things a polled probe needed that a signal would not have:
+
+- **Shell disappearance is debounced.** `DetectShellKind()` is a synchronous `NameHasOwner`, and a
+  bus hiccup, a timeout under load or a session bus restart answers `NONE` for a session whose
+  shell is fine. In a shell-only session that is the only source there is, so acting on one such
+  answer empties the pool for a tick and flips the daemon to `event_detect`. An absence must be
+  observed `SHELL_ABSENCE_OBSERVATIONS_REQUIRED` = 3 times consecutively before it is acted on.
+  Only the disappearing direction is debounced; a shell appearing is acted on at once.
+- **Repeated-failure logging is throttled everywhere it can recur.** Anything that logs
+  unconditionally in this path logs once per second for the life of the process. Candidate
+  validation failures are reported on the backoff ladder; the shell source, which is not a
+  candidate and never passes through that ladder, counts its own consecutive failures and reports
+  them on an equivalent doubling ladder.
 
 **Startup is not special.** The daemon starts, runs discovery, and finds either zero or some
 endpoints. Zero is a normal state returning `-2` — not a failure, not a reason to exit. The
@@ -359,14 +455,34 @@ wrapper's reason to exist, and with it the cause of #12.
 - Per-endpoint failures are contained to that endpoint: evict, do not propagate.
 - Sentinels stay out of `min()` per the sentinel contract.
 - The pool never exits the process on discovery failure.
-- X11 sources cannot go stale by construction (open/query/close per call).
-- Wayland sources are evicted on the first protocol error.
+- Wayland sources report their own death through `IsAlive()`: the monitor thread clears its
+  availability flag on a hangup or on the removal of a global it depends on, and the pool tears
+  the source down and rebuilds it through validation.
+- X11 sources **cannot report** their own death, which is not the same as not having one. The
+  connection is stateless, so there is no stale state for `IsAlive()` to inspect and it answers
+  true forever. The endpoint underneath it is another matter, and the original claim that such a
+  source "needs no liveness eviction" was wrong: SIGKILLing an X server unlinks nothing, so its
+  socket stays in `/tmp/.X11-unix`, discovery goes on offering the candidate, and the source is
+  retained on the strength of the key alone. Measured on `:47`: 14 consecutive `-1` resolutions
+  with no teardown, and it would have continued for the life of the process.
+- The generic rule that covers both, and that lives in the pool rather than in any source: after
+  `DEAD_SOURCE_ERROR_THRESHOLD` = 3 consecutive `-1` resolutions an endpoint's source is torn
+  down and its endpoint treated as newly-seen, subject to the backoff ladder. Any reading clears
+  the run. Three rather than one, because a single failed reading is an ordinary transient and
+  the response to it is to try again. The two mechanisms are complementary: `IsAlive()` catches
+  sources that know they are dead, the error count catches sources that cannot tell.
 
-**Residual risk:** a *live but wrong* source — a stale `ext_idle_notifier` on a dead
-compositor, or an endpoint whose notifier never fires so idle reads 0 forever. Under `min()`
-either pins DC to paused permanently. Mitigation is strict liveness: any endpoint whose
-connection errors or whose socket disappears is torn down and evicted immediately rather
-than left reporting. This is the same discipline #11 concerns.
+**Residual risk:** a *live but wrong* source — an endpoint whose notifier never fires so idle
+reads 0 forever. Under `min()` that pins DC to paused permanently, and neither mechanism above
+sees it, because a source reporting 0 is by every available test working. Mitigation for the
+cases that ARE detectable is strict liveness: an endpoint whose socket disappears, whose source
+reports itself dead, or whose source stops producing readings is torn down rather than left
+reporting. This is the same discipline #11 concerns.
+
+**Suppressing `-2` is the failure mode to watch.** Every one of the above matters less for the
+readings it saves than for what a retained dead source does to `any_source_present`: while it
+exists, `-2` cannot fire, so `main()` never overrides `use_event_detect`, and a session with no
+readable idle source is served by nothing at all.
 
 ## Removals
 
@@ -376,13 +492,14 @@ than left reporting. This is the same discipline #11 concerns.
 - The `g_wayland_idle_monitor` global.
 
 `ExecStartPre=/bin/sleep 5` should also be reconsidered once startup is no longer
-order-sensitive.
+order-sensitive. It was, and is gone: with reconcile running every second and an empty pool as a
+normal starting state, there is nothing for the delay to wait for.
 
 ## Testing
 
 The registry-free design leaves a clean seam: the aggregation rule and the discovery union
-are both pure logic, testable without D-Bus, Wayland, or X11. This matters because the
-existing test binary deliberately links only `util.cpp` for that reason.
+are both pure logic, testable without D-Bus, Wayland, or X11. This matters because the test
+binary, which at the time linked only `util.cpp`, deliberately links no system libraries.
 
 **Unit, no dependencies:**
 
@@ -396,6 +513,11 @@ existing test binary deliberately links only `util.cpp` for that reason.
   one. This fails if the shell is ever fused into endpoint chains.
 - Discovery union with temp dirs: `*.lock` filtered, foreign-uid X sockets rejected,
   complementary hints merging, dedupe.
+- Pool reconciliation, which the seam turned out to make testable in full and which is where the
+  defects actually were: eviction on a disappeared endpoint, retention of a live one across
+  unrelated churn, teardown and rebuild on `IsAlive()` false and on a run of errors, the backoff
+  ladder and every way it resets, the shell disappearance debounce, and the Wayland-session flag
+  following candidates rather than live sources.
 
 **Manual / integration:**
 
@@ -403,9 +525,14 @@ existing test binary deliberately links only `util.cpp` for that reason.
 - Compositor kill and restart.
 - `vncserver :2` alongside a console session.
 - Nested weston for the N>1 Wayland path.
+- A **crashed** X server, `SIGKILL`ed so its socket is left behind. Distinct from a clean exit,
+  and the case that disproved "X11 sources need no liveness eviction".
 
-The test binary links the two new files. They depend on D-Bus/Wayland/X11 only behind the
-`IdleSource` interface, so the pure-logic parts remain linkable on their own.
+The test binary links `idle_source.cpp`, `session_discovery.cpp` and `idle_source_pool.cpp`, none
+of which include D-Bus, X11, Wayland or GLib headers; `idle_sources_system.cpp` holds everything
+that does and is never linked into it. The dependency-free three are where the logic worth
+asserting on lives, which is the point of drawing the line there rather than at the `IdleSource`
+interface alone.
 
 ## Sequencing
 
