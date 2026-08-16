@@ -3086,20 +3086,27 @@ int main(int argc, char* argv[])
             first_check = false; // Clear first check flag
         }
 
-        // Send Pipe Notification if not currently idle and should update event detect and
-        // effective last active time has changed. Note if using_event_detect_as_only_source is true, then
-        // the pipe message should not be sent as that would be circular and a waste of bandwidth on the
-        // pipe.
+        // Send Pipe Notification if not currently idle and effective last active time has changed. Note if
+        // using_event_detect_as_only_source is true, then the pipe message should not be sent as that would
+        // be circular and a waste of bandwidth on the pipe.
         //
         // With the addition of forced overrides, the message to propagate to event_detect must be sent when
         // a change in override state occurs, regardless of the effective last active time.
+        //
+        // should_update_event_detect gates the whole condition rather than only the activity disjunct. It
+        // used to be one term inside the first disjunct, which meant the control-state disjunct bypassed
+        // it: previous_control_state starts at UNKNOWN, so the very first iteration always saw a state
+        // change and always sent, and every later change sent too. A user who set update_event_detect=0
+        // got pipe traffic regardless. The config flag now genuinely gates every send, and the intent of
+        // the second disjunct is otherwise unchanged -- a control state CHANGE still forces a send, when
+        // updates are enabled.
         effective_last_active_time = GetUnixEpochTime() - idle_seconds;
 
-        if ((!is_currently_idle
-             && should_update_event_detect
-             && using_event_detect_as_only_source == false
-             && (effective_last_active_time != effective_last_active_time_prev))
-            || control_state != previous_control_state) {
+        if (should_update_event_detect
+            && ((!is_currently_idle
+                 && using_event_detect_as_only_source == false
+                 && (effective_last_active_time != effective_last_active_time_prev))
+                || control_state != previous_control_state)) {
             debug_log("INFO: %s: Sending active notification to pipe.", __func__);
 
             EventMessage::EventType event_type = EventMessage::USER_ACTIVE;
