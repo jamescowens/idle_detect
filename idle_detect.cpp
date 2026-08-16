@@ -1167,6 +1167,15 @@ bool WaylandIdleMonitor::StartInternal() {
         return false;
     }
 
+    // Clear the globals-lost flag now that setup has succeeded. OnGlobalRemoved() runs on this thread during
+    // InitializeWayland()'s roundtrips, so the flag may have been set by churn that the bound-pointer re-check
+    // above has already proven harmless: if both globals are bound at this instant the connection is healthy,
+    // whatever happened while it was being built. From here on the flag carries its intended meaning only -
+    // "a global went away while we were relying on it" - which is what the monitor thread tests. Without this
+    // the thread could break on its very first iteration and leave the monitor permanently unavailable despite
+    // a fully successful initialization.
+    m_globals_lost.store(false);
+
     // If Wayland setup okay, start the thread to run the event loop.
     //
     // m_initialized is set *before* the thread is launched, not after it. The monitor thread clears
@@ -1261,9 +1270,14 @@ bool WaylandIdleMonitor::InitializeWayland() {
         // Reset pointers for this attempt
         CleanupWayland(); // Ensure clean slate before connection attempt
 
-        // A global removed during a previous attempt's roundtrips must not condemn this attempt. If a global
-        // this monitor depends on is removed during this attempt, the bound-pointer check below fails the
-        // attempt anyway, so a successful return always leaves this flag clear.
+        // A global removed during a previous attempt's roundtrips must not condemn this attempt.
+        //
+        // This reset is NOT sufficient on its own to guarantee a clear flag on success. The global_remove
+        // callback runs on this (the main) thread during the two roundtrips below, which happen after this
+        // store. If the compositor removes a global and advertises a replacement across those roundtrips,
+        // HandleGlobal re-binds it (its guard is the cached pointer being null, which OnGlobalRemoved just
+        // made true) and the bound-pointer check below passes with the flag still set. StartInternal()
+        // therefore clears the flag again once the bound-pointer re-check passes.
         m_globals_lost.store(false);
 
         m_display = wl_display_connect(nullptr);

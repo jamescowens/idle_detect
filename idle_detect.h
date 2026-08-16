@@ -206,6 +206,9 @@ private:
     //! This method performs no cleanup of its own. Start() owns the teardown of both the Wayland resources and the
     //! interrupt pipe on failure. m_notification_timeout_ms must already be stored by Start() before this is called.
     //!
+    //! It clears m_globals_lost immediately before launching the monitor thread, so that global churn during
+    //! initialization cannot make the thread exit on its first iteration.
+    //!
     //! \return true if the monitor thread was started, false on any failure.
     //!
     bool StartInternal();
