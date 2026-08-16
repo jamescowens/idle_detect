@@ -254,10 +254,14 @@ std::vector<fs::path> Monitor::EnumerateEventDevices()
     }
 
     if (event_devices.empty()) {
-        error_log("%s: No pointing devices identified to monitor. Exiting.",
+        error_log("%s: No pointing devices identified to monitor.",
                   __func__);
 
-        Shutdown(1);
+        // Deliberately not fatal. This method is re-run every second by the monitor thread via
+        // UpdateEventDevices(), tty monitoring does not depend on pointing devices at all, and devices may be
+        // hotplugged at any time. Shutting down here killed the whole daemon on a mouseless or headless machine,
+        // and turned a transient unplug into a restart loop that the unit's start rate limit then converted into
+        // a permanently failed unit.
     }
 
     debug_log("INFO: %s: event_devices.size() = %u",
