@@ -257,8 +257,7 @@ std::vector<fs::path> Monitor::EnumerateEventDevices()
         error_log("%s: No pointing devices identified to monitor. Exiting.",
                   __func__);
 
-        g_exit_code = 1;
-        Shutdown();
+        Shutdown(1);
     }
 
     debug_log("INFO: %s: event_devices.size() = %u",
@@ -278,8 +277,7 @@ void Monitor::WriteLastActiveTimeToFile(const fs::path& last_active_time_filepat
                   __func__,
                   last_active_time_filepath);
 
-        g_exit_code = 1;
-        Shutdown();;
+        Shutdown(1);
     }
 
     output_file << m_last_active_time << std::endl;
@@ -290,8 +288,7 @@ void Monitor::WriteLastActiveTimeToFile(const fs::path& last_active_time_filepat
                   last_active_time_filepath);
         output_file.close();
 
-        g_exit_code = 1;
-        Shutdown();;
+        Shutdown(1);
     }
 }
 
@@ -1357,8 +1354,8 @@ void SetupDataDir(const fs::path& data_dir_path)
         error_log("%: Unable to create and/or set permissions on event_detect data directory at path: %s",
                   __func__,
                   data_dir_path);
-        g_exit_code = 1;
-        Shutdown();
+
+        Shutdown(1);
     }
 }
 
