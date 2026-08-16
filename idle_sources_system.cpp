@@ -95,11 +95,11 @@ WaylandIdleSource::~WaylandIdleSource()
     Stop();
 }
 
-bool WaylandIdleSource::Start(int notification_timeout_ms)
+bool WaylandIdleSource::Start(int notification_timeout_ms, int max_init_retries)
 {
     // A failed Start() has already torn down everything it constructed, so m_started stays false and Stop()
     // correctly has nothing to do.
-    m_started = m_monitor->Start(m_socket_name, notification_timeout_ms);
+    m_started = m_monitor->Start(m_socket_name, notification_timeout_ms, max_init_retries);
 
     return m_started;
 }

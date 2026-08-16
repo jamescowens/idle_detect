@@ -160,6 +160,16 @@ private:
 };
 
 //!
+//! \brief Wayland initialization retry budget that reproduces the historical startup behavior: fifteen
+//! attempts, two seconds apart, for roughly thirty seconds of waiting.
+//!
+//! That budget was sized for the single startup-time connection to the process's own session, where a
+//! compositor still coming up is worth waiting out. It is deliberately NOT the budget a per-candidate
+//! validator should use; see WaylandIdleSource::Start() in idle_sources_system.h.
+//!
+constexpr int WAYLAND_STARTUP_INIT_RETRIES = 15;
+
+//!
 //! \brief The WaylandIdleMonitor class implements the ext_idle_notifier_v1 protocol to monitor idle state in Wayland.
 //! The intent is to properly handle idle detection in Wayland sessions other than KDE or GNOME. This class is a singleton and has
 //! one instantiated thread. It is used to monitor the idle state of the Wayland session.
@@ -186,12 +196,21 @@ public:
     //! one monitor to coexist in the same process. An empty name is the historical behavior: the socket is
     //! derived from the WAYLAND_DISPLAY environment variable by libwayland itself.
     //!
+    //! The retry budget is a parameter rather than a constant because the cost of a failed Start() depends
+    //! entirely on the caller. A startup connection to the process's own session can afford to wait; a
+    //! validator deciding whether a discovered candidate is a usable endpoint cannot, because it blocks every
+    //! other candidate behind it and repeats the wait on every reconcile tick.
+    //!
     //! \param socket_name Wayland socket to connect to (e.g. "wayland-0"). Empty means use the WAYLAND_DISPLAY
     //!        environment variable.
     //! \param notification_timeout_ms Idle notification threshold in milliseconds.
+    //! \param max_init_retries Number of connect-and-bind attempts before giving up. Values below one are
+    //!        treated as one. Defaults to the historical startup budget so existing callers are unaffected.
     //! \return true if the monitor was started (or was already running), false on failure.
     //!
-    bool Start(const std::string& socket_name, int notification_timeout_ms);
+    bool Start(const std::string& socket_name,
+               int notification_timeout_ms,
+               int max_init_retries = WAYLAND_STARTUP_INIT_RETRIES);
 
     //! \brief Stops the Wayland idle monitor and cleans up resources.
     void Stop();
@@ -285,9 +304,11 @@ private:
     //! It clears m_globals_lost immediately before launching the monitor thread, so that global churn during
     //! initialization cannot make the thread exit on its first iteration.
     //!
+    //! \param max_init_retries Retry budget to hand to InitializeWayland(). Passed through rather than stored,
+    //!        since nothing after initialization needs it.
     //! \return true if the monitor thread was started, false on any failure.
     //!
-    bool StartInternal();
+    bool StartInternal(int max_init_retries);
 
     //!
     //! \brief Private method that reaps a monitor thread which exited on its own, returning the object to the
@@ -304,8 +325,22 @@ private:
     //!
     bool ReapFailedThread();
 
+    //!
     //! \brief Private method to initialize Wayland and set up the idle notification.
-    bool InitializeWayland();
+    //!
+    //! Each attempt connects to the socket, binds the registry, and performs two roundtrips looking for
+    //! wl_seat and ext_idle_notifier_v1. Failing to find the globals is retried the same way a failed connect
+    //! is, because a compositor that has not yet advertised them is indistinguishable from one that never
+    //! will. That is precisely why the budget belongs to the caller: a compositor which does not implement
+    //! ext_idle_notifier_v1 at all connects successfully and roundtrips successfully on every attempt, so the
+    //! full budget is spent every single time.
+    //!
+    //! The inter-attempt wait polls g_shutdown_requested every 100 ms and aborts on it.
+    //!
+    //! \param max_retries Number of attempts to make. Values below one are treated as one.
+    //! \return true if the connection was established and both required globals were bound.
+    //!
+    bool InitializeWayland(int max_retries);
 
     //!
     //! \brief Private method to destroy (or release, depending on the bound version) the wl_seat proxy and

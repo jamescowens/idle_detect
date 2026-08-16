@@ -1115,7 +1115,7 @@ WaylandIdleMonitor::~WaylandIdleMonitor() {
 }
 
 // Start method
-bool WaylandIdleMonitor::Start(const std::string& socket_name, int notification_timeout_ms) {
+bool WaylandIdleMonitor::Start(const std::string& socket_name, int notification_timeout_ms, int max_init_retries) {
     // Use log for start/stop
     normal_log("INFO: %s: Starting Wayland idle monitor on socket %s.",
                __func__,
@@ -1161,7 +1161,7 @@ bool WaylandIdleMonitor::Start(const std::string& socket_name, int notification_
     // Perform the fallible setup. StartInternal() does no cleanup of its own; the teardown below is the single
     // failure path for everything it may have partially constructed. Note that StartInternal() sets
     // m_initialized before it launches the monitor thread, so the store below clears it again on failure.
-    if (!StartInternal()) {
+    if (!StartInternal(max_init_retries)) {
         CleanupWayland();
         if (m_interrupt_pipe_fd[0] != -1) { close(m_interrupt_pipe_fd[0]); m_interrupt_pipe_fd[0] = -1; }
         if (m_interrupt_pipe_fd[1] != -1) { close(m_interrupt_pipe_fd[1]); m_interrupt_pipe_fd[1] = -1; }
@@ -1176,10 +1176,10 @@ bool WaylandIdleMonitor::Start(const std::string& socket_name, int notification_
 }
 
 // StartInternal method. This performs no cleanup; Start() owns the failure teardown.
-bool WaylandIdleMonitor::StartInternal() {
+bool WaylandIdleMonitor::StartInternal(int max_init_retries) {
     // Initialize Wayland connection, get initial state, and subscribe
     // Includes retries internally now
-    if (!InitializeWayland()) {
+    if (!InitializeWayland(max_init_retries)) {
         error_log("%s: Failed to initialize Wayland or find required protocols after retries.", __func__);
         return false;
     }
@@ -1367,12 +1367,15 @@ void WaylandIdleMonitor::ResetWaylandState() {
 }
 
 // InitializeWayland (with simplified retry logic focusing on connect and roundtrip check)
-bool WaylandIdleMonitor::InitializeWayland() {
-    const int MAX_INIT_RETRIES = 15; // Example retries
+bool WaylandIdleMonitor::InitializeWayland(int max_retries) {
     const int INIT_RETRY_DELAY_SECONDS = 2; // Example delay
 
-    for (int attempt = 1; attempt <= MAX_INIT_RETRIES; ++attempt) {
-        debug_log("INFO: %s: Wayland initialization attempt %d/%d...", __func__, attempt, MAX_INIT_RETRIES);
+    // A caller asking for zero or fewer attempts still means "try", not "do nothing". Clamping here rather
+    // than rejecting keeps every caller's failure path identical to a genuine connection failure.
+    const int max_init_retries = (max_retries > 1) ? max_retries : 1;
+
+    for (int attempt = 1; attempt <= max_init_retries; ++attempt) {
+        debug_log("INFO: %s: Wayland initialization attempt %d/%d...", __func__, attempt, max_init_retries);
 
         // Reset pointers for this attempt
         CleanupWayland(); // Ensure clean slate before connection attempt
@@ -1439,7 +1442,7 @@ bool WaylandIdleMonitor::InitializeWayland() {
         } // end display check
 
         // --- Wait before retrying if not the last attempt ---
-        if (attempt < MAX_INIT_RETRIES) {
+        if (attempt < max_init_retries) {
             debug_log("INFO: %s: Waiting %d seconds before next Wayland init attempt...", __func__, INIT_RETRY_DELAY_SECONDS);
             // Check for shutdown request to avoid waiting unnecessarily
             for (int i = 0; i < INIT_RETRY_DELAY_SECONDS * 10; ++i) { // Check every 100ms
@@ -1455,7 +1458,7 @@ bool WaylandIdleMonitor::InitializeWayland() {
     error_log("%s: Failed to initialize Wayland on socket %s after %d attempts.",
               __func__,
               SocketNameForLog(m_socket_name),
-              MAX_INIT_RETRIES);
+              max_init_retries);
     CleanupWayland(); // Final cleanup after all attempts fail
     return false;
 }
@@ -2079,7 +2082,10 @@ int main(int argc, char* argv[])
         int notification_timeout_ms = 1000;
         debug_log("INFO: %s: Attempting Wayland idle monitor (timeout %dms)...", __func__, notification_timeout_ms);
         // An empty socket name keeps the historical WAYLAND_DISPLAY-derived behavior. The discovered endpoint
-        // supplies the real name once the endpoint pool drives the monitors.
+        // supplies the real name once the endpoint pool drives the monitors. The retry budget is likewise
+        // defaulted rather than passed, which keeps this one-shot startup connection on the historical
+        // WAYLAND_STARTUP_INIT_RETRIES budget: this call runs once, so waiting out a compositor that is still
+        // coming up costs nothing that a per-tick validator would have to pay again.
         if (g_wayland_idle_monitor.Start(std::string {}, notification_timeout_ms)) {
             debug_log("INFO: %s: Wayland idle monitor started successfully.", __func__);
             wayland_monitor_started = true; // Track success

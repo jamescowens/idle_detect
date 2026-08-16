@@ -51,10 +51,22 @@ public:
     //!
     //! \brief Connects to the socket and starts the monitor thread. A failure here means the candidate
     //! endpoint is not real, which is how discovery candidates are validated.
+    //!
+    //! The retry budget defaults to a single attempt, unlike WaylandIdleMonitor::Start(), whose default
+    //! preserves the fifteen-attempt startup budget. That budget is wrong for a validator in two ways. The
+    //! pool re-runs discovery on every reconcile tick and calls this again for any candidate that is still
+    //! offered, so the reconcile loop already IS the retry loop and an internal one only duplicates it. And
+    //! because this call is synchronous, every second spent retrying one candidate is a second in which no
+    //! other endpoint is validated or read. The failure that makes this concrete is a compositor which does
+    //! not implement ext_idle_notifier_v1 at all: the connect and both roundtrips succeed, the globals never
+    //! appear, and the entire budget is spent on every tick forever rather than once.
+    //!
     //! \param notification_timeout_ms Idle notification threshold in milliseconds.
+    //! \param max_init_retries Connect-and-bind attempts before declaring the candidate unusable. Exposed so
+    //!        the pool can tune it without reaching into the monitor.
     //! \return true if the monitor was started.
     //!
-    bool Start(int notification_timeout_ms);
+    bool Start(int notification_timeout_ms, int max_init_retries = 1);
 
     //!
     //! \brief Stops the monitor and releases its Wayland resources. Idempotent, and a no-op if Start() was
