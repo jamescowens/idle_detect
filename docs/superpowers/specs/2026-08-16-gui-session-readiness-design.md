@@ -187,13 +187,22 @@ to `event_detect` unconditionally, overriding the `use_event_detect` config sett
 
 | Condition | Result |
 |---|---|
-| Shell reports inhibited | `0` — short-circuit, before any source is consulted |
+| Shell reports inhibited | `0` — overrides every resolved value |
 | ≥1 source yields a value ≥ 0 | `min()` over those values only |
 | Sources exist but all yield `-1` | `-1` (error) |
 | No endpoints and no shell | `-2` (defer to `event_detect`) |
 
 "No endpoints and no shell" is the only path to `-2`. A shell present with no endpoints, or
 endpoints present with no shell, both yield a real result or `-1`.
+
+**As implemented, inhibition overrides rather than short-circuits.** `IdleSourcePool::GetIdleSeconds()`
+resolves every source first and then passes the results to `AggregateIdleSeconds()`, which returns
+`0` when inhibited regardless of what they said. The returned value is identical either way, so the
+contract above holds; what differs is that sources are still polled while inhibited. That costs a
+D-Bus round trip or an `XOpenDisplay` per tick during an inhibition, which is accepted deliberately:
+resolving unconditionally is what keeps the per-endpoint error counters and backoff ladders advancing,
+so a source that dies during a long inhibition is still noticed and evicted rather than discovered
+stale the moment the inhibition lifts.
 
 **When `-2` can and cannot fire.** `-2` is a statement about the *source set*, not about the
 readings: it fires only when the pool holds nothing at all. `-1` is a statement about the readings:
@@ -290,7 +299,7 @@ XAUTHORITY hint, the log throttles — is new behaviour rather than behaviour mo
 the Wayland monitor and the X11 query stayed put. Nothing was extracted from it to make it smaller.
 
 The split that did get made was drawn on a different line, and it is the one worth keeping:
-anything that makes system contact — D-Bus via GIO, Wayland, X11 — is confined to
+the *new* code that makes system contact — D-Bus via GIO, Wayland, X11 — is confined to
 `idle_sources_system.h/cpp`, and everything else is kept free of those dependencies so it links
 into `idle_detect_tests`, which links none of those libraries. That is why `ShellMonitor` and the
 three concrete `IdleSource` implementations live in the system file while the interface, the
@@ -504,9 +513,13 @@ Two things a polled probe needed that a signal would not have:
 
   The shape is written once, as `FailureReportThrottle` in `util.*`, which is in the test binary
   and therefore has tests; the two older ladders predate it and still carry their own copies. The
-  first occurrence of each condition stays at `ERROR` so a genuine fault is immediately visible,
-  the reports after it are follow-ups at normal level, and everything suppressed is debug material
-  rather than discarded.
+  first occurrence of a main-loop condition stays at `ERROR` so a genuine fault is immediately
+  visible, the reports after it are follow-ups at normal level, and everything suppressed is debug
+  material rather than discarded. The two older ladders differ: `IdleSourcePool::RecordCandidateFailure()`
+  and `ShellIdleSource`'s query ladder both report their *first* failure at normal level, not `ERROR`,
+  because a candidate that fails to validate usually means "this is not an endpoint" rather than
+  "something is broken" — on GNOME, a `wayland-*` socket with no `ext_idle_notifier_v1` is the normal
+  case, not a fault.
 
   Throttling is not the only tool. Per-tick helpers whose caller already reports a counted,
   throttled summary log their own detail at debug level instead — `GetIdleTimeKdeDBus()`,
@@ -655,7 +668,8 @@ interface alone.
 - Changes to `event_detect`, its tty monitoring, or the shared-memory contract.
 - The BOINC shmem layout, which is frozen at `int64_t[2]`.
 - Non-systemd init systems. The project already ships systemd units exclusively.
-- Adding `event_count_files_path` to `idle_detect.conf.in`. That is a real consistency gap
-  reported in #12 and should be fixed separately, but it is not the cause of the reported
-  symptom: `ProcessArgs()` defaults it to `/run/event_detect` and `Config::GetArgString`
-  returns the default cleanly on a missing key.
+**Done anyway, though scoped out at design time:** adding `event_count_files_path` to
+`idle_detect.conf.in`. It is a real consistency gap reported in #12 — `event_detect.conf.in` has
+always carried the line — but it is *not* the cause of the reported symptom, since `ProcessArgs()`
+defaults it to `/run/event_detect` and `Config::GetArgString` returns the default cleanly on a
+missing key. It was small enough to fold in rather than defer (commit `0ea4c34`).
