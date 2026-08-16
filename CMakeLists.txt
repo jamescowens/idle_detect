@@ -112,6 +112,10 @@ set(SOURCES_IDLE_DETECT
     "idle_source.cpp"
     "session_discovery.h"
     "session_discovery.cpp"
+    # idle_sources_system.* makes the actual D-Bus/Wayland/X11 contact and must never be added to
+    # idle_detect_tests, which deliberately links none of those libraries.
+    "idle_sources_system.h"
+    "idle_sources_system.cpp"
     "util.cpp"
     "idle_detect.cpp"
     # No generated Wayland sources needed anymore

@@ -359,11 +359,8 @@ static bool IsTtySession() {
            (wayland_display == nullptr || strlen(wayland_display) == 0);
 }
 
-//!
-//! \brief Helper function to get idle time from KDE DBus interface for KDE sessions, either X or Wayland.
-//! \return int64_t idle time in seconds. -1 for error.
-//!
-static int64_t GetIdleTimeKdeDBus() {
+// Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this for the shell idle source.
+int64_t GetIdleTimeKdeDBus() {
     debug_log("INFO: %s: Querying org.kde.ksmserver GetSessionIdleTime via D-Bus.", __func__);
 
     GDBusConnection* connection = nullptr;
@@ -426,14 +423,12 @@ static int64_t GetIdleTimeKdeDBus() {
     return idle_time_seconds;
 }
 
-//!
-//! \brief Checks for screen idle inhibition on KDE Plasma 6 via the PowerManagement PolicyAgent D-Bus interface.
-//! This is needed because ext_idle_notifier_v1 may not reflect D-Bus-level inhibitions (e.g. from video players
-//! using org.freedesktop.ScreenSaver.Inhibit). The HasInhibition(1) call checks for ChangeScreenSettings inhibitions
-//! (type 1), which prevent screen idle/blanking.
-//! \return true if screen idle is inhibited, false otherwise (including on D-Bus errors).
-//!
-static bool CheckKdeInhibition() {
+// Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this from ShellMonitor.
+//
+// This is needed because ext_idle_notifier_v1 may not reflect D-Bus-level inhibitions (e.g. from video players
+// using org.freedesktop.ScreenSaver.Inhibit). The HasInhibition(1) call checks for ChangeScreenSettings
+// inhibitions (type 1), which prevent screen idle/blanking.
+bool CheckKdeInhibition() {
     debug_log("INFO: %s: Checking KDE screen idle inhibitions via PolicyAgent D-Bus HasInhibition.", __func__);
 
     GDBusConnection* connection = nullptr;
@@ -489,11 +484,8 @@ static bool CheckKdeInhibition() {
     return is_inhibited;
 }
 
-//!
-//! \brief This helper function checks for idle inhibited on Gnome sessions and works for both Gnome X and Wayland.
-//! \return
-//!
-static bool CheckGnomeInhibition() {
+// Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this from ShellMonitor.
+bool CheckGnomeInhibition() {
     // This function assumes it might be called even if not strictly a GNOME session,
     // relying on the D-Bus call to fail gracefully if the service/method isn't present.
     debug_log("INFO: %s: Checking GNOME session inhibitions via D-Bus IsInhibited.", __func__);
@@ -554,12 +546,10 @@ static bool CheckGnomeInhibition() {
     return is_inhibited;
 }
 
-//!
-//! \brief This is the D-Bus implementation for Gnome Mutter. Note that it does NOT take into account
-//! idle inhibit, unlike the corresponding KDE D-Bus call.
-//! \return int64_t idle time in seconds. -1 for error.
-//!
-static int64_t GetIdleTimeWaylandGnomeViaDBus() {
+// Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this for the shell idle source.
+//
+// Note that this does NOT take idle inhibit into account, unlike the corresponding KDE D-Bus call.
+int64_t GetIdleTimeWaylandGnomeViaDBus() {
     // Assumes IsGnomeSession() has already confirmed this is appropriate to call
     debug_log("INFO: %s: Querying GNOME Mutter IdleMonitor via D-Bus.",
               __func__);
@@ -660,17 +650,23 @@ static bool IsKdeSession() {
     // return (kdeSession != nullptr && strlen(kdeSession) > 0);
 }
 
-//!
-//! \brief Helper function for X11 XScreenSaver query
-//! \return int64_t idle time in seconds. -1 for error.
-//!
-static int64_t GetIdleTimeXss() {
-    debug_log("INFO: %s: Using XScreenSaver.", __func__);
-    Display* display = nullptr;
+// Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this from X11IdleSource.
+//
+// The local Display* is named x_display rather than display so it does not shadow the display name parameter.
+int64_t GetIdleTimeXss(const std::string& display) {
+    debug_log("INFO: %s: Using XScreenSaver on display '%s'.",
+              __func__,
+              display.empty() ? "<default>" : display.c_str());
+
+    Display* x_display = nullptr;
+
+    // A null name is libX11's "use the DISPLAY environment variable", which is the historical behavior and
+    // what an empty parameter continues to mean.
+    const char* display_name = display.empty() ? nullptr : display.c_str();
 
     for (int attempt = 1; attempt <= MAX_X_CONNECT_RETRIES; ++attempt) {
-        display = XOpenDisplay(nullptr);
-        if (display) break;
+        x_display = XOpenDisplay(display_name);
+        if (x_display) break;
         if (attempt < MAX_X_CONNECT_RETRIES) {
             error_log("WARNING: %s: Could not open X display (attempt %d/%d). Retrying...", __func__, attempt, MAX_X_CONNECT_RETRIES);
             std::this_thread::sleep_for(std::chrono::milliseconds(X_RETRY_DELAY_MS));
@@ -681,22 +677,22 @@ static int64_t GetIdleTimeXss() {
     }
 
     int event_base, error_base;
-    if (!XScreenSaverQueryExtension(display, &event_base, &error_base)) {
+    if (!XScreenSaverQueryExtension(x_display, &event_base, &error_base)) {
         error_log("%s: XScreenSaver extension unavailable.", __func__);
-        XCloseDisplay(display);
+        XCloseDisplay(x_display);
         return -1;
     }
     XScreenSaverInfo* info = XScreenSaverAllocInfo();
     if (!info) {
         error_log("%s: Could not allocate XScreenSaverInfo.", __func__);
-        XCloseDisplay(display);
+        XCloseDisplay(x_display);
         return -1;
     }
-    Window root = DefaultRootWindow(display);
-    XScreenSaverQueryInfo(display, root, info);
+    Window root = DefaultRootWindow(x_display);
+    XScreenSaverQueryInfo(x_display, root, info);
     int64_t idle_time_ms = info->idle;
     XFree(info);
-    XCloseDisplay(display);
+    XCloseDisplay(x_display);
     int64_t idle_time_seconds = idle_time_ms / 1000;
     debug_log("INFO: %s: XScreenSaver reported: %lld ms (%lld seconds)", __func__, (int64_t)idle_time_ms, (int64_t)idle_time_seconds);
     return idle_time_seconds;
@@ -779,7 +775,8 @@ int64_t GetIdleTimeSeconds() {
             return 0; // Treat as active if inhibited
         } else {
             // Not inhibited, get input idle time from XScreenSaver
-            return GetIdleTimeXss(); // Returns >= 0 on success, -1 on error
+            // Empty display preserves the environment-derived behavior this call site has always had.
+            return GetIdleTimeXss(std::string {}); // Returns >= 0 on success, -1 on error
         }
     }
 }

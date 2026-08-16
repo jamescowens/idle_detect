@@ -25,6 +25,50 @@ namespace IdleDetect {
 int64_t GetIdleTimeSeconds();
 
 //!
+//! \brief Queries KDE ksmserver for session idle time via the org.freedesktop.ScreenSaver interface.
+//!
+//! ksmserver handles inhibition internally by periodically resetting the idle time it reports, so callers
+//! must NOT add a separate inhibition check on top of this value. Note that Plasma 6 removed
+//! GetSessionIdleTime on Wayland, where this call returns an error rather than a value.
+//!
+//! \return Idle seconds >= 0, or -1 on error.
+//!
+int64_t GetIdleTimeKdeDBus();
+
+//!
+//! \brief Queries GNOME Mutter's IdleMonitor for input idle time. Works on both GNOME X11 and Wayland.
+//!
+//! Unlike the KDE call above this does NOT account for idle inhibition, which must be checked separately
+//! with CheckGnomeInhibition().
+//!
+//! \return Idle seconds >= 0, or -1 on error.
+//!
+int64_t GetIdleTimeWaylandGnomeViaDBus();
+
+//!
+//! \brief Checks whether KDE reports screen idle inhibition via the PowerManagement PolicyAgent.
+//! \return true if screen idle is inhibited, false otherwise (including on D-Bus errors).
+//!
+bool CheckKdeInhibition();
+
+//!
+//! \brief Checks whether GNOME reports session idle inhibition. Works on both GNOME X11 and Wayland.
+//! \return true if inhibited, false otherwise (including on D-Bus errors).
+//!
+bool CheckGnomeInhibition();
+
+//!
+//! \brief Queries XScreenSaver for the idle time of a specific X display.
+//!
+//! The connection is opened and closed within the call, so this is stateless and cannot go stale.
+//!
+//! \param display X display string, e.g. ":1". Empty uses the DISPLAY environment variable, which is the
+//!        historical behavior.
+//! \return Idle seconds >= 0, or -1 on error.
+//!
+int64_t GetIdleTimeXss(const std::string& display);
+
+//!
 //! \brief The IdleDetectControlMonitor class is a singleton that monitors the idle_detect control pipe. It is used to
 //! allow the override of the state of the idle_detect monitor. It is a singleton and has one instantiated thread. Note
 //! that a message of the override is propagated to event_detect.
