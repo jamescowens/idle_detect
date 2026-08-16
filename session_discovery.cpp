@@ -165,7 +165,10 @@ std::optional<Endpoint> ResolveWaylandHint(const fs::path& runtime_dir, const st
 }
 
 //!
-//! \brief Adds an X display hint to the set if it normalizes successfully.
+//! \brief Adds an X display to the set if it normalizes successfully.
+//!
+//! For the socket directory scan only, where the caller has already established that the socket exists,
+//! is a socket, and is ours. Hints go through InsertX11HintCandidate() instead.
 //!
 void InsertX11Candidate(std::set<Endpoint>& endpoints, const std::string& raw)
 {
@@ -174,6 +177,60 @@ void InsertX11Candidate(std::set<Endpoint>& endpoints, const std::string& raw)
     if (normalized.has_value()) {
         endpoints.insert(Endpoint{EndpointKind::X11, *normalized});
     }
+}
+
+//!
+//! \brief Adds an X display named by a hint to the set, if it normalizes AND a socket for it is really
+//! there.
+//!
+//! Normalizing a string proves only that somebody once wrote it down. DISPLAY=:1 sitting in the process
+//! environment or in the systemd user manager's Environment property outlives the X server it was exported
+//! for, and nothing ever removes it, so without this check a display that has not existed since the last
+//! logout stays in the candidate set for the life of the daemon, costing one validation attempt per
+//! backoff interval forever. The Wayland hint path has always required its socket to exist; this is the
+//! same requirement, applied on the side where it was missing.
+//!
+//! THE OWNERSHIP FILTER IS DELIBERATELY NOT APPLIED HERE, and that asymmetry is the entire reason the two
+//! X11 hint sources are unioned rather than one being dropped in favour of the other. The socket directory
+//! scan enumerates /tmp/.X11-unix, which is world visible and holds other users' sockets, so it must
+//! reject anything not owned by us -- and that correctly rejects the ROOT-OWNED socket a display manager
+//! started X server leaves behind for a session that is nonetheless ours to read. The environment hint
+//! exists precisely to recover that display. Re-applying the uid filter to the hint would reject it a
+//! second time and delete the only reason the hint is consulted at all. So: existence yes, S_ISSOCK yes,
+//! ownership NO. What ultimately decides whether the display is usable is the connect the candidate is
+//! validated by, which answers the authorization question properly rather than by inference from a socket's
+//! owner.
+//!
+//! With no socket directory configured the hint is admitted unchecked. An input that cannot be evaluated
+//! must not be evaluated approximately, which is the same rule DiscoverEndpoints() follows when it skips
+//! the socket scan for want of a uid, and ResolveWaylandHint() follows when it drops a relative hint for
+//! want of a runtime directory. In production the directory is always supplied; the unchecked path is what
+//! keeps a caller that supplies hints and nothing else -- a unit test exercising hint handling alone --
+//! testing hint handling rather than the filesystem.
+//!
+//! \param endpoints set to add to
+//! \param x11_socket_dir directory X sockets live in, or empty if it is unknown
+//! \param raw display specifier from a hint
+//!
+void InsertX11HintCandidate(std::set<Endpoint>& endpoints, const fs::path& x11_socket_dir, const std::string& raw)
+{
+    std::optional<std::string> normalized = NormalizeX11Display(raw);
+
+    if (!normalized.has_value()) {
+        return;
+    }
+
+    if (!x11_socket_dir.empty()) {
+        // NormalizeX11Display() guarantees the ":N" form, so dropping the colon leaves the display number,
+        // and "X" + that is the socket basename the scan matches on.
+        const fs::path socket_path = x11_socket_dir / ("X" + normalized->substr(1));
+
+        if (!IsSocket(socket_path)) {
+            return;
+        }
+    }
+
+    endpoints.insert(Endpoint{EndpointKind::X11, *normalized});
 }
 
 } // anonymous namespace
@@ -288,12 +345,15 @@ std::set<Endpoint> DiscoverEndpoints(const DiscoveryHints& hints)
         }
     }
 
+    // Both hint sources are required to name a socket that is really there, without regard to who owns it.
+    // See InsertX11HintCandidate() for why the ownership half of the scan's filter must not be repeated
+    // here: a root-owned socket rejected by the scan is exactly the display these hints exist to recover.
     for (const std::string& display : hints.m_env_displays) {
-        InsertX11Candidate(endpoints, display);
+        InsertX11HintCandidate(endpoints, hints.m_x11_socket_dir, display);
     }
 
     for (const std::string& display : hints.m_logind_displays) {
-        InsertX11Candidate(endpoints, display);
+        InsertX11HintCandidate(endpoints, hints.m_x11_socket_dir, display);
     }
 
     return endpoints;

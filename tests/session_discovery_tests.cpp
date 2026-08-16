@@ -582,14 +582,16 @@ TEST(DiscoverEndpoints, UnsetUidHintStillHonorsDisplayHints)
 
     DiscoveryHints hints;
     hints.m_x11_socket_dir = x11.Path();
-    hints.m_env_displays = {":4"};
+    hints.m_env_displays = {":1"};
     // m_uid deliberately left at its default.
 
-    // Skipping the socket scan must not disable the hints that carry no ownership question.
+    // Skipping the socket scan must not disable the hints that carry no ownership question. The socket
+    // exists, so the hint's own existence requirement is satisfied; the uid is the only thing missing, and
+    // it is not the hint path's business.
     auto endpoints = DiscoverEndpoints(hints);
 
     ASSERT_EQ(endpoints.size(), 1u);
-    EXPECT_EQ(endpoints.begin()->m_identifier, ":4");
+    EXPECT_EQ(endpoints.begin()->m_identifier, ":1");
 }
 
 TEST(DiscoverEndpoints, UsesEnvDisplayHintWhenSocketIsNotOurs)
@@ -608,7 +610,60 @@ TEST(DiscoverEndpoints, UsesEnvDisplayHintWhenSocketIsNotOurs)
     EXPECT_EQ(endpoints.begin()->m_identifier, ":1");
 }
 
-TEST(DiscoverEndpoints, UnionsHintsAndDeduplicates)
+//
+// X11 hints must name a socket that is really there. A DISPLAY value is exported when a graphical
+// session starts and never unexported when it ends, so on its own it is evidence that a display once
+// existed, not that one exists now.
+//
+
+TEST(DiscoverEndpoints, AdmitsEnvDisplayHintWhoseSocketExists)
+{
+    TempDir x11;
+    MakeSocket(x11.Path() / "X7");
+
+    DiscoveryHints hints;
+    hints.m_x11_socket_dir = x11.Path();
+    hints.m_uid = getuid();
+    hints.m_env_displays = {":7"};
+
+    auto endpoints = DiscoverEndpoints(hints);
+
+    ASSERT_EQ(endpoints.size(), 1u);
+    EXPECT_EQ(endpoints.begin()->m_kind, EndpointKind::X11);
+    EXPECT_EQ(endpoints.begin()->m_identifier, ":7");
+}
+
+TEST(DiscoverEndpoints, RejectsEnvDisplayHintWithNoSocket)
+{
+    TempDir x11;
+
+    // Nothing at all in the socket directory: no X server has ever run for this display. The hint is the
+    // stale export left behind by the last session.
+    DiscoveryHints hints;
+    hints.m_x11_socket_dir = x11.Path();
+    hints.m_uid = getuid();
+    hints.m_env_displays = {":7"};
+
+    // Admitting it costs a validation attempt on the backoff ladder for the life of the daemon, against a
+    // display that provably cannot answer.
+    EXPECT_TRUE(DiscoverEndpoints(hints).empty());
+}
+
+TEST(DiscoverEndpoints, RejectsLogindDisplayHintWithNoSocket)
+{
+    TempDir x11;
+
+    DiscoveryHints hints;
+    hints.m_x11_socket_dir = x11.Path();
+    hints.m_uid = getuid();
+    hints.m_logind_displays = {":7"};
+
+    // Same requirement on the other hint source. logind keeps a Display property on a session object that
+    // outlives the X server just as readily.
+    EXPECT_TRUE(DiscoverEndpoints(hints).empty());
+}
+
+TEST(DiscoverEndpoints, RejectsAStaleDisplayHintWhileKeepingTheLiveOne)
 {
     TempDir x11;
     MakeSocket(x11.Path() / "X1");
@@ -616,9 +671,91 @@ TEST(DiscoverEndpoints, UnionsHintsAndDeduplicates)
     DiscoveryHints hints;
     hints.m_x11_socket_dir = x11.Path();
     hints.m_uid = getuid();
-    hints.m_env_displays = {":1"};       // duplicate of the socket
-    hints.m_logind_displays = {":2"};    // additional, from optional enrichment
 
+    // A machine that has been logged in and out of a few times accumulates these. Only :1 is real.
+    hints.m_env_displays = {":1", ":3"};
+    hints.m_logind_displays = {":5"};
+
+    auto endpoints = DiscoverEndpoints(hints);
+
+    ASSERT_EQ(endpoints.size(), 1u);
+    EXPECT_EQ(endpoints.begin()->m_identifier, ":1");
+}
+
+TEST(DiscoverEndpoints, AdmitsHintForASocketTheUidFilterRejects)
+{
+    TempDir x11;
+    MakeSocket(x11.Path() / "X0");
+
+    DiscoveryHints hints;
+    hints.m_x11_socket_dir = x11.Path();
+
+    // The socket belongs to getuid(); pointing the filter at a different uid makes the scan see it exactly
+    // as it sees the ROOT-OWNED socket a display manager started X server leaves in /tmp/.X11-unix. The
+    // scan is right to reject that -- the directory is world visible and it cannot tell that socket from
+    // another user's -- and this hint is the only thing left that can recover the display.
+    hints.m_uid = getuid() + 1;
+    hints.m_env_displays = {":0"};
+
+    auto endpoints = DiscoverEndpoints(hints);
+
+    // If the socket existence check ever grows an ownership test, this is the test that fails, and the
+    // display manager case -- which is the whole reason the environment hint is unioned with the scan --
+    // silently stops working. Existence and S_ISSOCK yes; ownership no.
+    ASSERT_EQ(endpoints.size(), 1u);
+    EXPECT_EQ(endpoints.begin()->m_kind, EndpointKind::X11);
+    EXPECT_EQ(endpoints.begin()->m_identifier, ":0");
+}
+
+TEST(DiscoverEndpoints, RejectsHintNamingSomethingThatIsNotASocket)
+{
+    TempDir x11;
+
+    // Named exactly like an X socket and owned by us, so the file type check is the only guard that can
+    // reject it.
+    std::ofstream(x11.Path() / "X7").put('\n');
+
+    DiscoveryHints hints;
+    hints.m_x11_socket_dir = x11.Path();
+    hints.m_uid = getuid();
+    hints.m_env_displays = {":7"};
+
+    EXPECT_TRUE(DiscoverEndpoints(hints).empty());
+}
+
+TEST(DiscoverEndpoints, AdmitsDisplayHintsUncheckedWithNoSocketDir)
+{
+    DiscoveryHints hints;
+    // m_x11_socket_dir deliberately left empty.
+    hints.m_uid = getuid();
+    hints.m_env_displays = {":3"};
+    hints.m_logind_displays = {":4"};
+
+    // An input that cannot be evaluated must not be evaluated approximately, which is the same rule that
+    // skips the socket scan without a uid. With no directory to look in there is nothing to check against,
+    // and rejecting on that basis would discard every hint rather than only the stale ones.
+    auto endpoints = DiscoverEndpoints(hints);
+
+    ASSERT_EQ(endpoints.size(), 2u);
+    EXPECT_EQ(endpoints.count((Endpoint{EndpointKind::X11, ":3"})), 1u);
+    EXPECT_EQ(endpoints.count((Endpoint{EndpointKind::X11, ":4"})), 1u);
+}
+
+TEST(DiscoverEndpoints, UnionsHintsAndDeduplicates)
+{
+    TempDir x11;
+    MakeSocket(x11.Path() / "X1");
+    MakeSocket(x11.Path() / "X2");
+
+    DiscoveryHints hints;
+    hints.m_x11_socket_dir = x11.Path();
+    hints.m_uid = getuid();
+    hints.m_env_displays = {":1"};       // duplicate of a scanned socket
+    hints.m_logind_displays = {":2"};    // duplicate of a scanned socket, by a different route
+
+    // Three routes to two displays. A hint that names a display the scan did not produce is covered by
+    // UsesEnvDisplayHintWhenSocketIsNotOurs; both hints here name sockets that really exist, because a
+    // hint whose socket does not exist is no longer a candidate at all.
     auto endpoints = DiscoverEndpoints(hints);
 
     ASSERT_EQ(endpoints.size(), 2u);
@@ -630,6 +767,8 @@ TEST(DiscoverEndpoints, IgnoresUnparseableHints)
 {
     DiscoveryHints hints;
     hints.m_uid = getuid();
+    // No socket directory, so the hints are admitted unchecked and normalization is the only guard under
+    // test here.
     hints.m_env_displays = {"", "garbage", ":3"};
 
     auto endpoints = DiscoverEndpoints(hints);

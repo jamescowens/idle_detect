@@ -40,7 +40,14 @@ struct DiscoveryHints {
     //! \brief Directory searched for X sockets. Typically /tmp/.X11-unix.
     std::filesystem::path m_x11_socket_dir;
 
+    //!
     //! \brief DISPLAY values read from the systemd user manager Environment property.
+    //!
+    //! Exported when a graphical session starts and never unexported when it ends, so a value here is
+    //! evidence that a display once existed rather than that one exists now. A candidate derived from it
+    //! is therefore admitted only when m_x11_socket_dir contains the corresponding socket -- see the
+    //! commentary on DiscoverEndpoints() for why that check must not also test the socket's owner.
+    //!
     std::vector<std::string> m_env_displays;
 
     //!
@@ -63,7 +70,11 @@ struct DiscoveryHints {
     //!
     std::vector<std::string> m_wayland_display_hints;
 
+    //!
     //! \brief Display values from logind graphical sessions. Optional enrichment only.
+    //!
+    //! Subject to the same socket existence requirement as m_env_displays.
+    //!
     std::vector<std::string> m_logind_displays;
 
     //!
@@ -98,6 +109,22 @@ struct DiscoveryHints {
 //! The one exception is DiscoveryHints::m_uid: if it is left at its invalid default the X
 //! socket directory scan is skipped entirely rather than run against an unusable filter. The
 //! environment and logind display hints are unaffected.
+//!
+//! X11 displays named by DiscoveryHints::m_env_displays or DiscoveryHints::m_logind_displays are admitted
+//! only when DiscoveryHints::m_x11_socket_dir contains a socket for them. Over-inclusive means offering a
+//! candidate that might work, not one that provably cannot: a DISPLAY value is exported when a session
+//! starts and never unexported when it ends, so without the check a display that no longer exists stays a
+//! candidate for the life of the daemon and costs a validation attempt on the backoff ladder forever.
+//!
+//! That check tests existence and file type ONLY. It deliberately does not test the socket's owner, even
+//! though the socket directory scan does, and the two X11 hint sources are unioned precisely because of
+//! that asymmetry: a display manager started X server leaves a root-owned socket, the scan correctly
+//! rejects it as possibly belonging to another user, and the environment hint is the only thing that can
+//! bring the display back. Applying the uid filter on both sides would reject it twice and leave nothing.
+//! Authorization is settled by the connect the candidate is validated by, not by a socket's owner.
+//!
+//! If DiscoveryHints::m_x11_socket_dir is empty the hints are admitted unchecked, on the same rule that
+//! skips the scan without a uid: an input that cannot be evaluated must not be evaluated approximately.
 //!
 //! \param hints discovery inputs
 //! \return deduplicated candidate endpoints
