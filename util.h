@@ -168,6 +168,97 @@ void error_log(const char* fmt, const Args&... args)
     std::cerr << LogPrintStr(error_fmt.c_str(), args...);
 }
 
+//!
+//! \brief Doubling report throttle for a condition that is re-evaluated on a fixed tick and can fail on
+//! every one of them.
+//!
+//! A log line emitted unconditionally from a once-per-second loop is a log line per second for as long as
+//! the condition holds, which for an input that is permanently broken is forever. Both
+//! IdleDetect::IdleSourcePool::RecordCandidateFailure() and IdleDetect::ShellIdleSource::NoteQueryOutcome()
+//! already hand-rolled this same ladder against that problem. This is that ladder, expressed once, so that
+//! a caller which is not a class -- the body of main()'s loop -- can apply it too.
+//!
+//! The shape: the first failure of a run is always reported, and the number of failures suppressed between
+//! reports doubles thereafter, up to a ceiling. With an initial interval of 1 and a maximum of 64 that puts
+//! reports on the 1st, 3rd, 6th, 11th, 20th, 37th and 70th consecutive failure, and one per 64 failures
+//! after that. Reports therefore land exactly on the transitions worth telling an operator about -- the
+//! onset, and each step of the retreat -- and stop once nothing further is being decided.
+//!
+//! Only the REPORTING is throttled. The caller still evaluates its condition on every tick and still acts
+//! on the result; this object decides nothing except whether the operator hears about this particular
+//! occurrence. A suppressed occurrence is not lost, it is debug material, and callers are expected to log
+//! it at debug level.
+//!
+//! Any success ends the run. Reset() clears the ladder and returns the length of the run it cleared, so the
+//! caller can report the size of the outage in the single line that announces recovery -- the only place
+//! that number appears at normal level, since the failures in the middle of the run were suppressed by this
+//! very throttle.
+//!
+//! Not thread safe, and deliberately so: every use is a single tick loop on a single thread, and a mutex
+//! here would be a lock taken once a second to protect three integers nothing else can see.
+//!
+class FailureReportThrottle
+{
+public:
+    //!
+    //! \brief Constructor.
+    //! \param initial_interval Failures suppressed between the first report and the second. Values below
+    //! one are clamped up, since an interval of zero would report every failure and defeat the object.
+    //! \param max_interval Ceiling on the suppression interval. Clamped up to initial_interval, since a
+    //! ceiling below the floor would make the ladder shrink rather than grow.
+    //!
+    FailureReportThrottle(int initial_interval, int max_interval);
+
+    //!
+    //! \brief Records one failure and decides whether it should be reported at normal or error level.
+    //!
+    //! \return true if this occurrence should be reported to the operator, false if it should be logged
+    //! at debug level instead.
+    //!
+    bool RecordFailure();
+
+    //!
+    //! \brief Length of the current run of consecutive failures, including the one just recorded.
+    //!
+    //! One is the first failure of a run, which is the occurrence a caller reports at error level so that
+    //! a genuine problem is visible immediately.
+    //!
+    //! \return consecutive failures since the last Reset()
+    //!
+    int ConsecutiveFailures() const;
+
+    //!
+    //! \brief Failures that will be suppressed before the next report.
+    //! \return the current suppression interval, zero before the first failure of a run
+    //!
+    int Interval() const;
+
+    //!
+    //! \brief Ends the current run of failures and clears the ladder.
+    //! \return the number of consecutive failures that had accumulated, zero if there was no run
+    //!
+    int Reset();
+
+private:
+    //! \brief Failures suppressed between the first report of a run and the second.
+    int m_initial_interval;
+
+    //! \brief Ceiling on m_interval.
+    int m_max_interval;
+
+    //! \brief Consecutive failures recorded since the last Reset().
+    int m_consecutive_failures;
+
+    //!
+    //! \brief Failures currently passing between reports. Retained so the next interval is a doubling of a
+    //! real value rather than a shift by a failure count that grows without bound.
+    //!
+    int m_interval;
+
+    //! \brief Failures still to be suppressed before the next report.
+    int m_failures_until_report;
+};
+
 [[nodiscard]] int ParseStringToInt(const std::string& str);
 
 [[nodiscard]] int64_t ParseStringtoInt64(const std::string& str);

@@ -206,10 +206,43 @@ int DEFAULT_IDLE_THRESHOLD_SECONDS = 0;
 //!
 constexpr int DEFAULT_CHECK_INTERVAL_SECONDS = 1;
 
+//!
+//! \brief Failures suppressed between the first and second report of a repeating main loop failure.
+//!
+constexpr int MAIN_LOOP_FAILURE_REPORT_INITIAL_INTERVAL = 1;
+
+//!
+//! \brief Ceiling on how many consecutive failures pass between reports of a repeating main loop failure.
+//!
+//! The main loop runs once per second, so a condition that fails on every iteration and logs on every
+//! iteration is one line per second for the life of the process. This is the same bound
+//! ENDPOINT_RETRY_BACKOFF_MAX_TICKS puts on a candidate endpoint that can never validate and
+//! SHELL_QUERY_FAILURE_REPORT_MAX_INTERVAL puts on a shell that can never answer, applied to the loop body
+//! itself -- which is where the last unthrottled examples of the same flood were still living.
+//!
+constexpr int MAIN_LOOP_FAILURE_REPORT_MAX_INTERVAL = 64;
+
+//!
+//! \brief Throttle for reports that a send to the event_detect pipe failed. See SendPipeNotification().
+//!
+//! At file scope rather than inside the function because SendPipeNotification() is a free function with no
+//! object to hang state on. It is safe as shared state because there is exactly one caller -- the body of
+//! main()'s loop -- on exactly one thread, which is also the condition FailureReportThrottle documents for
+//! not being thread safe.
+//!
+static FailureReportThrottle g_pipe_send_failure_throttle(MAIN_LOOP_FAILURE_REPORT_INITIAL_INTERVAL,
+                                                          MAIN_LOOP_FAILURE_REPORT_MAX_INTERVAL);
+
 /**
  * @brief Reads the timestamp from event_detect's data file.
  * @param file_path Path to the last_active_time.dat file.
  * @return int64_t Timestamp read from file, or 0 if file doesn't exist or error occurs.
+ *
+ * Everything this reports about a failure is at debug level, and that is a contract with its one caller
+ * rather than an oversight. It is the same contract GetIdleTimeKdeDBus() keeps for the same reason: this
+ * runs once per main loop iteration, so an error line here is an error line every second for as long as the
+ * file stays unreadable, which for a truncated or root-owned file is forever. The operator-visible report
+ * belongs to the caller, which is the only place that can count consecutive failures and throttle them.
  */
 static int64_t ReadLastActiveTimeFile(const fs::path& file_path) {
     if (!fs::exists(file_path)) {
@@ -219,7 +252,7 @@ static int64_t ReadLastActiveTimeFile(const fs::path& file_path) {
 
     std::ifstream time_file(file_path);
     if (!time_file.is_open()) {
-        error_log("%s: Could not open data file: %s", __func__, file_path.string());
+        debug_log("INFO: %s: Could not open data file: %s", __func__, file_path.string());
         return 0;
     }
 
@@ -231,11 +264,14 @@ static int64_t ReadLastActiveTimeFile(const fs::path& file_path) {
             debug_log("INFO: %s: Read timestamp %lld from %s", __func__, timestamp, file_path.string());
             return timestamp;
         } catch (const std::exception& e) {
-            error_log("%s: Failed to parse timestamp from data file '%s': %s", __func__, file_path.string(), e.what());
+            debug_log("INFO: %s: Failed to parse timestamp from data file '%s': %s",
+                      __func__,
+                      file_path.string(),
+                      e.what());
             return 0;
         }
     } else {
-        error_log("%s: Failed to read line from data file: %s", __func__, file_path.string());
+        debug_log("INFO: %s: Failed to read line from data file: %s", __func__, file_path.string());
         return 0;
     }
 }
@@ -245,9 +281,14 @@ static int64_t ReadLastActiveTimeFile(const fs::path& file_path) {
 //! \param shm_name
 //! \return
 //!
+//! Failures are reported at debug level for the same reason as in ReadLastActiveTimeFile() above: this runs
+//! once per main loop iteration, and every condition it can fail on -- a misconfigured name, a segment we
+//! are not permitted to open, a mapping that will not take -- persists across iterations, so an
+//! unconditional line here is an unbounded line. The throttled operator-visible report is the caller's.
+//!
 static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
     if (shm_name.empty() || shm_name[0] != '/') {
-        error_log("%s: Invalid shared memory name provided: %s", __func__, shm_name.c_str());
+        debug_log("INFO: %s: Invalid shared memory name provided: %s", __func__, shm_name.c_str());
         return -1;
     }
     debug_log("INFO: %s: Attempting to read timestamp from shm: %s", __func__, shm_name.c_str());
@@ -262,7 +303,11 @@ static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
     shm_fd = shm_open(shm_name.c_str(), O_RDONLY, 0);
     if (shm_fd == -1) {
         if (errno != ENOENT) {
-            error_log("%s: shm_open(RO) failed for '%s': %s (%d)", __func__, shm_name.c_str(), strerror(errno), errno);
+            debug_log("INFO: %s: shm_open(RO) failed for '%s': %s (%d)",
+                      __func__,
+                      shm_name.c_str(),
+                      strerror(errno),
+                      errno);
         }
         else { debug_log("INFO: %s: Shared memory '%s' not found (ENOENT).", __func__, shm_name.c_str()); }
         return -1;
@@ -273,7 +318,11 @@ static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
     close(shm_fd);
 
     if (mapped_mem == MAP_FAILED) {
-        error_log("%s: mmap(RO) failed for shm '%s': %s (%d)", __func__, shm_name.c_str(), strerror(errno), errno);
+        debug_log("INFO: %s: mmap(RO) failed for shm '%s': %s (%d)",
+                  __func__,
+                  shm_name.c_str(),
+                  strerror(errno),
+                  errno);
         return -1;
     }
 
@@ -283,10 +332,57 @@ static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
 
     errno = 0;
     if (munmap(mapped_mem, shmem_size) == -1) {
-        normal_log("WARN: %s: munmap failed for shm '%s': %s (%d)", __func__, shm_name.c_str(), strerror(errno), errno);
+        debug_log("WARN: %s: munmap failed for shm '%s': %s (%d)",
+                  __func__,
+                  shm_name.c_str(),
+                  strerror(errno),
+                  errno);
     }
 
     return last_active_timestamp;
+}
+
+//!
+//! \brief Reports that a send to the event_detect pipe failed, through g_pipe_send_failure_throttle.
+//!
+//! Every way a send can fail is a standing condition rather than a momentary one -- event_detect is not
+//! running, the path is not a FIFO, we cannot open it -- and the main loop retries on the next tick, so an
+//! unconditional line per failure is a line per second for as long as event_detect is absent. That is the
+//! ordinary state of a machine where event_detect was never installed and update_event_detect was left at
+//! its default of true.
+//!
+//! The first failure of a run stays at error level so a genuine problem is visible immediately. The
+//! transitions after it are follow-ups to a fault already reported, so they go out at normal level, and
+//! everything in between is debug material.
+//!
+//! \param reason What went wrong, already formatted.
+//!
+static void ReportPipeSendFailure(const std::string& reason)
+{
+    if (!g_pipe_send_failure_throttle.RecordFailure()) {
+        debug_log("INFO: %s: %s (%d consecutive).",
+                  __func__,
+                  reason,
+                  g_pipe_send_failure_throttle.ConsecutiveFailures());
+
+        return;
+    }
+
+    if (g_pipe_send_failure_throttle.ConsecutiveFailures() == 1) {
+        error_log("%s: %s Further failures are debug only until %d more have occurred.",
+                  __func__,
+                  reason,
+                  g_pipe_send_failure_throttle.Interval());
+
+        return;
+    }
+
+    normal_log("WARNING: %s: %s (%d consecutive). Further failures are debug only until %d more have "
+               "occurred.",
+               __func__,
+               reason,
+               g_pipe_send_failure_throttle.ConsecutiveFailures(),
+               g_pipe_send_failure_throttle.Interval());
 }
 
 /**
@@ -294,6 +390,10 @@ static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
  *
  * @param pipe_path The full path to the event_detect named pipe.
  * @param the last active time to send to event_detect
+ *
+ * Failures are reported through ReportPipeSendFailure(), which throttles them: this is called from the
+ * main loop, which runs once per second, and everything that can go wrong here goes on being wrong until
+ * event_detect appears.
  */
 void SendPipeNotification(const std::filesystem::path& pipe_path,
                           const int64_t& last_active_time,
@@ -301,8 +401,7 @@ void SendPipeNotification(const std::filesystem::path& pipe_path,
     // Construct the message payload using EventMessage format
     EventMessage msg(last_active_time, event_type);
     if (!msg.IsValid()) {
-        error_log("%s: Failed to construct valid EventMessage.",
-                  __func__);
+        ReportPipeSendFailure("Failed to construct a valid EventMessage.");
         return;
     }
 
@@ -314,16 +413,14 @@ void SendPipeNotification(const std::filesystem::path& pipe_path,
 
     std::error_code error_code;
     if (!std::filesystem::exists(pipe_path, error_code) || error_code) {
-        error_log("%s: Pipe '%s' does not exist or cannot be accessed. Is event_detect running?",
-                  __func__,
-                  pipe_path);
+        ReportPipeSendFailure(tfm::format("Pipe '%s' does not exist or cannot be accessed. Is event_detect "
+                                          "running?",
+                                          pipe_path.string()));
         return;
     }
 
     if (!std::filesystem::is_fifo(pipe_path, error_code) || error_code) {
-        error_log("%s: Path '%s' is not a named pipe (FIFO).",
-                  __func__,
-                  pipe_path);
+        ReportPipeSendFailure(tfm::format("Path '%s' is not a named pipe (FIFO).", pipe_path.string()));
         return;
     }
 
@@ -331,10 +428,9 @@ void SendPipeNotification(const std::filesystem::path& pipe_path,
     std::ofstream pipe_stream(pipe_path, std::ios::out);
 
     if (!pipe_stream.is_open()) {
-        error_log("%s: Failed to open pipe '%s' for writing: %s",
-                  __func__,
-                  pipe_path,
-                  strerror(errno));
+        ReportPipeSendFailure(tfm::format("Failed to open pipe '%s' for writing: %s",
+                                          pipe_path.string(),
+                                          strerror(errno)));
         return;
     }
 
@@ -342,14 +438,28 @@ void SendPipeNotification(const std::filesystem::path& pipe_path,
     pipe_stream.flush();
 
     if (pipe_stream.fail()) {
-        error_log("%s: Failed to write message to pipe '%s'. Pipe full or other error?",
-                  __func__,
-                  pipe_path);
-    } else {
-        debug_log("INFO: %s: Sent message to pipe '%s'.",
-                  __func__,
-                  pipe_path.string().c_str());
+        ReportPipeSendFailure(tfm::format("Failed to write the message to pipe '%s'. Pipe full or other "
+                                          "error?",
+                                          pipe_path.string()));
+
+        return;
     }
+
+    // A run of failures ends on the first send that gets through. The count is reported because this is the
+    // only place at normal level where the size of the outage appears: the failures in the middle of it
+    // were suppressed by the very throttle this reports the end of.
+    const int cleared = g_pipe_send_failure_throttle.Reset();
+
+    if (cleared > 0) {
+        normal_log("INFO: %s: Sending to pipe '%s' is working again after %d consecutive failure(s).",
+                   __func__,
+                   pipe_path.string().c_str(),
+                   cleared);
+    }
+
+    debug_log("INFO: %s: Sent message to pipe '%s'.",
+              __func__,
+              pipe_path.string().c_str());
 }
 
 // Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this for the shell idle source.
@@ -2457,6 +2567,116 @@ static void ReconcileIdleSources()
 }
 
 //!
+//! \brief Reports, through a throttle, that neither event_detect's shared memory segment nor its data file
+//! yielded a usable timestamp on this iteration.
+//!
+//! event_detect not running is the case this exists for, and it is not a transient: the segment stays
+//! absent and the file stays stale for as long as the system daemon is down, so the condition is true on
+//! every one of the main loop's once-per-second iterations. The individual reasons -- ENOENT on the
+//! segment, an unparseable file, a file we may not open -- are reported at debug level by
+//! ReadTimestampViaShmem() and ReadLastActiveTimeFile() precisely so that this one line, counted and
+//! throttled, is the operator-visible report for all of them.
+//!
+//! \param throttle Ladder for this condition, owned by the main loop.
+//! \param dat_file_path Fallback data file that was tried after the shared memory segment.
+//!
+static void ReportEventDetectReadFailure(FailureReportThrottle& throttle, const fs::path& dat_file_path)
+{
+    if (!throttle.RecordFailure()) {
+        debug_log("INFO: %s: Getting idle_info from event_detect failed (%d consecutive).",
+                  __func__,
+                  throttle.ConsecutiveFailures());
+
+        return;
+    }
+
+    const char* message = "%s: Getting idle_info from event_detect failed: could not read a valid timestamp "
+                          "from shared memory or from '%s' (%d consecutive). Is event_detect running? "
+                          "Further failures are debug only until %d more have occurred.";
+
+    // The first failure of a run stays at error level so that a genuine problem is visible immediately.
+    // The reports after it are follow-ups to a fault already announced, so they go out at normal level.
+    if (throttle.ConsecutiveFailures() == 1) {
+        error_log(message, __func__, dat_file_path.string(), throttle.ConsecutiveFailures(), throttle.Interval());
+    } else {
+        normal_log(std::string("WARNING: ").append(message).c_str(),
+                   __func__,
+                   dat_file_path.string(),
+                   throttle.ConsecutiveFailures(),
+                   throttle.Interval());
+    }
+}
+
+//!
+//! \brief Ends a run of event_detect read failures and reports the recovery once.
+//! \param throttle Ladder for that condition, owned by the main loop.
+//!
+static void NoteEventDetectReadSuccess(FailureReportThrottle& throttle)
+{
+    const int cleared = throttle.Reset();
+
+    if (cleared > 0) {
+        normal_log("INFO: %s: event_detect is readable again after %d consecutive failed read(s).",
+                   __func__,
+                   cleared);
+    }
+}
+
+//!
+//! \brief Reports, through a throttle, that no source at all produced an idle time on this iteration.
+//!
+//! This is the last line of the resolution chain, and until this throttle existed it was also the last
+//! unthrottled per-tick log in the daemon: a session where nothing resolves -- no GUI endpoint, no shell
+//! value, no event_detect -- emitted this at error level once a second, forever. That is the same flood the
+//! endpoint backoff and the shell ladder were built to stop, in the one place neither of them reaches.
+//!
+//! It stays an error rather than being demoted, because unlike a single source failing it means the daemon
+//! has nothing to report activity from and is falling back to assuming the user is active. The first
+//! occurrence is therefore always visible.
+//!
+//! \param throttle Ladder for this condition, owned by the main loop.
+//!
+static void ReportIdleDeterminationFailure(FailureReportThrottle& throttle)
+{
+    if (!throttle.RecordFailure()) {
+        debug_log("INFO: %s: Idle time could not be determined from any available source (%d consecutive). "
+                  "Assuming active.",
+                  __func__,
+                  throttle.ConsecutiveFailures());
+
+        return;
+    }
+
+    const char* message = "%s: Idle time could not be determined from any available source (%d "
+                          "consecutive). Assuming active. Further occurrences are debug only until %d more "
+                          "have occurred.";
+
+    if (throttle.ConsecutiveFailures() == 1) {
+        error_log(message, __func__, throttle.ConsecutiveFailures(), throttle.Interval());
+    } else {
+        normal_log(std::string("WARNING: ").append(message).c_str(),
+                   __func__,
+                   throttle.ConsecutiveFailures(),
+                   throttle.Interval());
+    }
+}
+
+//!
+//! \brief Ends a run of failed idle determinations and reports the recovery once.
+//! \param throttle Ladder for that condition, owned by the main loop.
+//!
+static void NoteIdleDeterminationSuccess(FailureReportThrottle& throttle)
+{
+    const int cleared = throttle.Reset();
+
+    if (cleared > 0) {
+        normal_log("INFO: %s: Idle time is being determined again after %d consecutive failure(s).",
+                   __func__,
+                   cleared);
+    }
+}
+
+//!
 //! \brief main
 //! \param argc
 //! \param argv. Currently one argument is expected, which is the config file path.
@@ -2684,6 +2904,16 @@ int main(int argc, char* argv[])
     int64_t effective_last_active_time = 0;
     bool using_event_detect_as_only_source = false;
 
+    // Both of these conditions are re-evaluated on every iteration of a loop that runs once a second, and
+    // both stay true for as long as whatever broke stays broken, so reporting either unconditionally is one
+    // line per second for the life of the process. See FailureReportThrottle and
+    // MAIN_LOOP_FAILURE_REPORT_MAX_INTERVAL. They are owned here, by the loop, rather than being file
+    // globals, because the loop is the only thing that can say when a run of failures has ended.
+    FailureReportThrottle event_detect_read_failure_throttle(IdleDetect::MAIN_LOOP_FAILURE_REPORT_INITIAL_INTERVAL,
+                                                             IdleDetect::MAIN_LOOP_FAILURE_REPORT_MAX_INTERVAL);
+    FailureReportThrottle idle_determination_failure_throttle(IdleDetect::MAIN_LOOP_FAILURE_REPORT_INITIAL_INTERVAL,
+                                                              IdleDetect::MAIN_LOOP_FAILURE_REPORT_MAX_INTERVAL);
+
     while (!g_shutdown_requested.load()) {
         // Reconcile before resolving, so this iteration's reading comes from the sources that exist now. This
         // is the self-heal path: a graphical session that appears after the daemon started is picked up here,
@@ -2758,6 +2988,8 @@ int main(int argc, char* argv[])
                           (int64_t)idle_seconds,
                           (int64_t)current_time,
                           (int64_t)shmem_timestamp);
+
+                NoteEventDetectReadSuccess(event_detect_read_failure_throttle);
             } else {
                 // ReadTimestampViaShmem returns -1 on error
                 debug_log("INFO: %s: Attempting to get idle information from event_detect via file: %s",
@@ -2789,19 +3021,20 @@ int main(int argc, char* argv[])
                               (int64_t)idle_seconds,
                               (int64_t)current_time,
                               (int64_t)file_timestamp);
+
+                    NoteEventDetectReadSuccess(event_detect_read_failure_throttle);
                 } else {
-                    error_log("%s: Getting idle_info from event_detect failed: Could not read/parse valid timestamp "
-                              "from event_detect file.",
-                              __func__);
+                    ReportEventDetectReadFailure(event_detect_read_failure_throttle, dat_file_path);
                 }
             }
         }
 
         if (idle_seconds < 0) {
-            error_log("%s: Idle time could not be determined from any available source. Assuming active.",
-                      __func__);
+            ReportIdleDeterminationFailure(idle_determination_failure_throttle);
 
             idle_seconds = 0;
+        } else {
+            NoteIdleDeterminationSuccess(idle_determination_failure_throttle);
         }
 
         // --- State Calculation & Actions (using effective idle_seconds) ---
