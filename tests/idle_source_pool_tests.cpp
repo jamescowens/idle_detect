@@ -1054,6 +1054,296 @@ TEST(IdleSourcePool, SuccessfulRebuildResetsTheBackoff)
 }
 
 //
+// Eviction of a source that cannot tell it is dead.
+//
+// IsAlive() covers sources that know. Nothing covered the ones that cannot: X11IdleSource opens and
+// closes its connection inside every query, so it holds no state in which to notice that its display is
+// gone, and it answers IsAlive() true forever. SIGKILLing an X server leaves its socket in /tmp/.X11-unix,
+// so discovery goes on offering the candidate and the source is retained on the key alone -- measured on
+// :47 as 14 consecutive IDLE_ERROR resolutions with no teardown. The consequence is worse than the wasted
+// queries: the source counts toward any_source_present, so IDLE_NO_GUI_SESSION can never fire.
+//
+
+TEST(IdleSourcePool, AnErrorRunBelowTheThresholdRetainsTheSource)
+{
+    // The transient half of the rule. A source that misses a reading or two is not a source that has
+    // stopped working, and tearing it down would drop the endpoint to the bottom of the retry ladder for
+    // a fault that had already cleared.
+    PoolHarness harness;
+
+    const std::set<Endpoint> candidates{g_x11_one};
+
+    harness.ScriptEndpoint(g_x11_one, 12);
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    FakeIdleSource* source = harness.EndpointSource(g_x11_one);
+    ASSERT_NE(source, nullptr);
+    ASSERT_EQ(harness.EndpointFactoryCalls(g_x11_one), 1);
+
+    // The display stops answering, and the source has no way to know: it goes on reporting itself alive.
+    source->SetValue(IDLE_ERROR);
+    ASSERT_TRUE(source->IsAlive());
+
+    for (int error = 0; error < DEAD_SOURCE_ERROR_THRESHOLD - 1; ++error) {
+        ASSERT_EQ(harness.Pool().GetIdleSeconds(), IDLE_ERROR);
+
+        harness.Pool().Reconcile(candidates, ShellKind::NONE);
+    }
+
+    EXPECT_EQ(harness.EndpointDestructions(g_x11_one), 0);
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_x11_one), 1);
+    EXPECT_EQ(harness.EndpointSource(g_x11_one), source);
+    EXPECT_EQ(harness.Pool().EndpointSourceCount(), 1u);
+}
+
+TEST(IdleSourcePool, AnErrorRunAtTheThresholdTearsTheSourceDownAndRebuildsIt)
+{
+    // The other half. At the threshold the source is destroyed and its endpoint is newly-seen again, so
+    // the rebuild goes through validation exactly as a fresh candidate would.
+    PoolHarness harness;
+
+    const std::set<Endpoint> candidates{g_x11_one};
+
+    harness.ScriptEndpoint(g_x11_one, 12);
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    FakeIdleSource* source = harness.EndpointSource(g_x11_one);
+    ASSERT_NE(source, nullptr);
+
+    // A value no healthy source in this test reports, so a pool that kept the dead one is caught by the
+    // aggregate below and not only by a pointer comparison.
+    source->SetValue(IDLE_ERROR);
+
+    for (int error = 0; error < DEAD_SOURCE_ERROR_THRESHOLD; ++error) {
+        ASSERT_EQ(harness.Pool().GetIdleSeconds(), IDLE_ERROR);
+    }
+
+    // Still standing: the counting happens as sources are resolved, and the acting happens on the
+    // reconcile after it, so that a source is never destroyed in the middle of the pass reading it.
+    ASSERT_EQ(harness.EndpointDestructions(g_x11_one), 0);
+
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointDestructions(g_x11_one), 1);
+    EXPECT_EQ(harness.EndpointFactoryCalls(g_x11_one), 2);
+    ASSERT_EQ(harness.Pool().EndpointSourceCount(), 1u);
+
+    // The display was answering again by the time the rebuild ran, so the endpoint is serving readings on
+    // the very tick its dead source was torn down.
+    FakeIdleSource* rebuilt = harness.EndpointSource(g_x11_one);
+    ASSERT_NE(rebuilt, nullptr);
+    EXPECT_NE(rebuilt, source);
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), 12);
+}
+
+TEST(IdleSourcePool, ASuccessfulResolutionResetsTheErrorRun)
+{
+    // The run has to be CONSECUTIVE. A source that fails now and then but keeps producing readings is
+    // working, and a counter that only ever climbed would eventually tear down every long-lived source on
+    // a flaky display.
+    PoolHarness harness;
+
+    const std::set<Endpoint> candidates{g_x11_one};
+
+    harness.ScriptEndpoint(g_x11_one, 12);
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    FakeIdleSource* source = harness.EndpointSource(g_x11_one);
+    ASSERT_NE(source, nullptr);
+
+    // One short of the threshold.
+    source->SetValue(IDLE_ERROR);
+
+    for (int error = 0; error < DEAD_SOURCE_ERROR_THRESHOLD - 1; ++error) {
+        ASSERT_EQ(harness.Pool().GetIdleSeconds(), IDLE_ERROR);
+    }
+
+    // One reading, which ends the run.
+    source->SetValue(7);
+    ASSERT_EQ(harness.Pool().GetIdleSeconds(), 7);
+
+    // The same number of failures again. Without the reset this would be well past the threshold.
+    source->SetValue(IDLE_ERROR);
+
+    for (int error = 0; error < DEAD_SOURCE_ERROR_THRESHOLD - 1; ++error) {
+        ASSERT_EQ(harness.Pool().GetIdleSeconds(), IDLE_ERROR);
+    }
+
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointDestructions(g_x11_one), 0);
+    EXPECT_EQ(harness.EndpointSource(g_x11_one), source);
+
+    // And the count that survived the reset is the short one, so one more failure still does not reach the
+    // threshold on this tick but the one after it does.
+    ASSERT_EQ(harness.Pool().GetIdleSeconds(), IDLE_ERROR);
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointDestructions(g_x11_one), 1);
+}
+
+TEST(IdleSourcePool, ARebuiltSourceDoesNotInheritItsPredecessorsErrorRun)
+{
+    // The counter belongs to the source, not to the endpoint. A replacement that inherited the count that
+    // condemned its predecessor would be torn down after a single failure of its own, which is how a
+    // recovering display would be kept permanently out of service.
+    PoolHarness harness;
+
+    const std::set<Endpoint> candidates{g_x11_one};
+
+    harness.ScriptEndpoint(g_x11_one, 12);
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    FakeIdleSource* source = harness.EndpointSource(g_x11_one);
+    ASSERT_NE(source, nullptr);
+
+    source->SetValue(IDLE_ERROR);
+
+    for (int error = 0; error < DEAD_SOURCE_ERROR_THRESHOLD; ++error) {
+        ASSERT_EQ(harness.Pool().GetIdleSeconds(), IDLE_ERROR);
+    }
+
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+    ASSERT_EQ(harness.EndpointDestructions(g_x11_one), 1);
+
+    FakeIdleSource* rebuilt = harness.EndpointSource(g_x11_one);
+    ASSERT_NE(rebuilt, nullptr);
+
+    // The replacement fails once, which is a long way short of the threshold.
+    rebuilt->SetValue(IDLE_ERROR);
+    ASSERT_EQ(harness.Pool().GetIdleSeconds(), IDLE_ERROR);
+
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointDestructions(g_x11_one), 1);
+    EXPECT_EQ(harness.EndpointSource(g_x11_one), rebuilt);
+}
+
+TEST(IdleSourcePool, ASourceThatKeepsFailingStopsMaskingTheAbsenceOfAGuiSession)
+{
+    // The reason the counter exists at all. A crashed X server leaves its socket behind, so the candidate
+    // never disappears and the source never disappears with it. Retained forever, it resolves IDLE_ERROR
+    // forever, and because it counts toward any_source_present the pool reports IDLE_ERROR rather than
+    // IDLE_NO_GUI_SESSION -- so main() never overrides use_event_detect and the session is served by
+    // nothing at all.
+    PoolHarness harness;
+
+    const std::set<Endpoint> candidates{g_x11_one};
+
+    harness.ScriptEndpoint(g_x11_one, 12);
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    FakeIdleSource* source = harness.EndpointSource(g_x11_one);
+    ASSERT_NE(source, nullptr);
+    ASSERT_EQ(harness.Pool().GetIdleSeconds(), 12);
+
+    // The X server is SIGKILLed. Its socket stays, so the candidate stays; the source cannot tell, so it
+    // goes on reporting itself alive; and nothing that is offered can validate any more.
+    source->SetValue(IDLE_ERROR);
+    harness.ClearEndpointScript(g_x11_one);
+
+    // The main loop's own ordering: reconcile, then resolve. Bounded well above the threshold so a failure
+    // is a failure rather than a hang, and low enough that a pool which needed the 64-tick ceiling to get
+    // here would not pass.
+    int64_t aggregate = IDLE_ERROR;
+    bool reported_no_gui_session = false;
+
+    for (int tick = 0; tick < 20; ++tick) {
+        harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+        aggregate = harness.Pool().GetIdleSeconds();
+
+        if (aggregate == IDLE_NO_GUI_SESSION) {
+            reported_no_gui_session = true;
+            break;
+        }
+    }
+
+    EXPECT_TRUE(reported_no_gui_session);
+    EXPECT_EQ(aggregate, IDLE_NO_GUI_SESSION);
+    EXPECT_EQ(harness.EndpointDestructions(g_x11_one), 1);
+    EXPECT_EQ(harness.Pool().EndpointSourceCount(), 0u);
+
+    // And it stays reported, rather than flickering back to IDLE_ERROR each time the backoff lets another
+    // failed rebuild through.
+    for (int tick = 0; tick < 20; ++tick) {
+        harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+        EXPECT_EQ(harness.Pool().GetIdleSeconds(), IDLE_NO_GUI_SESSION);
+    }
+}
+
+TEST(IdleSourcePool, AnEvictedEndpointsErrorRunDoesNotOutliveIt)
+{
+    // The counter is cleared when the endpoint leaves the candidate set as well as when its source is torn
+    // down. A socket that is unplugged and replugged is a fresh start, and a stale count would tear its
+    // new source down after one unlucky reading.
+    PoolHarness harness;
+
+    harness.ScriptEndpoint(g_x11_one, 12);
+    harness.Pool().Reconcile({g_x11_one}, ShellKind::NONE);
+
+    FakeIdleSource* source = harness.EndpointSource(g_x11_one);
+    ASSERT_NE(source, nullptr);
+
+    source->SetValue(IDLE_ERROR);
+
+    for (int error = 0; error < DEAD_SOURCE_ERROR_THRESHOLD - 1; ++error) {
+        ASSERT_EQ(harness.Pool().GetIdleSeconds(), IDLE_ERROR);
+    }
+
+    // The endpoint disappears, taking its source with it, and comes back.
+    harness.Pool().Reconcile({}, ShellKind::NONE);
+    ASSERT_EQ(harness.EndpointDestructions(g_x11_one), 1);
+
+    harness.Pool().Reconcile({g_x11_one}, ShellKind::NONE);
+
+    FakeIdleSource* rebuilt = harness.EndpointSource(g_x11_one);
+    ASSERT_NE(rebuilt, nullptr);
+
+    rebuilt->SetValue(IDLE_ERROR);
+    ASSERT_EQ(harness.Pool().GetIdleSeconds(), IDLE_ERROR);
+
+    harness.Pool().Reconcile({g_x11_one}, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointDestructions(g_x11_one), 1);
+    EXPECT_EQ(harness.EndpointSource(g_x11_one), rebuilt);
+}
+
+TEST(IdleSourcePool, OneEndpointsErrorRunDoesNotEvictAnother)
+{
+    // The counts are per endpoint. A pool that counted globally would tear down a perfectly good endpoint
+    // because an unrelated one had failed beside it, which is exactly the cross-contamination the
+    // multi-endpoint design exists to prevent.
+    PoolHarness harness;
+
+    const std::set<Endpoint> candidates{g_x11_one, g_x11_two};
+
+    harness.ScriptEndpoint(g_x11_one, 12);
+    harness.ScriptEndpoint(g_x11_two, 300);
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    FakeIdleSource* failing = harness.EndpointSource(g_x11_one);
+    FakeIdleSource* healthy = harness.EndpointSource(g_x11_two);
+    ASSERT_NE(failing, nullptr);
+    ASSERT_NE(healthy, nullptr);
+
+    failing->SetValue(IDLE_ERROR);
+    harness.ClearEndpointScript(g_x11_one);
+
+    for (int error = 0; error < DEAD_SOURCE_ERROR_THRESHOLD; ++error) {
+        ASSERT_EQ(harness.Pool().GetIdleSeconds(), 300);
+    }
+
+    harness.Pool().Reconcile(candidates, ShellKind::NONE);
+
+    EXPECT_EQ(harness.EndpointDestructions(g_x11_one), 1);
+    EXPECT_EQ(harness.EndpointDestructions(g_x11_two), 0);
+    EXPECT_EQ(harness.EndpointSource(g_x11_two), healthy);
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), 300);
+}
+
+//
 // Shell lifecycle.
 //
 

@@ -391,8 +391,10 @@ int64_t X11IdleSource::ResolveIdleSeconds()
 bool X11IdleSource::IsAlive() const
 {
     // Stateless by construction: the connection is opened and closed inside every query, so there is no
-    // stale state for liveness to detect and a failed reading is reported as IDLE_ERROR rather than as
-    // death. See the header for why evicting on those errors would be worse than keeping the source.
+    // stale state for liveness to inspect and a failed reading is reported as IDLE_ERROR rather than as
+    // death. That makes this an honest "cannot tell" rather than an assertion of health -- a display that
+    // was SIGKILLed half an hour ago is answered true here. The pool evicts such a source on a run of
+    // consecutive errors instead; see the header and DEAD_SOURCE_ERROR_THRESHOLD.
     return true;
 }
 

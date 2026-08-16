@@ -112,9 +112,16 @@ public:
     //! It is separate from ResolveIdleSeconds() returning IDLE_ERROR because the two mean different
     //! things and call for different responses: an error is one failed reading, excluded from the
     //! aggregate and retried on the next pass, whereas this reports that no future reading will
-    //! succeed until something is rebuilt. Conflating them would either tear down a working source on
-    //! a transient error, or -- the failure this exists to prevent -- keep a dead one forever and let
-    //! its mere existence suppress IDLE_NO_GUI_SESSION.
+    //! succeed until something is rebuilt. Conflating them would tear down a working source on a
+    //! transient error.
+    //!
+    //! The opposite failure -- keeping a dead source forever, letting its mere existence suppress
+    //! IDLE_NO_GUI_SESSION -- is NOT prevented by this method alone, and a source that answers true
+    //! here must not be assumed to have prevented it. A stateless source cannot detect its own death
+    //! by construction, so its owner watches for a run of consecutive errors as well; see
+    //! DEAD_SOURCE_ERROR_THRESHOLD in idle_source_pool.h. The two are complementary rather than
+    //! redundant: this one is immediate and unambiguous where it applies, and the error run covers
+    //! everything where it does not.
     //!
     //! \return true if the source is still usable
     //!

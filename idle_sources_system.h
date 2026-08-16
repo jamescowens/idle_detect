@@ -132,8 +132,11 @@ private:
 //!
 //! \brief The X11IdleSource class is the idle source for one X display, backed by XScreenSaver.
 //!
-//! It is stateless: the X connection is opened and closed within each query, so this source cannot go stale
-//! and needs no liveness eviction. A display that has gone away simply starts returning IDLE_ERROR.
+//! It is stateless: the X connection is opened and closed within each query, so the CONNECTION cannot go
+//! stale. The ENDPOINT can, and the distinction matters. A display that has gone away simply starts
+//! returning IDLE_ERROR, and this source has no way to notice -- it holds nothing that could -- so it goes
+//! on answering IsAlive() true while producing nothing. Eviction of such a source is therefore its owner's
+//! job, performed on a run of consecutive errors; see DEAD_SOURCE_ERROR_THRESHOLD in idle_source_pool.h.
 //!
 class X11IdleSource : public IdleSource
 {
@@ -151,13 +154,20 @@ public:
     int64_t ResolveIdleSeconds() override;
 
     //!
-    //! \brief Always true. This source holds nothing that can die between queries: the X connection is
-    //! opened and closed inside ResolveIdleSeconds(), so a display that has gone away simply starts
-    //! returning IDLE_ERROR and there is nothing to tear down.
+    //! \brief Always true, because this source cannot tell. It holds nothing that could die between
+    //! queries: the X connection is opened and closed inside ResolveIdleSeconds(), so a display that has
+    //! gone away simply starts returning IDLE_ERROR, and there is no state here in which to record that.
     //!
-    //! Tearing it down on those errors would be actively wrong. An X server that is momentarily
-    //! unreachable is answered by the next query, whereas eviction would drop the endpoint and put it at
-    //! the bottom of the pool's retry ladder for a fault that had already cleared.
+    //! DO NOT READ THIS AS "THIS SOURCE NEVER NEEDS EVICTING". It says only that liveness is not the
+    //! mechanism, and the difference was demonstrated: SIGKILLing an X server leaves its socket in
+    //! /tmp/.X11-unix, so the candidate is still discovered and this source is still retained, resolving
+    //! IDLE_ERROR for the life of the process while its existence suppresses IDLE_NO_GUI_SESSION. What
+    //! evicts it is a run of consecutive errors counted by the pool, on DEAD_SOURCE_ERROR_THRESHOLD.
+    //!
+    //! Reporting death from a single error here would be the wrong fix rather than an early one. An X
+    //! server that is momentarily unreachable is answered by the next query, and this method is consulted
+    //! on every reconcile, so a one-tick fault would drop the endpoint and put it at the bottom of the
+    //! retry ladder. The threshold exists precisely to distinguish that from a display that is gone.
     //!
     //! \return true
     //!

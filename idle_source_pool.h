@@ -49,6 +49,32 @@ constexpr int ENDPOINT_RETRY_BACKOFF_INITIAL_TICKS = 1;
 constexpr int ENDPOINT_RETRY_BACKOFF_MAX_TICKS = 64;
 
 //!
+//! \brief Consecutive IDLE_ERROR resolutions before an endpoint's source is torn down and its endpoint
+//! treated as newly-seen.
+//!
+//! This is the counterpart to IdleSource::IsAlive(), and the two are kept because they catch disjoint
+//! populations. IsAlive() catches sources that KNOW they are dead -- a Wayland monitor whose thread
+//! exited on a hangup can say so. This catches sources that CANNOT tell, which is every stateless one:
+//! X11IdleSource opens and closes its connection inside each query, so it has no state in which to
+//! notice that the display it queries no longer exists.
+//!
+//! The failure it was written against was measured. SIGKILLing an X server leaves its socket in
+//! /tmp/.X11-unix, so discovery goes on offering the candidate, the source is retained on the strength
+//! of the key alone, and it resolves IDLE_ERROR forever -- 14 consecutive errors over the remainder of a
+//! 20 second run on :47, with no teardown. Worse than the wasted queries is what its mere existence
+//! does: it counts toward any_source_present, so IDLE_NO_GUI_SESSION can never fire, and a session with
+//! no readable idle source at all is never handed to event_detect.
+//!
+//! Three rather than one, because a single failed reading is an ordinary transient -- an X server busy
+//! for a moment, a compositor mid-reconfiguration -- and the response to it is to try again on the next
+//! tick, not to drop the endpoint to the bottom of the retry ladder. Three consecutive failures, at one
+//! resolution per main loop iteration, is a source that has stopped working rather than one that
+//! stuttered. The teardown is cheap to get wrong in this direction anyway: the endpoint is immediately
+//! newly-seen, so a display that is answering again is rebuilt on the same tick.
+//!
+constexpr int DEAD_SOURCE_ERROR_THRESHOLD = 3;
+
+//!
 //! \brief Consecutive reconciles reporting ShellKind::NONE before a shell that was present is acted
 //! on as gone.
 //!
@@ -149,12 +175,18 @@ public:
     //! \brief Brings the live source set in line with discovery. Starts newly-seen endpoints,
     //! evicts endpoints that disappeared, and updates the shell source.
     //!
-    //! Sources for endpoints that are still present AND still alive are left strictly alone.
+    //! Sources for endpoints that are still present AND still working are left strictly alone.
     //! Rebuilding them on unrelated churn would drop and re-establish a working compositor connection
-    //! every time some other endpoint appeared or went away. Liveness is the one thing that is not
-    //! unrelated churn: a source that reports IdleSource::IsAlive() false is torn down and its
-    //! endpoint treated as newly-seen, because the candidate key surviving says only that the socket
-    //! is still there, not that anything is still answering on it.
+    //! every time some other endpoint appeared or went away. Two things are not unrelated churn, and a
+    //! source that exhibits either is torn down and its endpoint treated as newly-seen, because the
+    //! candidate key surviving says only that the socket is still there, not that anything is still
+    //! answering on it:
+    //!
+    //!   - The source reports IdleSource::IsAlive() false, i.e. it knows it is dead.
+    //!   - The source has resolved IDLE_ERROR DEAD_SOURCE_ERROR_THRESHOLD times in a row, i.e. it does
+    //!     not know it is dead but has stopped behaving as though it is alive.
+    //!
+    //! See DEAD_SOURCE_ERROR_THRESHOLD for why both are needed rather than either alone.
     //!
     //! A candidate that fails validation is retried, but not on every tick. Consecutive failures are
     //! counted per endpoint and the retry is deferred by an exponentially growing interval -- one
@@ -185,6 +217,12 @@ public:
 
     //!
     //! \brief Resolves every live source and aggregates per the sentinel contract.
+    //!
+    //! Also maintains the per-endpoint consecutive error counts that Reconcile() acts on. They are
+    //! updated here rather than there because this is the only place a source is actually resolved; the
+    //! two halves are split across the two calls so that a source is never torn down in the middle of the
+    //! pass that is reading it.
+    //!
     //! \return 0 if inhibited, IDLE_NO_GUI_SESSION if no source exists at all, IDLE_ERROR if
     //!         sources exist but none resolved, otherwise the minimum resolved value.
     //!
@@ -305,6 +343,20 @@ private:
     //! backoff entry, and an endpoint with a backoff entry has no source.
     //!
     std::map<Endpoint, EndpointBackoff> m_endpoint_backoff;
+
+    //!
+    //! \brief Consecutive IDLE_ERROR resolutions per endpoint that currently has a source.
+    //!
+    //! The complement of m_endpoint_backoff, which tracks endpoints that have NO source. Only endpoints
+    //! currently erroring have an entry: a successful resolution erases it, and so does the destruction
+    //! of the source, so a rebuilt source always starts from zero rather than inheriting the count that
+    //! condemned its predecessor.
+    //!
+    //! A separate map rather than a field beside the source, so that the source container stays a plain
+    //! map of owned pointers and this bookkeeping is visibly the pool's rather than the source's. It has
+    //! to be the pool's: the whole point is to catch sources that cannot tell they have failed.
+    //!
+    std::map<Endpoint, int> m_endpoint_consecutive_errors;
 
     //! \brief The single shell source, null when no shell is present or its factory declined.
     std::unique_ptr<IdleSource> m_shell_source;

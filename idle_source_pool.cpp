@@ -41,6 +41,8 @@ void IdleSourcePool::Reconcile(const std::set<Endpoint>& endpoints, ShellKind sh
         if (endpoints.count(iter->first) == 0) {
             normal_log("INFO: %s: Evicting idle source %s.", __func__, iter->second->Describe().c_str());
 
+            m_endpoint_consecutive_errors.erase(iter->first);
+
             iter = m_endpoint_sources.erase(iter);
         } else {
             ++iter;
@@ -70,26 +72,56 @@ void IdleSourcePool::Reconcile(const std::set<Endpoint>& endpoints, ShellKind sh
     // The endpoint key still being in the candidate set is NOT proof that the source behind it works.
     // A Wayland socket outlives the compositor's ability to serve it: the monitor thread exits on a
     // hangup or on the removal of a global it depends on, while the socket that produced the candidate
-    // sits in $XDG_RUNTIME_DIR exactly as before. Retaining on key alone left such a source in place
-    // for the life of the process, which is the frozen-value bug this design fixed inside the monitor,
+    // sits in $XDG_RUNTIME_DIR exactly as before. An X socket outlives its server outright, since a
+    // SIGKILLed X server unlinks nothing at all. Retaining on key alone left such a source in place for
+    // the life of the process, which is the frozen-value bug this design fixed inside the monitor,
     // reintroduced one layer up: the source could only ever return IDLE_ERROR, and its mere existence
     // kept any_source_present true, so IDLE_NO_GUI_SESSION could never fire and the daemon neither read
     // the compositor nor fell back to event_detect.
     //
-    // Destroying it here rather than marking it puts the endpoint back in the newly-seen state below,
-    // so the rebuild goes through validation and the backoff like any other candidate. That is what
-    // keeps a compositor that is genuinely gone from being reconnected on every tick.
+    // TWO TESTS, BECAUSE THEY CATCH DISJOINT POPULATIONS AND NEITHER SUBSUMES THE OTHER.
+    //
+    //   - IsAlive() catches the sources that KNOW they are dead. A Wayland monitor whose thread exited
+    //     on a hangup can report it, and reporting it is strictly better than waiting for errors,
+    //     because it is immediate and unambiguous.
+    //   - The consecutive error count catches the sources that CANNOT tell. Every stateless source is
+    //     in this class by construction: X11IdleSource opens and closes its connection inside each
+    //     query, so it holds no state in which to notice that the display has gone, and it answers
+    //     IsAlive() true forever while resolving IDLE_ERROR forever.
+    //
+    // Destroying rather than marking puts the endpoint back in the newly-seen state below, so the
+    // rebuild goes through validation and the backoff ladder like any other candidate. That is what
+    // keeps a compositor or X server that is genuinely gone from being reconnected on every tick, and
+    // it is also what makes a false positive cheap: a display that is answering again is rebuilt on
+    // this very tick, since a torn-down endpoint carries no backoff.
     for (auto iter = m_endpoint_sources.begin(); iter != m_endpoint_sources.end();) {
+        const auto error_iter = m_endpoint_consecutive_errors.find(iter->first);
+
+        const int consecutive_errors = (error_iter == m_endpoint_consecutive_errors.end())
+                ? 0
+                : error_iter->second;
+
         if (!iter->second->IsAlive()) {
             normal_log("INFO: %s: Idle source %s is no longer alive. Tearing it down; it will be rebuilt "
                        "if its endpoint still validates.",
                        __func__,
                        iter->second->Describe().c_str());
-
-            iter = m_endpoint_sources.erase(iter);
+        } else if (consecutive_errors >= DEAD_SOURCE_ERROR_THRESHOLD) {
+            normal_log("INFO: %s: Idle source %s has failed to produce a reading %d times in a row and "
+                       "still reports itself alive. Tearing it down; it will be rebuilt if its endpoint "
+                       "still validates.",
+                       __func__,
+                       iter->second->Describe().c_str(),
+                       consecutive_errors);
         } else {
             ++iter;
+
+            continue;
         }
+
+        m_endpoint_consecutive_errors.erase(iter->first);
+
+        iter = m_endpoint_sources.erase(iter);
     }
 
     // --- Add sources for newly-seen endpoints. ---
@@ -228,6 +260,27 @@ int64_t IdleSourcePool::GetIdleSeconds()
 
         debug_log("INFO: %s: Source %s resolved to %lld.", __func__, entry.second->Describe().c_str(), value);
 
+        // Any reading at all clears the run. The counter exists to recognise a source that has stopped
+        // working, and a source that just produced a value has not. Erasing rather than zeroing keeps the
+        // map holding only endpoints that are currently in trouble, which is what makes the ordinary case
+        // cost nothing.
+        //
+        // Endpoint sources return either a reading or IDLE_ERROR -- IDLE_NO_GUI_SESSION is a verdict about
+        // the whole pool and no individual source may produce it -- so testing for a non-negative value
+        // rather than for the sentinel is deliberate: an unexpected negative is treated as a failure, which
+        // is the safe reading of a value a source is not supposed to return.
+        if (value >= 0) {
+            m_endpoint_consecutive_errors.erase(entry.first);
+        } else {
+            const int consecutive_errors = ++m_endpoint_consecutive_errors[entry.first];
+
+            debug_log("INFO: %s: Source %s has now failed %d time(s) in a row; it is torn down at %d.",
+                      __func__,
+                      entry.second->Describe().c_str(),
+                      consecutive_errors,
+                      DEAD_SOURCE_ERROR_THRESHOLD);
+        }
+
         resolved.push_back(value);
     }
 
@@ -253,6 +306,11 @@ void IdleSourcePool::Shutdown()
     // starting over, and holding a candidate at a 64-tick interval across that would be the one
     // thing this state must never do: outlive the situation that produced it.
     m_endpoint_backoff.clear();
+
+    // Likewise the error runs, which describe sources that no longer exist. Keeping them would condemn
+    // the first source built for the same endpoint after the pool is repopulated, on the strength of
+    // failures by a predecessor it has nothing to do with.
+    m_endpoint_consecutive_errors.clear();
 
     // Clearing the kind too, so that a pool which has been shut down cannot go on reporting
     // inhibition for a shell it is no longer tracking. The absence run goes with it: there is now no
