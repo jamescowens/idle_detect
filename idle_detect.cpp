@@ -1130,7 +1130,8 @@ bool WaylandIdleMonitor::Start(int notification_timeout_ms) {
     m_idle_start_time.store(0);
 
     // Perform the fallible setup. StartInternal() does no cleanup of its own; the teardown below is the single
-    // failure path for everything it may have partially constructed.
+    // failure path for everything it may have partially constructed. Note that StartInternal() sets
+    // m_initialized before it launches the monitor thread, so the store below clears it again on failure.
     if (!StartInternal()) {
         CleanupWayland();
         if (m_interrupt_pipe_fd[0] != -1) { close(m_interrupt_pipe_fd[0]); m_interrupt_pipe_fd[0] = -1; }
@@ -1139,7 +1140,6 @@ bool WaylandIdleMonitor::Start(int notification_timeout_ms) {
         return false;
     }
 
-    m_initialized.store(true); // Set initialized only after thread starts successfully
     normal_log("INFO: %s: Wayland idle monitor started successfully.", __func__);
     return true;
 }
@@ -1167,7 +1167,14 @@ bool WaylandIdleMonitor::StartInternal() {
         return false;
     }
 
-    // If Wayland setup okay, start the thread to run the event loop
+    // If Wayland setup okay, start the thread to run the event loop.
+    //
+    // m_initialized is set *before* the thread is launched, not after it. The monitor thread clears
+    // m_initialized when it exits unexpectedly, and a thread that fails immediately would otherwise have its
+    // clear overwritten by a store(true) issued after the launch, leaving the monitor advertising itself as
+    // available with no thread behind it. Start() clears the flag again if the launch below fails.
+    m_initialized.store(true);
+
     try {
         m_monitor_thread = std::thread(&WaylandIdleMonitor::WaylandMonitorThread, this);
     } catch (const std::system_error& e) {
@@ -1553,6 +1560,28 @@ void WaylandIdleMonitor::WaylandMonitorThread() {
     } // end while
 
     debug_log("INFO: %s: Wayland monitor thread exiting.", __func__);
+
+    // Every exit above other than the interrupt-driven one is a failure: the compositor hung up, a read or a
+    // dispatch failed, or a required global was removed. In those cases no further idle notifications will
+    // arrive, so the monitor must stop advertising itself as available. Leaving m_initialized set would make
+    // IsAvailable() keep returning true while GetIdleSeconds() served a frozen value for the life of the
+    // daemon, pinning the session as permanently active or permanently idle. Clearing it makes
+    // GetIdleTimeSeconds() fall back to the other detection paths and to event_detect.
+    //
+    // The requested-stop case is deliberately left alone: Stop() clears m_initialized itself after joining
+    // this thread and cleaning up the Wayland resources, and clearing it here would only duplicate that
+    // bookkeeping ahead of the join. Both orderings are harmless (the stores are idempotent and this tail
+    // touches no Wayland resource), but Stop() stays the single owner of the ordered shutdown.
+    if (!m_interrupt_monitor.load(std::memory_order_relaxed)) {
+        error_log("%s: Wayland monitor thread exited unexpectedly. Marking the monitor unavailable.", __func__);
+
+        // Reset the reported state first so that a reader that still sees m_initialized set does not observe a
+        // stale idle time, and so that a later Start() does not inherit it.
+        m_is_idle.store(false, std::memory_order_relaxed);
+        m_idle_start_time.store(0, std::memory_order_relaxed);
+        m_initialized.store(false);
+    }
+
     // Cleanup of Wayland resources happens in Stop() or ~WaylandIdleMonitor()
     // which is called after this thread is joined.
 }
