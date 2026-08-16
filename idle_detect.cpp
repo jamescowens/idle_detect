@@ -982,6 +982,14 @@ int64_t QueryXssIdleMs(Display* x_display, XssOutcome* outcome)
 
 // Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this from X11IdleSource.
 //
+// A display that does not answer is reported at debug level rather than error level, with the one exception
+// noted below. This function's only caller is X11IdleSource::ResolveIdleSeconds(), which runs once per
+// discovered X candidate per reconcile tick. Discovery is deliberately over-inclusive and rejection is its
+// designed outcome, so "this display is not a usable endpoint" is ordinary information, not a fault: a KDE
+// Wayland desktop whose Xwayland does not advertise MIT-SCREEN-SAVER would otherwise write an error to the
+// journal every second, forever, about a display that is doing nothing wrong. Losing every source is still
+// reported, by the main loop, which is the level at which it is actually a problem.
+//
 // The local Display* is named x_display rather than display so it does not shadow the display name parameter.
 int64_t GetIdleTimeXss(const std::string& display, int max_connect_retries) {
     const char* display_label = display.empty() ? "<default>" : display.c_str();
@@ -1008,10 +1016,17 @@ int64_t GetIdleTimeXss(const std::string& display, int max_connect_retries) {
         x_display = OpenXDisplayGuarded(display_name);
         if (x_display) break;
         if (attempt < max_attempts) {
-            error_log("WARNING: %s: Could not open X display (attempt %d/%d). Retrying...", __func__, attempt, max_attempts);
+            debug_log("INFO: %s: Could not open X display '%s' (attempt %d/%d). Retrying...",
+                      __func__,
+                      display_label,
+                      attempt,
+                      max_attempts);
             std::this_thread::sleep_for(std::chrono::milliseconds(X_RETRY_DELAY_MS));
         } else {
-            error_log("%s: Could not open X display after %d attempts.", __func__, max_attempts);
+            debug_log("INFO: %s: Could not open X display '%s' after %d attempt(s).",
+                      __func__,
+                      display_label,
+                      max_attempts);
             return -1;
         }
     }
@@ -1054,14 +1069,16 @@ int64_t GetIdleTimeXss(const std::string& display, int max_connect_retries) {
     case XssOutcome::OK:
         break;
     case XssOutcome::NO_EXTENSION:
-        error_log("%s: XScreenSaver extension unavailable on display '%s'.", __func__, display_label);
+        debug_log("INFO: %s: XScreenSaver extension unavailable on display '%s'.", __func__, display_label);
         return -1;
     case XssOutcome::ALLOC_FAILED:
+        // Not a property of the display: this is a memory allocation failing, and it says nothing about
+        // whether this display is a usable endpoint. It stays at error level for that reason.
         error_log("%s: Could not allocate XScreenSaverInfo.", __func__);
         return -1;
     case XssOutcome::QUERY_FAILED:
     case XssOutcome::DISPLAY_DIED:
-        error_log("%s: XScreenSaver query failed on display '%s'.", __func__, display_label);
+        debug_log("INFO: %s: XScreenSaver query failed on display '%s'.", __func__, display_label);
         return -1;
     }
 
