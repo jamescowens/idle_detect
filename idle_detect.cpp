@@ -1224,6 +1224,14 @@ void WaylandIdleMonitor::Stop() {
     normal_log("INFO: %s: Wayland idle monitor stopped.", __func__);
 }
 
+void WaylandIdleMonitor::ResetWaylandState() {
+    m_seat = nullptr;
+    m_idle_notifier = nullptr;
+    m_seat_id = 0;
+    m_idle_notifier_id = 0;
+    m_idle_notification = nullptr;
+}
+
 // InitializeWayland (with simplified retry logic focusing on connect and roundtrip check)
 bool WaylandIdleMonitor::InitializeWayland() {
     const int MAX_INIT_RETRIES = 15; // Example retries
@@ -1243,12 +1251,11 @@ bool WaylandIdleMonitor::InitializeWayland() {
             m_registry = wl_display_get_registry(m_display);
             if (!m_registry) {
                 error_log("%s: Failed to get Wayland registry (attempt %d).", __func__, attempt);
-                wl_display_disconnect(m_display); m_display = nullptr;
+                CleanupWayland();
                 // Go to sleep and retry
             } else {
                 // Reset potential stale globals found from previous failed attempts
-                m_seat = nullptr; m_idle_notifier = nullptr;
-                m_seat_id = 0; m_idle_notifier_id = 0;
+                ResetWaylandState();
 
                 wl_registry_add_listener(m_registry, (const wl_registry_listener*)c_registry_listener_ptr, this);
 
@@ -1267,15 +1274,13 @@ bool WaylandIdleMonitor::InitializeWayland() {
                                   __func__,
                                   attempt);
                         // Clean up this attempt's resources before retrying
-                        wl_registry_destroy(m_registry); m_registry = nullptr;
-                        wl_display_disconnect(m_display); m_display = nullptr;
+                        CleanupWayland();
                         // Go to sleep and retry
                     }
                 } else {
                     error_log("%s: Wayland display roundtrip failed (attempt %d).", __func__, attempt);
                     // Clean up this attempt's resources
-                    if (m_registry) { wl_registry_destroy(m_registry); m_registry = nullptr; }
-                    wl_display_disconnect(m_display); m_display = nullptr;
+                    CleanupWayland();
                     // Go to sleep and retry
                 }
             } // end registry check
@@ -1315,15 +1320,19 @@ void WaylandIdleMonitor::CleanupWayland() {
         m_idle_notification = nullptr;
     }
     // Destroy/release globals
-    if (m_idle_notifier) { m_idle_notifier = nullptr; } // Global, no destroy in spec
+    if (m_idle_notifier) {
+        ext_idle_notifier_v1_destroy(m_idle_notifier);
+        m_idle_notifier = nullptr;
+    }
     if (m_seat) {
-        // Check version before calling release (available since v5)
+        // Check version before calling release (available since v5). Below v5 there is no
+        // release request, so destroy the proxy directly rather than leaking it until
+        // wl_display_disconnect().
         if (wl_proxy_get_version((struct wl_proxy *)m_seat) >= WL_SEAT_RELEASE_SINCE_VERSION) {
             wl_seat_release(m_seat);
+        } else {
+            wl_proxy_destroy((struct wl_proxy *)m_seat);
         }
-        // Even without release, we destroy the proxy reference below implicitly or explicitly?
-        // Wayland client library usually handles proxy destruction when display is disconnected/destroyed.
-        // Setting pointer to null is sufficient here.
         m_seat = nullptr;
     }
     // Destroy registry
@@ -1334,6 +1343,9 @@ void WaylandIdleMonitor::CleanupWayland() {
         wl_display_disconnect(m_display);
         m_display = nullptr;
     }
+    m_seat_id = 0;
+    m_idle_notifier_id = 0;
+
     // Note: Interrupt pipe FDs are NOT closed here. They are owned by Start()/Stop(), not by the
     // Wayland connection lifecycle. CleanupWayland() is called from InitializeWayland() retry loops
     // where the pipe must survive across attempts.

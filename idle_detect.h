@@ -186,6 +186,9 @@ private:
     //! \brief Private method to clean up Wayland resources.
     void CleanupWayland();
 
+    //! \brief Private method to clear cached Wayland object pointers and IDs without destroying them.
+    void ResetWaylandState();
+
     //! \brief Private method to create the idle notification object.
     void CreateIdleNotification();
 
