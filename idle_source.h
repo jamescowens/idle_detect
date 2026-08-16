@@ -13,15 +13,25 @@
 
 namespace IdleDetect {
 
+//
+// The numeric values of the two sentinels below are a contract with idle_detect.cpp's main
+// loop, which does not use these names: GetIdleTimeSeconds() returns a literal -2 for a tty
+// session and the main loop tests the aggregate against a literal -2 before overriding
+// use_event_detect. The constants and those literals can therefore drift apart silently, so
+// the values must not change. tests/idle_aggregation_tests.cpp pins them against the literals
+// deliberately, since every other assertion there uses the symbolic name on both sides of the
+// comparison and is blind to a change in the value.
+//
+
 //!
-//! \brief Returned when a source exists but could not produce a reading.
+//! \brief Returned when a source exists but could not produce a reading. Must remain -1.
 //!
 constexpr int64_t IDLE_ERROR = -1;
 
 //!
 //! \brief Returned when no GUI session exists at all. Instructs the caller to defer to
-//! event_detect regardless of the use_event_detect config setting. Must remain distinct
-//! from IDLE_ERROR.
+//! event_detect regardless of the use_event_detect config setting. Must remain -2, and
+//! therefore distinct from IDLE_ERROR.
 //!
 constexpr int64_t IDLE_NO_GUI_SESSION = -2;
 

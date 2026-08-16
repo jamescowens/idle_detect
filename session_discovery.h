@@ -46,9 +46,20 @@ struct DiscoveryHints {
     //! \brief Display values from logind graphical sessions. Optional enrichment only.
     std::vector<std::string> m_logind_displays;
 
+    //!
     //! \brief Our uid. X socket candidates not owned by this uid are rejected, because
     //! /tmp/.X11-unix is world visible and contains other users' sockets.
-    uid_t m_uid = 0;
+    //!
+    //! The default is an explicitly invalid uid rather than 0, because 0 is a legal uid
+    //! (root) and so cannot also mean "unset". Defaulting to 0 would not disable the
+    //! ownership filter for a caller that forgot to populate this field, it would invert it:
+    //! the caller's own sockets would be rejected and the display manager's root-owned
+    //! greeter socket accepted. That is the worst possible failure direction for a filter
+    //! whose entire job is to reject another user's sockets, so DiscoverEndpoints() skips the
+    //! X socket directory scan outright while this field holds the invalid value. An unset
+    //! uid means "skip", never "guess".
+    //!
+    uid_t m_uid = static_cast<uid_t>(-1);
 };
 
 //!
@@ -56,6 +67,10 @@ struct DiscoveryHints {
 //!
 //! Discovery is deliberately over-inclusive; callers validate each candidate by connecting
 //! to it. No single hint is load-bearing.
+//!
+//! The one exception is DiscoveryHints::m_uid: if it is left at its invalid default the X
+//! socket directory scan is skipped entirely rather than run against an unusable filter. The
+//! environment and logind display hints are unaffected.
 //!
 //! \param hints discovery inputs
 //! \return deduplicated candidate endpoints

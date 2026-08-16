@@ -127,6 +127,17 @@ std::optional<std::string> NormalizeX11Display(const std::string& raw)
         return std::nullopt;
     }
 
+    // Canonicalize leading zeros, so ":007" and ":7" do not become two distinct Endpoints for
+    // one display. An all-zero number collapses to a single "0", making ":0" and ":00" the
+    // same canonical display.
+    const size_t first_significant = number.find_first_not_of('0');
+
+    if (first_significant == std::string::npos) {
+        number = "0";
+    } else {
+        number.erase(0, first_significant);
+    }
+
     return ":" + number;
 }
 
@@ -157,7 +168,15 @@ std::set<Endpoint> DiscoverEndpoints(const DiscoveryHints& hints)
     }
 
     // --- X11: union of socket scan, systemd manager environment, and logind. ---
-    if (!hints.m_x11_socket_dir.empty()) {
+    //
+    // The socket scan is skipped outright when the caller left m_uid at its invalid default,
+    // because the ownership filter below is the only thing standing between us and another
+    // user's socket, and a filter that cannot be evaluated must not be run. Guessing the
+    // caller's uid here would be worse than discovering nothing: it would silently accept
+    // whatever this process happens to run as. This translation unit has no logging
+    // dependency by design, so the miss is silent. The environment and logind hints below
+    // still contribute.
+    if (!hints.m_x11_socket_dir.empty() && hints.m_uid != static_cast<uid_t>(-1)) {
         for (const fs::path& path : ListDirectory(hints.m_x11_socket_dir)) {
             const std::string name = path.filename().string();
 
