@@ -1628,6 +1628,27 @@ bool WaylandIdleMonitor::ReapFailedThread() {
 
 // Stop method
 void WaylandIdleMonitor::Stop() {
+    // A monitor that was never successfully started has nothing to stop, and now says nothing about it. This
+    // is the ordinary teardown of a REJECTED VALIDATION CANDIDATE: WaylandIdleSource discards the monitor it
+    // built, and the destructor arrives here with no thread, no interrupt pipe and no Wayland resources, all
+    // of which Start() already released on its own failure path. Announcing that at normal level and then
+    // reporting the absent interrupt pipe as a warning cost three journal lines per rejected candidate, on
+    // every reconcile tick, forever -- three of the seven lines that one stale socket was measured emitting
+    // per tick.
+    //
+    // The three conditions below are exactly what the rest of this method acts on: the thread it joins, the
+    // pipe it signals and closes, and the initialized flag that gates the Wayland teardown. If none of them
+    // is set there is provably no work here, so this is a silent no-op rather than a quieter one.
+    if (!m_initialized.load()
+            && !m_monitor_thread.joinable()
+            && m_interrupt_pipe_fd[0] == -1
+            && m_interrupt_pipe_fd[1] == -1) {
+        debug_log("INFO: %s: Nothing to stop on socket %s; the monitor was never started.",
+                  __func__,
+                  SocketNameForLog(m_socket_name));
+        return;
+    }
+
     normal_log("INFO: %s: Stopping Wayland idle monitor on socket %s...",
                __func__,
                SocketNameForLog(m_socket_name));
