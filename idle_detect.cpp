@@ -1091,6 +1091,7 @@ WaylandIdleMonitor::WaylandIdleMonitor() :
     m_idle_start_time(0),
     m_interrupt_monitor(false),
     m_initialized(false),
+    m_globals_lost(false),
     m_display(nullptr),
     m_registry(nullptr),
     m_idle_notification(nullptr),
@@ -1124,6 +1125,7 @@ bool WaylandIdleMonitor::Start(int notification_timeout_ms) {
 
     // Reset state flags
     m_interrupt_monitor.store(false);
+    m_globals_lost.store(false);
     m_is_idle.store(false);
     m_idle_start_time.store(0);
 
@@ -1252,6 +1254,11 @@ bool WaylandIdleMonitor::InitializeWayland() {
         // Reset pointers for this attempt
         CleanupWayland(); // Ensure clean slate before connection attempt
 
+        // A global removed during a previous attempt's roundtrips must not condemn this attempt. If a global
+        // this monitor depends on is removed during this attempt, the bound-pointer check below fails the
+        // attempt anyway, so a successful return always leaves this flag clear.
+        m_globals_lost.store(false);
+
         m_display = wl_display_connect(nullptr);
         if (!m_display) {
             error_log("%s: Failed to connect to Wayland display (attempt %d).", __func__, attempt);
@@ -1314,6 +1321,55 @@ bool WaylandIdleMonitor::InitializeWayland() {
     return false;
 }
 
+void WaylandIdleMonitor::DestroySeat() {
+    if (!m_seat) {
+        return;
+    }
+
+    // Check version before calling release (available since v5). Below v5 there is no
+    // release request, so destroy the proxy directly rather than leaking it until
+    // wl_display_disconnect().
+    if (wl_proxy_get_version((struct wl_proxy *)m_seat) >= WL_SEAT_RELEASE_SINCE_VERSION) {
+        wl_seat_release(m_seat);
+    } else {
+        wl_proxy_destroy((struct wl_proxy *)m_seat);
+    }
+
+    m_seat = nullptr;
+}
+
+void WaylandIdleMonitor::OnGlobalRemoved(uint32_t name) {
+    debug_log("INFO: %s: Wayland global removed: %u", __func__, name);
+
+    // The proxies must be destroyed here rather than simply forgotten. CleanupWayland() gates its destroys on
+    // the cached pointers being non-null, and wl_display_disconnect() does not free live proxies, so nulling a
+    // pointer without destroying it leaks the proxy for the life of the connection. Destroying a proxy from
+    // inside a dispatch callback is legal, and clearing the pointer immediately afterwards keeps the later
+    // CleanupWayland() from destroying it a second time.
+    // The zero checks matter: an unbound global has a cached id of 0, and matching a removal against that
+    // would destroy a proxy this monitor never bound.
+    if (m_seat_id != 0 && name == m_seat_id) {
+        error_log("WARN: %s: Monitored wl_seat (name %u) was removed!", __func__, name);
+        DestroySeat();
+        m_seat_id = 0;
+    } else if (m_idle_notifier_id != 0 && name == m_idle_notifier_id) {
+        error_log("WARN: %s: Idle notifier global (name %u) was removed!", __func__, name);
+        if (m_idle_notifier) {
+            ext_idle_notifier_v1_destroy(m_idle_notifier);
+            m_idle_notifier = nullptr;
+        }
+        m_idle_notifier_id = 0;
+    } else {
+        // Not a global this monitor depends on.
+        return;
+    }
+
+    // Without either global this monitor can no longer report idle time, so flag it as failed. The monitor
+    // thread breaks out of its loop on this, and the connection is rebuilt rather than left reporting against a
+    // global that no longer exists. This is intentionally not m_interrupt_monitor, which means "asked to stop".
+    m_globals_lost.store(true);
+}
+
 void WaylandIdleMonitor::CleanupWayland() {
     // Only log if resources might actually exist
     if (m_display || m_registry || m_seat || m_idle_notifier || m_idle_notification || m_interrupt_pipe_fd[0] != -1) {
@@ -1333,17 +1389,7 @@ void WaylandIdleMonitor::CleanupWayland() {
         ext_idle_notifier_v1_destroy(m_idle_notifier);
         m_idle_notifier = nullptr;
     }
-    if (m_seat) {
-        // Check version before calling release (available since v5). Below v5 there is no
-        // release request, so destroy the proxy directly rather than leaking it until
-        // wl_display_disconnect().
-        if (wl_proxy_get_version((struct wl_proxy *)m_seat) >= WL_SEAT_RELEASE_SINCE_VERSION) {
-            wl_seat_release(m_seat);
-        } else {
-            wl_proxy_destroy((struct wl_proxy *)m_seat);
-        }
-        m_seat = nullptr;
-    }
+    DestroySeat();
     // Destroy registry
     if (m_registry) { wl_registry_destroy(m_registry); m_registry = nullptr; }
     // Disconnect display
@@ -1427,6 +1473,14 @@ void WaylandIdleMonitor::WaylandMonitorThread() {
             break;
         }
 
+        // A global this monitor depends on may have been removed by a callback dispatched inside PrepareRead().
+        // The read lock is held at this point, so it must be released before leaving the loop.
+        if (m_globals_lost.load(std::memory_order_relaxed)) {
+            error_log("%s: Required Wayland global removed by the compositor. Exiting thread.", __func__);
+            wl_display_cancel_read(m_display);
+            break;
+        }
+
         // Flush requests to ensure server gets listener setups etc. before we block
         if (wl_display_flush(m_display) == -1 && errno != EAGAIN) {
             error_log("%s: wl_display_flush() failed: %s (%d). Exiting thread.", __func__, strerror(errno), errno);
@@ -1487,6 +1541,13 @@ void WaylandIdleMonitor::WaylandMonitorThread() {
         // Re-check interrupt flag after dispatching events
         if (m_interrupt_monitor.load(std::memory_order_relaxed)) {
             debug_log("INFO: %s: Interrupt detected after event dispatch.", __func__);
+            break;
+        }
+
+        // The dispatch above may have run the global_remove callback. No read lock is held here, because
+        // wl_display_read_events() released it.
+        if (m_globals_lost.load(std::memory_order_relaxed)) {
+            error_log("%s: Required Wayland global removed by the compositor. Exiting thread.", __func__);
             break;
         }
     } // end while
@@ -1552,16 +1613,7 @@ void WaylandIdleMonitor_HandleGlobal(void *data, wl_registry *registry, uint32_t
 void WaylandIdleMonitor_HandleGlobalRemove(void *data, wl_registry * /* registry */, uint32_t name)
 {
     WaylandIdleMonitor *monitor = static_cast<WaylandIdleMonitor*>(data);
-    debug_log("INFO: %s: Wayland global removed: %u", __func__, name);
-    if (name == monitor->m_seat_id) {
-        error_log("WARN: %s: Monitored wl_seat (name %u) was removed!", __func__, name);
-        monitor->m_seat = nullptr; // Mark as gone, maybe trigger re-init?
-        monitor->m_seat_id = 0;
-    } else if (name == monitor->m_idle_notifier_id) {
-        error_log("WARN: %s: Idle notifier global (name %u) was removed!", __func__, name);
-        monitor->m_idle_notifier = nullptr; // Mark as gone
-        monitor->m_idle_notifier_id = 0;
-    }
+    monitor->OnGlobalRemoved(name);
 }
 
 void WaylandIdleMonitor_HandleIdled(void *data, ext_idle_notification_v1 * /* notification */)

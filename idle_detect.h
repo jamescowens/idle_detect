@@ -157,6 +157,17 @@ public: // Accessible to static C callbacks
     std::atomic<bool> m_is_idle;
     std::atomic<int64_t> m_idle_start_time;
 
+    //!
+    //! \brief Handles the compositor removing a global that this monitor depends on. Destroys the affected
+    //! proxy and flags the monitor as failed so the connection is rebuilt.
+    //!
+    //! This is called from the registry listener's global_remove callback, which runs on the monitor thread
+    //! during event dispatch and on the main thread during the roundtrips in InitializeWayland().
+    //!
+    //! \param name The registry name of the removed global.
+    //!
+    void OnGlobalRemoved(uint32_t name);
+
 private:
     //! \brief The WaylandIdleMonitor thread that monitors the Wayland session for idle state changes.
     std::thread m_monitor_thread;
@@ -169,6 +180,14 @@ private:
 
     //! \brief Flag to indicate whether the monitor has been initialized.
     std::atomic<bool> m_initialized;
+
+    //!
+    //! \brief Flag set when the compositor removes a global the monitor depends on.
+    //!
+    //! This is deliberately separate from m_interrupt_monitor: m_globals_lost means the monitor has failed and
+    //! its Wayland connection must be rebuilt, whereas m_interrupt_monitor means the monitor was asked to stop.
+    //!
+    std::atomic<bool> m_globals_lost;
 
     //! \brief Wayland display and registry objects
     wl_display* m_display;
@@ -193,6 +212,12 @@ private:
 
     //! \brief Private method to initialize Wayland and set up the idle notification.
     bool InitializeWayland();
+
+    //!
+    //! \brief Private method to destroy (or release, depending on the bound version) the wl_seat proxy and
+    //! clear the cached pointer. Safe to call when no seat is bound.
+    //!
+    void DestroySeat();
 
     //! \brief Private method to clean up Wayland resources.
     void CleanupWayland();
