@@ -108,6 +108,8 @@ set(SOURCES_IDLE_DETECT
     "util.h"
     "tinyformat.h"
     "idle_detect.h"
+    "idle_source.h"
+    "idle_source.cpp"
     "util.cpp"
     "idle_detect.cpp"
     # No generated Wayland sources needed anymore
@@ -347,7 +349,9 @@ if(BUILD_TESTING)
         tests/util_tests.cpp
         tests/event_message_tests.cpp
         tests/config_tests.cpp
+        tests/idle_aggregation_tests.cpp
         util.cpp
+        idle_source.cpp
     )
 
     target_include_directories(idle_detect_tests PRIVATE
