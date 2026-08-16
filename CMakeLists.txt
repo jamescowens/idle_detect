@@ -110,6 +110,8 @@ set(SOURCES_IDLE_DETECT
     "idle_detect.h"
     "idle_source.h"
     "idle_source.cpp"
+    "session_discovery.h"
+    "session_discovery.cpp"
     "util.cpp"
     "idle_detect.cpp"
     # No generated Wayland sources needed anymore
@@ -350,8 +352,10 @@ if(BUILD_TESTING)
         tests/event_message_tests.cpp
         tests/config_tests.cpp
         tests/idle_aggregation_tests.cpp
+        tests/session_discovery_tests.cpp
         util.cpp
         idle_source.cpp
+        session_discovery.cpp
     )
 
     target_include_directories(idle_detect_tests PRIVATE
