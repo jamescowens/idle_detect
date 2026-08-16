@@ -12,14 +12,13 @@ using namespace IdleDetect;
 //
 // Sentinel wire contract
 //
-// idle_detect.cpp does not use these names. GetIdleTimeSeconds() returns a literal -2 for a
-// tty session, and the main loop tests the aggregate against a literal -2 before overriding
-// use_event_detect, so the constants and those literals can drift apart silently. Every other
-// assertion in this file uses the symbolic constant on both sides of the comparison and is
-// therefore blind to a change in the underlying value: setting IDLE_ERROR to -7 and
-// IDLE_NO_GUI_SESSION to -9 would leave all of them passing while breaking the daemon. The
-// three cases below are the only ones that pin the numbers themselves, so they compare
-// against literals on purpose.
+// Every other assertion in this file uses the symbolic constant on both sides of the
+// comparison and is therefore blind to a change in the underlying value: setting IDLE_ERROR to
+// -7 and IDLE_NO_GUI_SESSION to -9 would leave all of them passing. The three cases below are
+// the only ones that pin the numbers themselves, so they compare against literals on purpose.
+// The values are what a reader of a debug log sees, and what the daemon's behavior has always
+// been described in terms of, so they are held fixed here even though idle_detect.cpp's main
+// loop now compares against the names rather than the bare numbers.
 //
 
 TEST(IdleAggregation, ErrorSentinelIsMinusOne)

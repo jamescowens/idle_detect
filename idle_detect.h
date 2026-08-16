@@ -21,7 +21,19 @@ struct ext_idle_notifier_v1;
 struct ext_idle_notification_v1;
 
 namespace IdleDetect {
-// Function to get the user's idle time in seconds
+
+//!
+//! \brief Resolves the local session's idle time from every live idle source.
+//!
+//! This is a thin delegation to the global IdleSourcePool, which owns the sources and is reconciled against
+//! discovery by main(). It deliberately makes no determination of its own about what kind of session this is:
+//! the session typing this replaced read getenv("DISPLAY") and getenv("WAYLAND_DISPLAY"), which are frozen at
+//! exec and therefore cannot describe a GUI session that appears after the daemon starts.
+//!
+//! \return Idle seconds >= 0, IDLE_ERROR (-1) if sources exist but none could be read, or IDLE_NO_GUI_SESSION
+//!         (-2) if there is no GUI session at all, which instructs the caller to defer to event_detect
+//!         regardless of the use_event_detect config setting.
+//!
 int64_t GetIdleTimeSeconds();
 
 //!
@@ -191,6 +203,19 @@ private:
 //! validator should use; see WaylandIdleSource::Start() in idle_sources_system.h.
 //!
 constexpr int WAYLAND_STARTUP_INIT_RETRIES = 15;
+
+//!
+//! \brief Idle notification threshold, in milliseconds, requested from ext_idle_notifier_v1 by every Wayland
+//! idle source.
+//!
+//! This is the resolution of the Wayland idle reading rather than a policy threshold: the compositor notifies
+//! once this much time has passed without input, and the monitor converts that notification into an idle time.
+//! The inactivity trigger the user configures is applied by the main loop, far downstream of this.
+//!
+//! It is a constant rather than a config value because the pool that hands it to each new source is
+//! constructed before any config file has been read.
+//!
+constexpr int WAYLAND_IDLE_NOTIFICATION_TIMEOUT_MS = 1000;
 
 //!
 //! \brief The WaylandIdleMonitor class implements the ext_idle_notifier_v1 protocol to monitor idle state in Wayland.

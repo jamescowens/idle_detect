@@ -401,6 +401,21 @@ ShellSourceFactory MakeShellSourceFactory();
 //!
 InhibitionQuery MakeInhibitionQuery();
 
+//!
+//! \brief The single process-wide pool of live idle sources, defined in idle_detect.cpp and built from the
+//! production factories above.
+//!
+//! It is declared here rather than in idle_detect.h because it is only meaningful in combination with those
+//! factories, and because idle_detect.h is included BY this header: an IdleSourcePool object declared there
+//! would make the lower-level header depend on the pool, inverting the layering this split exists to
+//! establish. GetIdleTimeSeconds() is the reader; main() is the only thing that reconciles or shuts it down.
+//!
+//! Construction takes no action and makes no system contact, so it is safe at static initialization time. The
+//! pool holds no sources until the first Reconcile(), which is what makes "the GUI session does not exist
+//! yet" an ordinary starting state rather than a startup failure.
+//!
+extern IdleSourcePool g_idle_source_pool;
+
 } // namespace IdleDetect
 
 #endif // IDLE_SOURCES_SYSTEM_H

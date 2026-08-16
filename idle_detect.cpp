@@ -5,7 +5,9 @@
  */
 
 #include <idle_detect.h>
+#include <idle_sources_system.h>
 #include <optional>
+#include <session_discovery.h>
 #include <util.h> // Includes tinyformat.h, filesystem, etc.
 #include <release.h>
 
@@ -49,8 +51,18 @@ IdleDetectConfig g_config;
 //! Global idle_detect event monitor singleton for state overrides
 IdleDetect::IdleDetectControlMonitor g_idle_detect_control_monitor;
 
-//! Global idle_detect event monitor singleton for Wayland idle detection for non-KDE, non-GNOME sessions
-IdleDetect::WaylandIdleMonitor g_wayland_idle_monitor;
+//!
+//! \brief Global pool of live idle sources. Declared in idle_sources_system.h.
+//!
+//! The production factories are bound here, which is the only place in the program where the pool's abstract
+//! interface meets real D-Bus, Wayland and X11 contact. None of them makes system contact at construction, so
+//! this is safe to build at static initialization time; the pool is empty until main() reconciles it against
+//! discovery for the first time.
+//!
+IdleDetect::IdleSourcePool IdleDetect::g_idle_source_pool(
+    IdleDetect::MakeEndpointSourceFactory(IdleDetect::WAYLAND_IDLE_NOTIFICATION_TIMEOUT_MS),
+    IdleDetect::MakeShellSourceFactory(),
+    IdleDetect::MakeInhibitionQuery());
 
 //! Global flag for signal handling
 std::atomic<bool> g_shutdown_requested = false;
@@ -193,15 +205,6 @@ int DEFAULT_IDLE_THRESHOLD_SECONDS = 0;
 //! \brief DEFAULT_CHECK_INTERVAL_SECONDS is set at 1 second and is not configurable.
 //!
 constexpr int DEFAULT_CHECK_INTERVAL_SECONDS = 1;
-
-//!
-//! \brief Helper function to determine whether GUI session is Wayland.
-//! \return true if GUI session is Wayland.
-//!
-static bool IsWaylandSession() {
-    const char* waylandDisplay = getenv("WAYLAND_DISPLAY");
-    return (waylandDisplay != nullptr && strlen(waylandDisplay) > 0);
-}
 
 /**
  * @brief Reads the timestamp from event_detect's data file.
@@ -347,19 +350,6 @@ void SendPipeNotification(const std::filesystem::path& pipe_path,
                   __func__,
                   pipe_path.string().c_str());
     }
-}
-
-//!
-//! \brief Helper function that determines whether session is tty only.
-//! \return true if session is tty only (i.e. non-GUI).
-//!
-static bool IsTtySession() {
-    const char* display = getenv("DISPLAY");
-    const char* wayland_display = getenv("WAYLAND_DISPLAY");
-
-    // If neither display variable is set, likely a TTY.
-    return (display == nullptr || strlen(display) == 0) &&
-           (wayland_display == nullptr || strlen(wayland_display) == 0);
 }
 
 // Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this for the shell idle source.
@@ -617,41 +607,6 @@ int64_t GetIdleTimeWaylandGnomeViaDBus() {
     return idle_time_seconds;
 }
 
-//!
-//! \brief This determines whether the GUI session is KDE.
-//! \return true if KDE session, false otherwise.
-//!
-static bool IsKdeSession() {
-    // Checking for KSMServer D-Bus service might be more reliable than env vars
-    GDBusConnection* connection = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, nullptr);
-    if (!connection) return false; // Cannot check if bus unavailable
-
-    GError* error = nullptr;
-    GVariant* result = g_dbus_connection_call_sync(connection,
-                                                   "org.freedesktop.DBus", // Standard service
-                                                   "/org/freedesktop/DBus", // Standard path
-                                                   "org.freedesktop.DBus",   // Standard interface
-                                                   "NameHasOwner",           // Method
-                                                   g_variant_new("(s)", "org.kde.ksmserver"), // Parameter: service name
-                                                   G_VARIANT_TYPE("(b)"),    // Reply: boolean
-                                                   G_DBUS_CALL_FLAGS_NONE,
-                                                   500, // Short timeout
-                                                   nullptr, &error);
-    bool has_owner = false;
-    if (error) {
-        debug_log("INFO: %s: Error checking D-Bus owner for org.kde.ksmserver: %s", __func__, error->message);
-        g_error_free(error);
-    } else if (result) {
-        g_variant_get(result, "(b)", &has_owner);
-        g_variant_unref(result);
-    }
-    g_object_unref(connection);
-    debug_log("INFO: %s: org.kde.ksmserver D-Bus service running? %s", __func__, has_owner ? "Yes" : "No");
-    return has_owner;
-    // Alternative: Keep using getenv("KDE_SESSION_VERSION") if preferred/reliable
-    // const char* kdeSession = getenv("KDE_SESSION_VERSION");
-    // return (kdeSession != nullptr && strlen(kdeSession) > 0);
-}
 namespace {
 
 //
@@ -1115,90 +1070,18 @@ int64_t GetIdleTimeXss(const std::string& display, int max_connect_retries) {
     return idle_time_seconds;
 }
 
-//!
-//! \brief This function determines the LOCAL session idle time using appropriate fallback logic based on the current
-//! API layout for GUI environments.
-//! \return int64_t idle time in seconds. -1 for error, -2 if tty session only.
-//!
+//
+// Declared in idle_detect.h. The session typing this replaced decided everything up front from
+// IsTtySession() and IsWaylandSession(), both of which read the process environment. That environment is
+// frozen at exec, so a daemon started before its graphical session saw a tty session forever, no matter what
+// appeared afterwards: the root cause of issue #12. IsKdeSession() went with them, superseded by
+// ShellMonitor::DetectShellKind(), which asks the same D-Bus question but also answers it for GNOME.
+//
+// The fix is that this function now determines nothing at all. It reports what the live source set currently
+// says, and keeping that set current is main()'s job.
+//
 int64_t GetIdleTimeSeconds() {
-    if (IsTtySession()) {
-        debug_log("INFO: %s: TTY session detected, idle check not applicable.", __func__);
-        // Returns -2 to indicate that idle_detect should use event_detect regardless of the config setting.
-        // (Tty monitoring is done in event_detect.)
-
-        return -2;
-    }
-
-    if (IsKdeSession()) {
-        if (IsWaylandSession()) {
-            // KDE Wayland (Plasma 6+): ksmserver GetSessionIdleTime is removed and
-            // org.freedesktop.ScreenSaver.GetSessionIdleTime returns "not supported" on Wayland.
-            // Use ext_idle_notifier_v1 for idle time with a separate D-Bus inhibition check via
-            // the PowerManagement PolicyAgent, since ext_idle_notifier_v1 may not reflect D-Bus-level
-            // inhibitions from applications using org.freedesktop.ScreenSaver.Inhibit.
-            debug_log("INFO: %s: KDE Wayland session detected. Using ext_idle_notifier_v1 with PolicyAgent inhibition check.",
-                      __func__);
-
-            if (CheckKdeInhibition()) {
-                debug_log("INFO: %s: KDE screen idle is inhibited, returning 0 idle seconds.", __func__);
-                return 0;
-            }
-
-            if (g_wayland_idle_monitor.IsAvailable()) {
-                return g_wayland_idle_monitor.GetIdleSeconds();
-            }
-
-            error_log("ERROR: %s: WaylandIdleMonitor not available for KDE Wayland session.", __func__);
-            return -1;
-        } else {
-            // KDE X11 (Plasma 5 or Plasma 6 on X11): ksmserver D-Bus method handles inhibition
-            // internally by periodically resetting the idle time returned.
-            debug_log("INFO: %s: KDE X11 session detected. Using KDE D-Bus method.", __func__);
-            return GetIdleTimeKdeDBus();
-        }
-    } else if (IsWaylandSession()) { // Non-KDE Wayland (Try GNOME D-Bus for both idle time and inhibition)
-        debug_log("INFO: %s: Non-KDE Wayland session. Checking GNOME D-Bus idle time and inhibition.", __func__);
-
-        // 1. Try GNOME D-Bus inhibition check first
-        if (CheckGnomeInhibition()) { // This returns false if call fails.
-            debug_log("INFO: %s: GNOME session is inhibited (Wayland), returning 0 idle seconds.", __func__);
-
-            return 0; // Treat as active if inhibited
-        } else {
-            // 2. Not inhibited (or check failed), try GNOME Mutter D-Bus for idle time
-            debug_log("INFO: %s: No GNOME inhibition detected. Querying Mutter D-Bus idle time...", __func__);
-            int64_t gnome_input_idle = GetIdleTimeWaylandGnomeViaDBus(); // Returns >= 0 or -1
-            if (gnome_input_idle >= 0) {
-                // Successfully got input idle time from Mutter
-                debug_log("INFO: %s: Using GNOME D-Bus for idle time.", __func__);
-                return gnome_input_idle;
-            } else {
-                // 3. Mutter D-Bus failed (maybe not Gnome?), try standard Wayland protocol as last resort
-                debug_log("INFO: %s: GNOME D-Bus failed. Trying WaylandIdleMonitor (ext-idle-notify-v1)...", __func__);
-                if (g_wayland_idle_monitor.IsAvailable()) { // Check if Wayland monitor started successfully
-                    debug_log("INFO: %s: Using WaylandIdleMonitor as final Wayland fallback.", __func__);
-                    return g_wayland_idle_monitor.GetIdleSeconds(); // Get state from monitor thread
-                } else {
-                    error_log("ERROR: %s: No working idle detection method found for this Wayland session.", __func__);
-                    return -1; // Signal failure
-                }
-            }
-        }
-    } else {
-        // Non-KDE X11 session
-        debug_log("INFO: %s: Non-KDE X11 session. Checking XSS idle time and GNOME D-Bus inhibition.", __func__);
-        if (CheckGnomeInhibition()) { // Also check inhibition for X11 (might be Gnome on X11)
-            debug_log("INFO: %s: GNOME session is inhibited (X11), returning 0 idle seconds.", __func__);
-            return 0; // Treat as active if inhibited
-        } else {
-            // Not inhibited, get input idle time from XScreenSaver
-            // Empty display preserves the environment-derived behavior this call site has always had, and the
-            // defaulted retry budget preserves the historical six attempts. This is the legacy single-display
-            // path querying the process's own DISPLAY, so waiting out an X server that is still starting is
-            // the right trade here; it is not the trade a per-endpoint resolver makes.
-            return GetIdleTimeXss(std::string {}); // Returns >= 0 on success, -1 on error
-        }
-    }
+    return g_idle_source_pool.GetIdleSeconds();
 }
 
 /**
@@ -2487,33 +2370,17 @@ int main(int argc, char* argv[])
         }
     } catch (const std::system_error& e) {
         error_log("%s: Failed to start Idle Detect Control Monitor thread: %s. Exiting.", __func__, e.what());
-        // Stop other monitors if started (e.g., Wayland) before exiting
-        // if (wayland_monitor_started) { g_wayland_idle_monitor.Stop(); }
         return 1;
     } catch (...) {
         error_log("%s: Unknown error starting Idle Detect Control Monitor thread. Exiting.", __func__);
-        // if (wayland_monitor_started) { g_wayland_idle_monitor.Stop(); }
         return 1;
     }
 
-    // Start Wayland Monitor AFTER control monitor (if Wayland session)
-    bool wayland_monitor_started = false;
-    if (IdleDetect::IsWaylandSession()) {
-        int notification_timeout_ms = 1000;
-        debug_log("INFO: %s: Attempting Wayland idle monitor (timeout %dms)...", __func__, notification_timeout_ms);
-        // An empty socket name keeps the historical WAYLAND_DISPLAY-derived behavior. The discovered endpoint
-        // supplies the real name once the endpoint pool drives the monitors. The retry budget is likewise
-        // defaulted rather than passed, which keeps this one-shot startup connection on the historical
-        // WAYLAND_STARTUP_INIT_RETRIES budget: this call runs once, so waiting out a compositor that is still
-        // coming up costs nothing that a per-tick validator would have to pay again.
-        if (g_wayland_idle_monitor.Start(std::string {}, notification_timeout_ms)) {
-            debug_log("INFO: %s: Wayland idle monitor started successfully.", __func__);
-            wayland_monitor_started = true; // Track success
-        } else {
-            error_log("%s: Failed to start Wayland idle monitor. Relying on D-Bus/X11 fallbacks.", __func__);
-            // Continue without it, GetIdleTimeSeconds will handle fallback
-        }
-    }
+    // The one-shot Wayland monitor that used to be started here is gone. It was started only when
+    // getenv("WAYLAND_DISPLAY") was set at exec, bound to whatever socket that variable named, and never
+    // revisited, so it could neither find a compositor that appeared later nor follow one that moved. The
+    // idle source pool supersedes it: it holds one monitor per discovered endpoint and is reconciled against
+    // discovery while the daemon runs.
 
     // --- Main Loop ---
     bool first_check = true;
@@ -2532,8 +2399,8 @@ int main(int argc, char* argv[])
             debug_log("INFO: %s: idle time from GUI session: %lld seconds.",
                       __func__,
                       (int64_t)idle_seconds);
-        } else if (idle_seconds == -2 && !use_event_detect) {
-            debug_log("INFO: %s: Tty session. Overriding use_event_detect and using event_detect anyway.",
+        } else if (idle_seconds == IdleDetect::IDLE_NO_GUI_SESSION && !use_event_detect) {
+            debug_log("INFO: %s: No GUI session. Overriding use_event_detect and using event_detect anyway.",
                       __func__);
             using_event_detect_as_only_source = true;
         }
@@ -2549,8 +2416,9 @@ int main(int argc, char* argv[])
                 int64_t calculated_idle = current_time - shmem_timestamp;
                 calculated_idle = (calculated_idle > 0) ? calculated_idle : 0; // Ensure non-negative
 
-                // If idle_seconds is < 0, this indicates an error state from IdleDetect::GetIdleTimeSeconds(), or
-                // tty only session if -2, in which case the value of idle_seconds should not be used directly.
+                // If idle_seconds is < 0, it is a sentinel from IdleDetect::GetIdleTimeSeconds() -- IDLE_ERROR if
+                // the GUI sources could not be read, or IDLE_NO_GUI_SESSION if there is no GUI session at all --
+                // and the value must not be used directly.
                 // If idle_seconds is >= 0, it indicates a valid idle time from GUI session.
                 // If shmem_timestamp == 0, it indicates that force_idle was set via event_detect directly, and we should use the
                 // calculated idle time. This is important to capture force_idle injected directly into event_detect via a script
@@ -2579,8 +2447,9 @@ int main(int argc, char* argv[])
                     int64_t calculated_idle = current_time - file_timestamp;
                     calculated_idle = (calculated_idle > 0) ? calculated_idle : 0; // Ensure non-negative
 
-                    // If idle_seconds is < 0, this indicates an error state from IdleDetect::GetIdleTimeSeconds(), or
-                    // tty only session if -2, in which case the value of idle_seconds should not be used directly.
+                    // If idle_seconds is < 0, it is a sentinel from IdleDetect::GetIdleTimeSeconds() -- IDLE_ERROR if
+                    // the GUI sources could not be read, or IDLE_NO_GUI_SESSION if there is no GUI session at all --
+                    // and the value must not be used directly.
                     // If idle_seconds is >= 0, it indicates a valid idle time from GUI session.
                     // If file_timestamp == 0, it indicates that force_idle was set via event_detect directly, and we should use the
                     // calculated idle time. This is important to capture force_idle injected directly into event_detect via a script
@@ -2733,13 +2602,6 @@ int main(int argc, char* argv[])
         __func__);
 
     // --- Shutdown sequence ---
-
-    // --- Stop Wayland monitor ---
-    if (wayland_monitor_started) {
-        normal_log("INFO: %s: Stopping Wayland idle monitor...", __func__);
-        g_wayland_idle_monitor.Stop(); // Stop calls interrupt pipe write + join
-        normal_log("INFO: %s: Wayland idle monitor stopped.", __func__);
-    }
 
     // --- Stop Idle Detect Control Monitor thread ---
     if (control_monitor_started && g_idle_detect_control_monitor.m_idle_detect_control_monitor_thread.joinable()) {

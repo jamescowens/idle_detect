@@ -14,13 +14,13 @@
 namespace IdleDetect {
 
 //
-// The numeric values of the two sentinels below are a contract with idle_detect.cpp's main
-// loop, which does not use these names: GetIdleTimeSeconds() returns a literal -2 for a tty
-// session and the main loop tests the aggregate against a literal -2 before overriding
-// use_event_detect. The constants and those literals can therefore drift apart silently, so
-// the values must not change. tests/idle_aggregation_tests.cpp pins them against the literals
-// deliberately, since every other assertion there uses the symbolic name on both sides of the
-// comparison and is blind to a change in the value.
+// The distinction between the two sentinels below is a contract with idle_detect.cpp's main loop, which
+// overrides the use_event_detect config setting on IDLE_NO_GUI_SESSION and not on IDLE_ERROR. That loop now
+// compares against these names rather than against the bare numbers, so the two can no longer drift apart
+// there. tests/idle_aggregation_tests.cpp still pins the values against literals, because every other
+// assertion in that file uses the symbolic name on both sides of the comparison and is therefore blind to a
+// change in the value: the numbers are also what a reader of a debug log sees, and swapping them would
+// invert the meaning of every historical log line without failing a single test.
 //
 
 //!
