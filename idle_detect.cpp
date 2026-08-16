@@ -2443,10 +2443,34 @@ int main(int argc, char* argv[])
             debug_log("INFO: %s: idle time from GUI session: %lld seconds.",
                       __func__,
                       (int64_t)idle_seconds);
-        } else if (idle_seconds == IdleDetect::IDLE_NO_GUI_SESSION && !use_event_detect) {
-            debug_log("INFO: %s: No GUI session. Overriding use_event_detect and using event_detect anyway.",
-                      __func__);
+        }
+
+        // IDLE_NO_GUI_SESSION means no idle source exists at all, and it overrides the use_event_detect
+        // config setting, because in that state the only activity there is to see -- tty and ssh -- is
+        // visible only to event_detect.
+        //
+        // The override is re-derived on every iteration rather than latched. It used to be set once and
+        // never cleared, which pinned a daemon that started before its graphical session to event_detect for
+        // the rest of its life: discovery would find the session, GetIdleTimeSeconds() would report a real
+        // GUI idle time, and the pipe notification would still be suppressed as circular. That would have
+        // masked most of this fix, since starting before the session is exactly the case being fixed.
+        //
+        // IDLE_ERROR deliberately does not hold the override on. Sources exist in that case, so a GUI
+        // session exists and only the reading failed. Whether to fall back to event_detect for a failed
+        // reading is the use_event_detect setting's decision, not this override's.
+        if (idle_seconds == IdleDetect::IDLE_NO_GUI_SESSION && !use_event_detect) {
+            if (!using_event_detect_as_only_source) {
+                normal_log("INFO: %s: No GUI session found. Overriding use_event_detect and using "
+                           "event_detect as the only source.",
+                           __func__);
+            }
+
             using_event_detect_as_only_source = true;
+        } else if (using_event_detect_as_only_source) {
+            normal_log("INFO: %s: A GUI session is now present. No longer overriding use_event_detect.",
+                       __func__);
+
+            using_event_detect_as_only_source = false;
         }
 
         // This is how tty idle is captured -- use_event_detect defaults to true and is overridden to true if this is
