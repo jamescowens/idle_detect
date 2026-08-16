@@ -1087,8 +1087,9 @@ TEST(IdleSourcePool, ShellKindTransitionsCreateReplaceAndDrop)
     // the two overlapping.
     EXPECT_EQ(harness.MaxLiveShellSources(), 1);
 
-    // GNOME -> NONE: dropped and destroyed.
-    harness.Pool().Reconcile({}, ShellKind::NONE);
+    // GNOME -> NONE: dropped and destroyed, once the absence has been observed often enough to be
+    // acted on. See the debounce tests below for why disappearance is not acted on immediately.
+    ReconcileTicks(harness, SHELL_ABSENCE_OBSERVATIONS_REQUIRED, {});
 
     EXPECT_FALSE(harness.Pool().HasShellSource());
     EXPECT_EQ(harness.ShellDestructions(), 2);
@@ -1144,6 +1145,165 @@ TEST(IdleSourcePool, WaylandEndpointPresenceIsPushedToTheShellSource)
     harness.Pool().Reconcile({g_x11_one}, ShellKind::KDE);
 
     EXPECT_FALSE(harness.ShellSource()->WaylandEndpointPresent());
+}
+
+//
+// Shell disappearance debounce.
+//
+// The defect these pin down is a single failed D-Bus probe emptying the pool. The shell kind is
+// re-derived from live NameHasOwner calls on every tick with nothing to smooth it, and in a
+// shell-only session -- KDE on X11, or GNOME with no validated endpoint -- the shell is the ONLY
+// source. One hiccuped probe therefore took the pool to no sources at all, reported
+// IDLE_NO_GUI_SESSION, and flipped the daemon's source of truth to event_detect for a tick.
+//
+
+TEST(IdleSourcePool, OneMissedShellObservationDoesNotDropTheShell)
+{
+    // A shell-only session, which is the configuration where this is not merely noisy but wrong.
+    PoolHarness harness;
+
+    harness.SetShellValue(700);
+    harness.Pool().Reconcile({}, ShellKind::KDE);
+
+    ASSERT_TRUE(harness.Pool().HasShellSource());
+    ASSERT_EQ(harness.Pool().GetIdleSeconds(), 700);
+
+    FakeShellSource* source = harness.ShellSource();
+    ASSERT_NE(source, nullptr);
+
+    // One probe fails. The shell is still there; the bus was simply not answering this instant.
+    harness.Pool().Reconcile({}, ShellKind::NONE);
+
+    EXPECT_TRUE(harness.Pool().HasShellSource());
+    EXPECT_EQ(harness.ShellDestructions(), 0);
+    EXPECT_EQ(harness.ShellSource(), source);
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), 700);
+    EXPECT_NE(harness.Pool().GetIdleSeconds(), IDLE_NO_GUI_SESSION);
+}
+
+TEST(IdleSourcePool, MissedShellObservationStillReportsInhibition)
+{
+    // Inhibition is evaluated from the tracked kind, so a tick that let the observation through would
+    // resume the compute the user explicitly asked to hold off -- and it would do so while still
+    // holding the very shell source that answers for it.
+    PoolHarness harness;
+
+    harness.SetShellValue(700);
+    harness.SetInhibited(true);
+    harness.Pool().Reconcile({}, ShellKind::KDE);
+
+    ASSERT_EQ(harness.Pool().GetIdleSeconds(), 0);
+
+    harness.Pool().Reconcile({}, ShellKind::NONE);
+
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), 0);
+    ASSERT_FALSE(harness.InhibitionKinds().empty());
+    EXPECT_EQ(harness.InhibitionKinds().back(), ShellKind::KDE);
+}
+
+TEST(IdleSourcePool, ConsecutiveMissedShellObservationsEventuallyDropTheShell)
+{
+    // Debouncing is a delay, not a veto. A shell that has really exited must still be dropped, or the
+    // pool would report a source that cannot answer and would never fall back to event_detect.
+    PoolHarness harness;
+
+    harness.SetShellValue(700);
+    harness.Pool().Reconcile({}, ShellKind::KDE);
+
+    ASSERT_TRUE(harness.Pool().HasShellSource());
+
+    // One short of the threshold: still held.
+    ReconcileTicks(harness, SHELL_ABSENCE_OBSERVATIONS_REQUIRED - 1, {});
+
+    EXPECT_TRUE(harness.Pool().HasShellSource());
+    EXPECT_EQ(harness.ShellDestructions(), 0);
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), 700);
+
+    // The observation that confirms it.
+    harness.Pool().Reconcile({}, ShellKind::NONE);
+
+    EXPECT_FALSE(harness.Pool().HasShellSource());
+    EXPECT_EQ(harness.ShellDestructions(), 1);
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), IDLE_NO_GUI_SESSION);
+}
+
+TEST(IdleSourcePool, AnInterveningShellObservationResetsTheAbsenceCount)
+{
+    // The threshold counts CONSECUTIVE absences. A run broken by a successful probe starts over,
+    // otherwise a session whose bus is merely flaky would accumulate unrelated misses over hours and
+    // eventually drop a shell that was answering all along.
+    PoolHarness harness;
+
+    harness.SetShellValue(700);
+    harness.Pool().Reconcile({}, ShellKind::KDE);
+
+    FakeShellSource* source = harness.ShellSource();
+    ASSERT_NE(source, nullptr);
+
+    // Two misses, then the probe answers again.
+    ReconcileTicks(harness, SHELL_ABSENCE_OBSERVATIONS_REQUIRED - 1, {});
+    harness.Pool().Reconcile({}, ShellKind::KDE);
+
+    EXPECT_TRUE(harness.Pool().HasShellSource());
+    EXPECT_EQ(harness.ShellDestructions(), 0);
+
+    // The shell that was held is the same object, not a rebuild: the debounce keeps the source, it
+    // does not tear it down and put it back.
+    EXPECT_EQ(harness.ShellSource(), source);
+    EXPECT_EQ(harness.ShellFactoryKinds().size(), 1u);
+
+    // Two more misses. Without the reset this would be the fourth consecutive absence and the shell
+    // would already be gone.
+    ReconcileTicks(harness, SHELL_ABSENCE_OBSERVATIONS_REQUIRED - 1, {});
+
+    EXPECT_TRUE(harness.Pool().HasShellSource());
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), 700);
+
+    // And the run completes on its own terms.
+    harness.Pool().Reconcile({}, ShellKind::NONE);
+
+    EXPECT_FALSE(harness.Pool().HasShellSource());
+    EXPECT_EQ(harness.ShellDestructions(), 1);
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), IDLE_NO_GUI_SESSION);
+}
+
+TEST(IdleSourcePool, AShellAppearingIsActedOnImmediately)
+{
+    // Only disappearance is debounced. Delaying an appearance would leave a session that has just
+    // come up reporting IDLE_NO_GUI_SESSION for no reason, and the risk the debounce exists to
+    // manage does not run in this direction.
+    PoolHarness harness;
+
+    harness.SetShellValue(700);
+
+    harness.Pool().Reconcile({}, ShellKind::NONE);
+
+    ASSERT_FALSE(harness.Pool().HasShellSource());
+
+    harness.Pool().Reconcile({}, ShellKind::KDE);
+
+    EXPECT_TRUE(harness.Pool().HasShellSource());
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), 700);
+    EXPECT_EQ(harness.ShellFactoryKinds().size(), 1u);
+}
+
+TEST(IdleSourcePool, EndpointsAreNotDebounced)
+{
+    // Endpoints are discovered by a filesystem scan and validated by a connect, neither of which has
+    // the probe-hiccup failure mode, and delaying their eviction would leave a source reporting
+    // against a compositor that is already gone.
+    PoolHarness harness;
+
+    harness.ScriptEndpoint(g_x11_one, 42);
+    harness.Pool().Reconcile({g_x11_one}, ShellKind::NONE);
+
+    ASSERT_EQ(harness.Pool().EndpointSourceCount(), 1u);
+
+    harness.Pool().Reconcile({}, ShellKind::NONE);
+
+    EXPECT_EQ(harness.Pool().EndpointSourceCount(), 0u);
+    EXPECT_TRUE(harness.EndpointDestroyed(g_x11_one));
+    EXPECT_EQ(harness.Pool().GetIdleSeconds(), IDLE_NO_GUI_SESSION);
 }
 
 //

@@ -49,6 +49,25 @@ constexpr int ENDPOINT_RETRY_BACKOFF_INITIAL_TICKS = 1;
 constexpr int ENDPOINT_RETRY_BACKOFF_MAX_TICKS = 64;
 
 //!
+//! \brief Consecutive reconciles reporting ShellKind::NONE before a shell that was present is acted
+//! on as gone.
+//!
+//! The shell kind is re-derived from live D-Bus probes on every tick with nothing to smooth it, so a
+//! single failed NameHasOwner -- a bus hiccup, a timeout under load, a session bus restart -- reads
+//! as "there is no shell". In a shell-only session, KDE on X11 or GNOME with no validated endpoint,
+//! the shell is the ONLY source, so acting on that one observation drops the pool to no sources at
+//! all, reports IDLE_NO_GUI_SESSION, and flips the daemon's source of truth to event_detect for a
+//! tick over a probe that was answering again immediately afterwards.
+//!
+//! Only the DISAPPEARING direction is debounced. A shell appearing is acted on at once, because that
+//! direction is not harmful: the worst case is a source built one tick early, and it is validated by
+//! its factory before it is used. Endpoints are not debounced at all -- their discovery is a
+//! filesystem scan plus a validating connect, neither of which has this failure mode, and delaying
+//! their eviction would keep a source alive against a compositor that is already gone.
+//!
+constexpr int SHELL_ABSENCE_OBSERVATIONS_REQUIRED = 3;
+
+//!
 //! \brief Creates a started, validated source for an endpoint, or nullptr if the candidate is not
 //! usable.
 //!
@@ -154,8 +173,13 @@ public:
     //! is acceptable, since the backoff exists to bound work per reconcile, and the number of
     //! reconciles is exactly what it bounds it against.
     //!
+    //! The shell argument is an OBSERVATION rather than a verdict. A shell that appears is acted on
+    //! immediately, while a shell that has gone missing must be missing for
+    //! SHELL_ABSENCE_OBSERVATIONS_REQUIRED consecutive reconciles before its source is dropped; see
+    //! that constant for why the two directions differ.
+    //!
     //! \param endpoints Candidate endpoints from discovery.
-    //! \param shell Currently detected shell kind.
+    //! \param shell Shell kind observed by the caller on this tick.
     //!
     void Reconcile(const std::set<Endpoint>& endpoints, ShellKind shell);
 
@@ -235,6 +259,20 @@ private:
     void RecordCandidateFailure(const Endpoint& endpoint);
 
     //!
+    //! \brief Turns a shell observation into the shell kind to act on, debouncing disappearance.
+    //! Called with mtx_pool held.
+    //!
+    //! Counting observations rather than elapsed time, for the same reason the endpoint backoff counts
+    //! ticks: this file is dependency-free and has no clock. The unit is right either way, because what
+    //! is being defended against is a probe failing, and probes happen once per reconcile.
+    //!
+    //! \param observed Shell kind the caller detected on this tick.
+    //! \return Shell kind to reconcile against, which is the previously acted-on kind while an absence
+    //!         is still being confirmed.
+    //!
+    ShellKind DebounceShellObservation(ShellKind observed);
+
+    //!
     //! \brief Pushes the context only the pool knows onto the shell source, if that source wants
     //! it. Called with mtx_pool held.
     //!
@@ -273,7 +311,19 @@ private:
     //! must keep working when the shell has no idle value and its factory therefore returned
     //! nullptr.
     //!
+    //! This is the kind most recently ACTED ON, not the most recent observation. While an absence is
+    //! being confirmed the two differ, and this one is what the pool reconciles and evaluates
+    //! inhibition against.
+    //!
     ShellKind m_shell_kind;
+
+    //!
+    //! \brief Consecutive reconciles that have observed no shell while one was being tracked.
+    //!
+    //! Reset by any observation of a shell, and by acting on the absence, so it only ever counts an
+    //! unbroken run.
+    //!
+    int m_shell_absence_observations;
 };
 
 } // namespace IdleDetect

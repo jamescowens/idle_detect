@@ -19,6 +19,7 @@ IdleSourcePool::IdleSourcePool(EndpointSourceFactory endpoint_factory,
     , m_shell_factory(std::move(shell_factory))
     , m_inhibition_query(std::move(inhibition_query))
     , m_shell_kind(ShellKind::NONE)
+    , m_shell_absence_observations(0)
 {}
 
 IdleSourcePool::~IdleSourcePool()
@@ -132,16 +133,21 @@ void IdleSourcePool::Reconcile(const std::set<Endpoint>& endpoints, ShellKind sh
 
     // --- Reconcile the shell source. ---
     //
+    // The observation is debounced first. The caller re-derives the shell from live bus probes on
+    // every tick, so one failed NameHasOwner would otherwise drop a perfectly good shell, and in a
+    // shell-only session the shell is the only source there is.
+    const ShellKind effective_shell = DebounceShellObservation(shell);
+
     // The kind is recorded whatever happens to the source, because inhibition is evaluated from the
     // kind. A GNOME shell without mutter has no idle value and its factory may well decline to
     // build a source for it, but it still inhibits.
-    if (shell == ShellKind::NONE) {
+    if (effective_shell == ShellKind::NONE) {
         if (m_shell_source) {
             normal_log("INFO: %s: Desktop shell went away; dropping shell idle source.", __func__);
 
             m_shell_source.reset();
         }
-    } else if (!m_shell_source || shell != m_shell_kind) {
+    } else if (!m_shell_source || effective_shell != m_shell_kind) {
         // Replacing rather than updating on a kind change: the shell source is reached through the
         // abstract IdleSource interface, which has no SetKind(), and a source built for the previous
         // shell would go on querying a bus name that nothing owns any more.
@@ -155,7 +161,7 @@ void IdleSourcePool::Reconcile(const std::set<Endpoint>& endpoints, ShellKind sh
         // holding whatever the shell source holds.
         m_shell_source.reset();
 
-        m_shell_source = m_shell_factory ? m_shell_factory(shell) : nullptr;
+        m_shell_source = m_shell_factory ? m_shell_factory(effective_shell) : nullptr;
 
         if (m_shell_source) {
             normal_log("INFO: %s: Added shell idle source %s.", __func__, m_shell_source->Describe().c_str());
@@ -166,7 +172,10 @@ void IdleSourcePool::Reconcile(const std::set<Endpoint>& endpoints, ShellKind sh
         }
     }
 
-    m_shell_kind = shell;
+    // The debounced kind, not the raw observation. Inhibition is evaluated from this, so recording
+    // the observation here would drop inhibition on the very tick a probe hiccuped -- resuming the
+    // compute the user explicitly asked to hold off -- while the source it belongs to was retained.
+    m_shell_kind = effective_shell;
 
     UpdateShellSourceContext();
 }
@@ -224,8 +233,10 @@ void IdleSourcePool::Shutdown()
     m_endpoint_backoff.clear();
 
     // Clearing the kind too, so that a pool which has been shut down cannot go on reporting
-    // inhibition for a shell it is no longer tracking.
+    // inhibition for a shell it is no longer tracking. The absence run goes with it: there is now no
+    // shell whose disappearance could be part-way confirmed.
     m_shell_kind = ShellKind::NONE;
+    m_shell_absence_observations = 0;
 }
 
 size_t IdleSourcePool::EndpointSourceCount() const
@@ -308,6 +319,43 @@ void IdleSourcePool::RecordCandidateFailure(const Endpoint& endpoint)
                   backoff.m_consecutive_failures,
                   interval_ticks);
     }
+}
+
+ShellKind IdleSourcePool::DebounceShellObservation(ShellKind observed)
+{
+    // Any sighting of a shell ends the run, including a sighting of a different shell: a KDE-to-GNOME
+    // transition is a shell that is present, not a shell that is going away.
+    if (observed != ShellKind::NONE) {
+        m_shell_absence_observations = 0;
+
+        return observed;
+    }
+
+    // Absence confirming absence. There is nothing to protect, and counting here would mean a shell
+    // that appeared after a long tty session had to be un-counted before anything could act on it.
+    if (m_shell_kind == ShellKind::NONE) {
+        m_shell_absence_observations = 0;
+
+        return ShellKind::NONE;
+    }
+
+    ++m_shell_absence_observations;
+
+    if (m_shell_absence_observations < SHELL_ABSENCE_OBSERVATIONS_REQUIRED) {
+        debug_log("INFO: %s: No desktop shell was detected on this reconcile (%d of %d consecutive). "
+                  "Keeping the shell that is being tracked until the absence is confirmed.",
+                  __func__,
+                  m_shell_absence_observations,
+                  SHELL_ABSENCE_OBSERVATIONS_REQUIRED);
+
+        return m_shell_kind;
+    }
+
+    // Confirmed. Reset here rather than on the next observation, so that a shell which comes back and
+    // goes away again gets a full count of its own.
+    m_shell_absence_observations = 0;
+
+    return ShellKind::NONE;
 }
 
 void IdleSourcePool::UpdateShellSourceContext()

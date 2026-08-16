@@ -2224,6 +2224,14 @@ static fs::path GetUserConfigPath() {
 //! empty pool makes GetIdleTimeSeconds() report IDLE_NO_GUI_SESSION, which the main loop already handles by
 //! deferring to event_detect, and the very next pass picks the session up once it exists.
 //!
+//! Neither input is smoothed here, and the shell one has a failure mode that needs smoothing: DetectShellKind()
+//! is a synchronous NameHasOwner call, and a bus hiccup, a timeout under load or a session bus restart makes it
+//! answer ShellKind::NONE for a session whose shell is perfectly healthy. In a shell-only session that is the
+//! only source there is, so acting on one such answer would empty the pool for a tick. The debounce that
+//! prevents it lives in IdleSourcePool::Reconcile() rather than here, because the pool is dependency-free and
+//! therefore testable, and because state kept in a function called once per tick from one place is state that
+//! nothing can assert on.
+//!
 //! ShellMonitor holds no state and no connection, so it is constructed per call rather than kept alive across
 //! calls. The D-Bus connection underneath it is GIO's shared per-process session bus connection, which is
 //! established once and reused.
