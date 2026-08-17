@@ -2608,6 +2608,71 @@ static void ReportEventDetectReadFailure(FailureReportThrottle& throttle, const 
 }
 
 //!
+//! \brief Reports, through a throttle, that the shared memory segment could not be read and the slower
+//! file fallback is being used instead.
+//!
+//! Every failure path inside ReadTimestampViaShmem() is debug level, and the caller falls straight through
+//! to ReadLastActiveTimeFile() when it returns a sentinel. That combination is deliberate -- an unreadable
+//! segment at error level once a second is a flood -- but it means a segment that is present and simply
+//! not readable by this process produces NO operator-visible output at all while the daemon quietly runs
+//! on the degraded path.
+//!
+//! That matters on SELinux systems, which are now the openSUSE default. /dev/shm/idle_detect_shmem has no
+//! policy rule of its own, and the segment is created by event_detect under one user and read by
+//! idle_detect under another, so a denial there is a realistic outcome that would otherwise be invisible.
+//! One throttled line makes the difference between "the fast path is blocked" and "everything looks fine".
+//!
+//! \param throttle Ladder for this condition, owned by the main loop.
+//! \param shmem_name Segment that could not be read.
+//!
+static void ReportShmemUnavailable(FailureReportThrottle& throttle, const std::string& shmem_name)
+{
+    if (!throttle.RecordFailure()) {
+        debug_log("INFO: %s: Shared memory '%s' still unreadable (%d consecutive).",
+                  __func__,
+                  shmem_name,
+                  throttle.ConsecutiveFailures());
+
+        return;
+    }
+
+    const char* message = "%s: Could not read shared memory '%s' (%d consecutive); falling back to the "
+                          "last_active_time file. If event_detect is running, check permissions on the "
+                          "segment -- on an SELinux system try 'ausearch -m avc -ts recent'. "
+                          "Further occurrences are debug only until %d more have passed.";
+
+    // The first occurrence of a run is announced so a blocked fast path is visible immediately. Later ones
+    // are follow-ups to a condition already reported, and the daemon is still functioning on the fallback,
+    // so they go out at normal level rather than error.
+    if (throttle.ConsecutiveFailures() == 1) {
+        normal_log(std::string("WARNING: ").append(message).c_str(),
+                   __func__,
+                   shmem_name,
+                   throttle.ConsecutiveFailures(),
+                   throttle.Interval());
+    } else {
+        debug_log(message, __func__, shmem_name, throttle.ConsecutiveFailures(), throttle.Interval());
+    }
+}
+
+//!
+//! \brief Ends a run of shared memory read failures and reports the recovery once.
+//! \param throttle Ladder for that condition, owned by the main loop.
+//! \param shmem_name Segment that became readable again.
+//!
+static void NoteShmemAvailable(FailureReportThrottle& throttle, const std::string& shmem_name)
+{
+    const int cleared = throttle.Reset();
+
+    if (cleared > 0) {
+        normal_log("INFO: %s: Shared memory '%s' is readable again after %d consecutive failure(s).",
+                   __func__,
+                   shmem_name,
+                   cleared);
+    }
+}
+
+//!
 //! \brief Ends a run of event_detect read failures and reports the recovery once.
 //! \param throttle Ladder for that condition, owned by the main loop.
 //!
@@ -2913,6 +2978,8 @@ int main(int argc, char* argv[])
                                                              IdleDetect::MAIN_LOOP_FAILURE_REPORT_MAX_INTERVAL);
     FailureReportThrottle idle_determination_failure_throttle(IdleDetect::MAIN_LOOP_FAILURE_REPORT_INITIAL_INTERVAL,
                                                               IdleDetect::MAIN_LOOP_FAILURE_REPORT_MAX_INTERVAL);
+    FailureReportThrottle shmem_unavailable_throttle(IdleDetect::MAIN_LOOP_FAILURE_REPORT_INITIAL_INTERVAL,
+                                                     IdleDetect::MAIN_LOOP_FAILURE_REPORT_MAX_INTERVAL);
 
     while (!g_shutdown_requested.load()) {
         // Reconcile before resolving, so this iteration's reading comes from the sources that exist now. This
@@ -2963,6 +3030,14 @@ int main(int argc, char* argv[])
         if (use_event_detect || using_event_detect_as_only_source) {
             debug_log("INFO: %s: Attempting to use event_detect via shared memory: %s", __func__, shmem_name.c_str());
             int64_t shmem_timestamp = IdleDetect::ReadTimestampViaShmem(shmem_name);
+
+            // Announce the fast path being unavailable exactly once per run of failures. Without this the
+            // daemon degrades to the file fallback in complete silence at debug=0.
+            if (shmem_timestamp >= 0) {
+                NoteShmemAvailable(shmem_unavailable_throttle, shmem_name);
+            } else {
+                ReportShmemUnavailable(shmem_unavailable_throttle, shmem_name);
+            }
 
             if (shmem_timestamp >= 0) { // Use >= 0 check, as 0 might be valid initial state
                 int64_t current_time = GetUnixEpochTime();
