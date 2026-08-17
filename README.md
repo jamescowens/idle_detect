@@ -147,9 +147,9 @@ sudo dnf install gcc-c++ cmake ninja-build pkgconf \
     libevdev-devel libXScrnSaver-devel dbus-devel glib2-devel \
     wayland-devel wayland-protocols-devel gtest-devel
 
-# openSUSE
+# openSUSE  (note: libXss-devel, NOT libXScrnSaver-devel — that name does not exist here)
 sudo zypper install gcc-c++ cmake ninja pkgconf \
-    libevdev-devel libXScrnSaver-devel dbus-1-devel glib2-devel \
+    libevdev-devel libXss-devel dbus-1-devel glib2-devel \
     wayland-devel wayland-protocols-devel gtest
 
 # Arch

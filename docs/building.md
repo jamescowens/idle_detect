@@ -46,7 +46,7 @@ sudo dnf install \
 # openSUSE
 sudo zypper install \
     gcc-c++ cmake ninja pkgconf \
-    libevdev-devel libXScrnSaver-devel dbus-1-devel glib2-devel \
+    libevdev-devel libXss-devel dbus-1-devel glib2-devel \
     wayland-devel wayland-protocols-devel \
     gtest
 ```
@@ -54,6 +54,14 @@ sudo zypper install \
 Package name differences between the two (`ninja` vs `ninja-build`,
 `gtest` vs `gtest-devel`) are accounted for in the OBS spec file; as a
 local builder you just need whichever your distro calls them.
+
+**The XScreenSaver package differs between the two, and the difference bites.**
+Fedora calls it `libXScrnSaver-devel`; openSUSE calls it **`libXss-devel`**.
+`libXScrnSaver-devel` does not exist on openSUSE Leap 16 at all — `zypper se
+libXScrnSaver` returns "No matching items found" — so copying the Fedora line
+fails with no obvious hint about the right name. The `pkg-config` module is
+`xscrnsaver` on both. `libXss-devel` requires `pkgconfig(x11)`, so `libX11-devel`
+arrives transitively and does not need listing.
 
 #### Arch Linux
 

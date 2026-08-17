@@ -25,10 +25,52 @@ sudo ./install.sh [--prefix=/usr/local] [--cxx-compiler=/path/to/g++]
 ./user_install.sh
 ```
 
-### Dependencies (Ubuntu)
+### Dependencies
 
+Development happens primarily on **openSUSE Leap**, so those names are given first.
+
+**openSUSE Leap / Tumbleweed:**
+
+```bash
+sudo zypper install gcc-c++ cmake \
+    libevdev-devel libXss-devel dbus-1-devel glib2-devel \
+    wayland-devel wayland-protocols-devel
 ```
-libevdev-dev libxss-dev libdbus-1-dev libglib2.0-dev libwayland-dev wayland-protocols
+
+**Debian / Ubuntu:**
+
+```bash
+sudo apt install g++ cmake \
+    libevdev-dev libxss-dev libdbus-1-dev libglib2.0-dev \
+    libwayland-dev wayland-protocols
+```
+
+| Provides | openSUSE | Debian/Ubuntu | `pkg-config` module |
+|---|---|---|---|
+| libevdev | `libevdev-devel` | `libevdev-dev` | `libevdev` |
+| XScreenSaver | **`libXss-devel`** | `libxss-dev` | `xscrnsaver` |
+| D-Bus | `dbus-1-devel` | `libdbus-1-dev` | `dbus-1` |
+| GLib + GIO | `glib2-devel` | `libglib2.0-dev` | `glib-2.0`, `gio-2.0` |
+| Wayland client + `wayland-scanner` | `wayland-devel` | `libwayland-dev` | `wayland-client` |
+| Wayland protocol XML | `wayland-protocols-devel` | `wayland-protocols` | `wayland-protocols` |
+
+Notes that have cost time before:
+
+- On openSUSE the XScreenSaver package is **`libXss-devel`**. `libXScrnSaver-devel` — the name
+  the Debian spelling suggests, and the name used on some other RPM distros — **does not exist on
+  Leap 16**; `zypper se libXScrnSaver` returns nothing.
+- The `pkg-config` module for it is `xscrnsaver`, not `libxss`.
+- `glib2-devel` supplies both `glib-2.0` and `gio-2.0`; there is no separate GIO package.
+- `wayland-scanner`, which CMake runs to generate the `ext-idle-notify-v1` client source, ships
+  inside `wayland-devel` rather than a package of its own.
+
+Verify a machine has everything with:
+
+```bash
+for m in libevdev xscrnsaver dbus-1 glib-2.0 gio-2.0 wayland-client; do
+    printf '%-16s ' "$m"; pkg-config --modversion "$m" 2>/dev/null || echo MISSING
+done
+command -v wayland-scanner cmake g++
 ```
 
 ## Architecture
