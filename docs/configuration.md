@@ -279,7 +279,23 @@ copy-paste these as replacements for the whole file.
 
 Required for **BOINC versions older than 8.2.10**, which do not read
 `/idle_detect_shmem` and therefore need idle_detect to drive them
-via `boinccmd`. In `~/.config/idle_detect.conf`, change:
+via `boinccmd`.
+
+**Also required, at any BOINC version, on a system running SELinux in
+enforcing mode** — currently Fedora, and openSUSE Leap 16.0 / Tumbleweed
+on fresh installs. Those ship a confined `boinc_t` domain that is granted
+only `getattr` on a `tmpfs_t` file it did not create, with no `open` and no
+`read`, and `/dev/shm/idle_detect_shmem` has no fcontext rule of its own so
+it is plain `tmpfs_t`. `shm_open()` is an `open()`, so the read is denied —
+silently, since BOINC can still search the directory and stat the segment.
+The script path is unaffected because `boinccmd` runs as the desktop user
+and is unconfined.
+
+Check with `sestatus`. A system manually upgraded from openSUSE Leap 15.x
+keeps AppArmor and is not affected, so the distribution name alone does not
+tell you.
+
+In `~/.config/idle_detect.conf`, change:
 
 ```ini
 execute_dc_control_scripts=1

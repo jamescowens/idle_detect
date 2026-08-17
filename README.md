@@ -88,6 +88,29 @@ scripts: set `execute_dc_control_scripts=1` in
 `/idle_detect_shmem` directly; for those the shipped default
 (scripts disabled) is correct.
 
+> **On SELinux systems, the shared-memory path is currently blocked.**
+> Fedora and openSUSE (Leap 16.0 and Tumbleweed on fresh installs) run
+> SELinux in enforcing mode with a **confined `boinc_t` domain**. Querying
+> the compiled policy on openSUSE Leap 16.0 shows `boinc_t` is granted only
+> `getattr` on a `tmpfs_t` file it did not create — **no `open`, no `read`** —
+> while `/dev/shm/idle_detect_shmem` is plain `tmpfs_t` (no fcontext rule
+> exists for it). Since `shm_open()` is an `open()`, the read is denied.
+>
+> The failure is **silent**: BOINC can search `/dev/shm` and `getattr` the
+> segment, so it fails at open rather than at discovery, and simply never
+> observes user activity.
+>
+> No distribution currently ships a BOINC new enough to hit this — Fedora 43
+> and 44 package 8.2.4, openSUSE Leap 16.0 packages 8.0.4, both below 8.2.10.
+> It will activate when they update past 8.2.10. **Until this is resolved, on
+> an SELinux-enforcing system set `execute_dc_control_scripts=1` and use the
+> bundled scripts regardless of BOINC version** — `boinccmd` runs as the
+> desktop user and is unconfined, so the script path is unaffected.
+>
+> Check with `sestatus`. Note you cannot infer this from the distribution
+> alone: an openSUSE system manually upgraded from Leap 15.x keeps AppArmor
+> and is not affected.
+
 For the full list of every setting in both config files — types,
 defaults, interactions, common configurations — see
 **[docs/configuration.md](docs/configuration.md)**.
