@@ -169,9 +169,45 @@ usermod -aG input "$SERVICE_USER" || echo "WARN: Failed or not needed to add $SE
 usermod -aG tty "$SERVICE_USER" || echo "WARN: Failed or not needed to add $SERVICE_USER to tty group."
 
 # --- Enable and Start System Service ---
-# (Keep this section unchanged from your version)
 echo "INFO: Enabling and starting system service 'dc_event_detection.service'..."
-systemctl enable --now dc_event_detection.service
+
+# A drop-in under /etc lives outside any package's file list, so it survives an uninstall and then
+# silently pins ExecStart at a path this install may no longer provide. 'systemctl cat' shows the
+# unit body and gives no hint that a drop-in has overridden it; only 'systemctl show -p DropInPaths'
+# reveals them. Check explicitly, because the alternative is the service failing later with
+# "Unable to locate executable" and no obvious cause.
+DROP_IN_PATHS="$(systemctl show dc_event_detection.service -p DropInPaths --value 2>/dev/null)"
+if [ -n "$DROP_IN_PATHS" ]; then
+    for drop_in in $DROP_IN_PATHS; do
+        [ -r "$drop_in" ] || continue
+        grep -qs '^ExecStart=.' "$drop_in" || continue
+
+        pinned_exec="$(grep -hs '^ExecStart=.' "$drop_in" | tail -n 1 | sed 's/^ExecStart=//' | awk '{print $1}')"
+        if [ -n "$pinned_exec" ] && [ ! -x "$pinned_exec" ]; then
+            echo "WARN: Drop-in '${drop_in}' pins ExecStart to '${pinned_exec}', which is not executable."
+            echo "WARN: This install placed the binary at '${INSTALL_PREFIX}/bin/event_detect'."
+            echo "WARN: The service will fail to start until that drop-in is updated or removed."
+        elif [ -n "$pinned_exec" ]; then
+            echo "INFO: Drop-in '${drop_in}' pins ExecStart to '${pinned_exec}'."
+        fi
+    done
+fi
+
+# The unit sets StartLimitBurst, so a previous failed run can leave the unit latched in 'failed'
+# with further start requests refused ("Start request repeated too quickly"). Clear that first,
+# or a correct install still will not start.
+systemctl reset-failed dc_event_detection.service 2>/dev/null || true
+
+# 'enable --now' does NOT restart a service that is already running. On an upgrade that leaves the
+# previous binary executing against a now-deleted inode (/proc/<pid>/exe shows "(deleted)"), so the
+# new build appears installed but is not the one running. Restart explicitly in that case.
+if systemctl is-active --quiet dc_event_detection.service; then
+    echo "INFO: Service is already running; restarting so the newly installed binary takes effect."
+    systemctl enable dc_event_detection.service > /dev/null 2>&1 || true
+    systemctl restart dc_event_detection.service
+else
+    systemctl enable --now dc_event_detection.service
+fi
 
 # --- Final Instructions ---
 # (Keep this section unchanged from your version)
