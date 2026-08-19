@@ -75,6 +75,37 @@ media-2 exercised the hardest variant, with several `closing` Wayland sessions a
 an SDDM X11 greeter session present alongside the live session. Discovery selected
 the live one.
 
+### Issue #11 reproduced and fixed, under container
+
+The reported crash (segfault in `libwayland-client` on Ubuntu 26.04) was
+reproduced deliberately rather than inferred. The trigger is a compositor that
+advertises `wl_seat` but **not** `ext_idle_notifier_v1` — which is what Mutter
+looks like to this code, and why the reporter's patch skipped GNOME.
+
+An Ubuntu 26.04 container (libwayland-client 1.24.0, matching the reporter's
+`libwayland-client.so.0.24.0`) with a ~60-line Wayland server providing exactly
+that global set. Weston headless was tried first and does **not** reproduce it,
+because with no input devices it advertises no `wl_seat` at all and the faulty
+path is never entered.
+
+Against that server, 0.9.1.0 crashes:
+
+```
+#4  wl_seat_release (wl_seat=0x5562a2375be0)
+#5  WaylandIdleMonitor::CleanupWayland      idle_detect.cpp:1322
+#6  WaylandIdleMonitor::InitializeWayland   idle_detect.cpp:1236
+#7  WaylandIdleMonitor::Start               idle_detect.cpp:1132
+```
+
+The seat binds, the required-globals check fails because the notifier is absent,
+and the failure path calls `wl_seat_release()` on a proxy that is no longer
+valid.
+
+| version | result against the same server |
+|---|---|
+| 0.9.1.0 | exit 139 — SIGSEGV, core dumped |
+| 0.9.2.0 | ran to timeout, no crash; endpoint failed validation and went on the backoff ladder |
+
 ### Control scripts
 
 `dc_pause` / `dc_unpause` drive BOINC and Folding@home independently: each is
