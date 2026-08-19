@@ -97,10 +97,20 @@ command -v wayland-scanner cmake g++
 
 - `event_detect.h/cpp` — System-level daemon (namespace `EventDetect`)
 - `idle_detect.h/cpp` — User-level daemon (namespace `IdleDetect`)
-- `util.h/cpp` — Shared utilities: `Config` base class, `EventMessage`, string/time helpers, logging
+- `idle_source.h/cpp` — Idle source abstraction, sentinels (`IDLE_ERROR`, `IDLE_NO_GUI_SESSION`), `AggregateIdleSeconds()`. **Dependency-free**
+- `session_discovery.h/cpp` — `DiscoveryHints`, `DiscoverEndpoints()`, display-name normalization. **Dependency-free**
+- `idle_source_pool.h/cpp` — `IdleSourcePool`: reconcile loop, backoff ladder, source lifetime. **Dependency-free**, factories injected
+- `idle_sources_system.h/cpp` — Every call into D-Bus, X11 and Wayland lives here (`WaylandIdleSource`, `X11IdleSource`, `ShellIdleSource`, factories). **Never** added to `idle_detect_tests`
+- `util.h/cpp` — Shared utilities: `Config` base class, `EventMessage`, `FailureReportThrottle`, string/time helpers, logging
 - `release.h` — Version macros (version is sourced from here by CMakeLists.txt)
 - `read_shmem_timestamps.cpp` — Standalone utility to read the shared memory segment
 - `tinyformat.h` — Header-only formatting library
+
+### Helper scripts (installed to `<prefix>/bin`)
+
+- `dc_pause` / `dc_unpause` — pause/resume BOINC and Folding@home, independently
+- `dc_fah_v8` — Folding@home v8 WebSocket control, Python 3 stdlib only
+- `boinc_selinux_shmem_policy.sh` — SELinux workaround letting `boinc_t` read the segment
 
 ### Key Classes
 
@@ -109,6 +119,7 @@ command -v wayland-scanner cmake g++
 - `EventDetect::TtyMonitor` — Polls tty/pts access times
 - `EventDetect::IdleDetectMonitor` — Reads named pipe from user-level instances
 - `EventDetect::SharedMemoryTimestampExporter` — RAII wrapper for POSIX shm (`int64_t[2]`)
+- `IdleDetect::IdleSourcePool` — Owns live idle sources, reconciles them against discovery each tick
 - `IdleDetect::IdleDetectControlMonitor` — Manages override states (NORMAL, FORCED_ACTIVE, FORCED_IDLE)
 - `IdleDetect::WaylandIdleMonitor` — `ext_idle_notifier_v1` Wayland protocol handler
 - `Config` / `EventDetectConfig` / `IdleDetectConfig` — Singleton config with `config_variant` typed values
@@ -130,6 +141,28 @@ Both daemons are multi-threaded. Synchronization uses `std::atomic` for flags/ti
 - `dc_event_detection.service` — system service for event_detect
 - `dc_idle_detection.service` — user service for idle_detect
 - Service files are generated from `.in` templates by CMake
+
+The **system** unit's install location is chosen at configure time and is not a
+knob:
+
+| condition | goes to |
+|---|---|
+| `CMAKE_INSTALL_PREFIX=/usr` (packages) | `/usr/lib/systemd/system` |
+| prefix on the same filesystem as `/` | `${prefix}/lib/systemd/system` |
+| prefix on a **separate** filesystem | `/etc/systemd/system` |
+
+This has cost time before. systemd resolves the boot transaction at PID 1
+startup, before `/etc/fstab` mounts happen. On openSUSE `/usr/local` is a
+separate btrfs subvolume, so a unit installed there does not exist yet when
+systemd looks — it loses the race by about a second, drops the start job, and
+never re-resolves. Nothing is logged at default level: the unit still reports
+`enabled`, resolves a valid `FragmentPath` when queried, and starts fine by
+hand. It simply never runs at boot. No `After=` or `RequiresMountsFor=` helps,
+because the job never enters the transaction. Confirmed with
+`systemd.log_level=debug`; see `docs/testing.md`.
+
+The **user** unit is always installed under the prefix — `user@.service` starts
+well after `local-fs.target`, so it is unaffected.
 
 ## Branching
 

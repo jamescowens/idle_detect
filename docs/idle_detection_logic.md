@@ -57,57 +57,100 @@ This means the system is considered active if **either** source shows
 activity. The `std::min` ensures the shortest idle duration wins.
 
 
-## GetIdleTimeSeconds() Decision Tree
+## GetIdleTimeSeconds() and the idle source pool
 
-`GetIdleTimeSeconds()` in `idle_detect.cpp` determines the GUI session's
-idle time. The decision flow depends on session type:
+Prior to 0.9.2.0 this was a decision tree keyed on environment variables read
+once at startup (`IsTtySession()`, `IsWaylandSession()`), which froze the
+daemon's view of the session at process start. A daemon that outlived a GUI
+session, or started before one existed, never recovered. That was the cause of
+issue #12 and both functions are gone.
+
+`GetIdleTimeSeconds()` now delegates to `g_idle_source_pool`, which maintains a
+set of live sources and re-derives them on a reconcile tick.
+
+### Two layers
+
+| layer | count | supplies |
+|---|---|---|
+| desktop shell source | 0 or 1 | inhibition, and on some shells an idle value |
+| graphical endpoints | 0..N | an idle value per reachable endpoint |
+
+`ShellKind` is `NONE`, `KDE`, or `GNOME`. `EndpointKind` is `WAYLAND` or `X11`.
+A session can legitimately present several endpoints at once — a Wayland
+compositor plus its XWayland display, for instance — so endpoints are a set,
+not a choice.
+
+### Discovery
+
+`DiscoverEndpoints()` builds candidates from `DiscoveryHints`, whose values come
+from the **systemd user manager environment** read at reconcile time, not from
+the daemon's own environment: `WAYLAND_DISPLAY`, `DISPLAY`, `XAUTHORITY`. logind
+is optional enrichment only — it has proven unreliable for this, so hints from
+any source are distrusted and every candidate must prove itself by connecting.
+
+A candidate that fails validation is not retried immediately. It backs off
+`ENDPOINT_RETRY_BACKOFF_INITIAL_TICKS`, then doubles, capped at
+`ENDPOINT_RETRY_BACKOFF_MAX_TICKS` (64). This matters in practice: an XWayland
+display advertised in the environment that does not answer an XScreenSaver query
+is quarantined rather than retried hot, and never contributes a value.
+
+A live source is dropped once it both fails `IsAlive()` and has resolved
+`IDLE_ERROR` `DEAD_SOURCE_ERROR_THRESHOLD` times consecutively. A shell that
+disappears must be absent for `SHELL_ABSENCE_OBSERVATIONS_REQUIRED` consecutive
+reconciles before its source is removed, so a momentary D-Bus hiccup does not
+tear down a working session.
+
+### Aggregation
+
+Each source resolves to exactly one value; the pool never looks inside a
+source's internal priority chain. `AggregateIdleSeconds()` then applies:
 
 ```
-GetIdleTimeSeconds()
-|
-+-- IsTtySession()?
-|   YES --> return -2 (use event_detect only; tty monitoring is there)
-|
-+-- IsKdeSession()?  [checks if org.kde.ksmserver D-Bus service exists]
-|   |
-|   +-- IsWaylandSession()?  [checks WAYLAND_DISPLAY env var]
-|   |   |
-|   |   YES --> KDE WAYLAND PATH (Plasma 6+)
-|   |   |   1. CheckKdeInhibition()
-|   |   |      - Queries PolicyAgent.HasInhibition(1) via D-Bus
-|   |   |      - If inhibited: return 0 (treat as active)
-|   |   |   2. g_wayland_idle_monitor.GetIdleSeconds()
-|   |   |      - Uses ext_idle_notifier_v1 Wayland protocol
-|   |   |      - Callback-based: compositor notifies on idle/resume
-|   |   |      - If not available: return -1 (error)
-|   |   |
-|   |   NO --> KDE X11 PATH (Plasma 5, or Plasma 6 on X11)
-|   |       - GetIdleTimeKdeDBus()
-|   |       - Queries org.kde.ksmserver / org.freedesktop.ScreenSaver
-|   |         GetSessionIdleTime
-|   |       - Inhibition is handled internally by ksmserver
-|   |         (idle time resets when inhibitors are active)
-|   |
-+-- IsWaylandSession()?  [non-KDE Wayland]
-|   |
-|   YES --> NON-KDE WAYLAND PATH (GNOME, wlroots, etc.)
-|   |   1. CheckGnomeInhibition()
-|   |      - Queries org.gnome.SessionManager.IsInhibited
-|   |      - If inhibited: return 0
-|   |   2. GetIdleTimeWaylandGnomeViaDBus()
-|   |      - Queries org.gnome.Mutter.IdleMonitor.GetIdletime
-|   |      - If available: return idle time
-|   |   3. Fallback: g_wayland_idle_monitor.GetIdleSeconds()
-|   |      - ext_idle_notifier_v1 protocol
-|   |
-|   NO --> NON-KDE X11 PATH
-|       1. CheckGnomeInhibition()
-|          - If inhibited: return 0
-|       2. GetIdleTimeXss()
-|          - XScreenSaver extension (libXss)
-|          - XScreenSaverQueryInfo() — single function call
+inhibited                -> 0                     (inhibition wins over everything)
+no source present        -> IDLE_NO_GUI_SESSION   (-2)
+otherwise                -> min(values >= 0)
+all values negative      -> IDLE_ERROR            (-1)
 ```
 
+The sentinels are negative precisely so they can be excluded from the minimum.
+Letting `IDLE_ERROR` participate would convert one source's failure into a
+global error, and `min(-1, 300)` would report the machine as active forever.
+
+The two sentinels are distinct because the caller treats them differently:
+`IDLE_NO_GUI_SESSION` means "there is no GUI session here, defer to
+`event_detect`", while `IDLE_ERROR` means "there should be one and it is not
+answering".
+
+### Per-shell roles
+
+The shell does not always supply an idle value. On KDE under Wayland the
+compositor's `ext_idle_notifier_v1` endpoint supplies idle time and the shell
+supplies only inhibition; on KDE under X11 `ksmserver` supplies both, since its
+`GetSessionIdleTime` already accounts for inhibitors. GNOME supplies inhibition
+via `org.gnome.SessionManager.IsInhibited` and idle time via
+`org.gnome.Mutter.IdleMonitor`.
+
+| session | idle value from | inhibition from |
+|---|---|---|
+| KDE Wayland (Plasma 6) | `ext_idle_notifier_v1` endpoint | KDE shell (PolicyAgent) |
+| KDE X11 (Plasma 5/6) | KDE shell (`GetSessionIdleTime`) | handled inside ksmserver |
+| GNOME | Mutter `IdleMonitor` | `org.gnome.SessionManager` |
+| other Wayland | `ext_idle_notifier_v1` endpoint | none available |
+| other X11 | XScreenSaver (`libXss`) | none available |
+| tty only | *(no endpoints, no shell)* | — |
+
+A tty-only session is not a special case in the code any more. It simply
+produces no endpoints and no shell, so aggregation returns
+`IDLE_NO_GUI_SESSION` and the caller falls back to `event_detect`, which is
+where tty monitoring lives.
+
+### Dependency separation
+
+`idle_source`, `session_discovery` and `idle_source_pool` are dependency-free
+and unit-testable. Every call into D-Bus, X11 and Wayland lives in
+`idle_sources_system`, which is deliberately excluded from the test binary.
+Factories are injected into the pool, so its behavior can be tested without a
+display server.
 
 ## Inhibition Handling
 
