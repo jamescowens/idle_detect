@@ -292,23 +292,62 @@ else()
     set(INSTALL_CONFIG_DIR "/${CMAKE_INSTALL_SYSCONFDIR}" CACHE PATH "Installation directory for configuration files")
 endif()
 
-# The system unit must live somewhere systemd can read at PID 1 startup, before
-# any non-root filesystem is mounted. On openSUSE (and other btrfs layouts)
-# /usr/local is a SEPARATE SUBVOLUME mounted from fstab well after systemd has
-# already built its unit database, so a unit installed under a /usr/local prefix
-# is invisible at boot: the enable symlink resolves to nothing, systemd skips the
-# unit without logging anything, and the service simply never starts. It then
-# looks perfectly healthy afterwards, because any later daemon-reload picks it up.
+# The system unit must live somewhere systemd can read when it resolves the boot
+# transaction, which happens at PID 1 startup before fstab mounts are processed.
 #
-# Package builds use -DCMAKE_INSTALL_PREFIX=/usr and land in /usr/lib/systemd/system,
-# which is on the root filesystem and therefore fine. For any other prefix, install
-# the system unit into /etc/systemd/system instead, which is always present early.
-# The user unit is not affected: user@.service starts long after local-fs.target.
+# Measured on openSUSE Leap 16 with systemd debug logging, where /usr/local is a
+# separate btrfs subvolume:
+#
+#   +6.713s  dc_event_detection.service: Failed to load configuration: No such file
+#   +6.716s  Cannot add dependency job, ignoring: Unit ... not found.
+#   +7.835s  unit_file_build_name_map: normal unit file: /usr/local/lib/systemd/...
+#
+# systemd loses the race by about a second, drops the job, and never re-resolves.
+# The message is debug-level, so at default log level nothing is reported at all:
+# the unit stays 'enabled', reports a valid FragmentPath once queried, starts fine
+# by hand, and simply never runs at boot. No After=, RequiresMountsFor=, or fstab
+# option helps, because the job never enters the transaction to be ordered.
+#
+# So prefer the spec's "installed by the administrator" tier, but only when it is
+# on the root filesystem and therefore populated at resolution time. Otherwise use
+# /etc/systemd/system, which always is. Package builds pass -DCMAKE_INSTALL_PREFIX=/usr
+# and are unaffected. The user unit needs no such treatment: user@.service starts
+# long after local-fs.target.
 if(CMAKE_INSTALL_PREFIX STREQUAL "/usr")
-    set(INSTALL_SYSTEM_SERVICE_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/system" CACHE PATH "Installation directory for the system level dc_event_detection service")
+    set(_id_system_unit_dir "${CMAKE_INSTALL_PREFIX}/lib/systemd/system")
 else()
-    set(INSTALL_SYSTEM_SERVICE_DIR "/etc/systemd/system" CACHE PATH "Installation directory for the system level dc_event_detection service")
+    # Compare the filesystem holding the prefix with the one holding /. The prefix
+    # may not exist yet, so probe its nearest existing ancestor.
+    set(_id_probe "${CMAKE_INSTALL_PREFIX}")
+    while(NOT EXISTS "${_id_probe}" AND NOT _id_probe STREQUAL "/")
+        get_filename_component(_id_probe "${_id_probe}" DIRECTORY)
+    endwhile()
+
+    execute_process(COMMAND stat -c %d "/"
+                    OUTPUT_VARIABLE _id_root_dev OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET RESULT_VARIABLE _id_root_rc)
+    execute_process(COMMAND stat -c %d "${_id_probe}"
+                    OUTPUT_VARIABLE _id_prefix_dev OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET RESULT_VARIABLE _id_prefix_rc)
+
+    if(_id_root_rc EQUAL 0 AND _id_prefix_rc EQUAL 0 AND _id_root_dev STREQUAL _id_prefix_dev)
+        set(_id_system_unit_dir "${CMAKE_INSTALL_PREFIX}/lib/systemd/system")
+    else()
+        # Separate filesystem, or we could not tell. Choose the location that works.
+        set(_id_system_unit_dir "/etc/systemd/system")
+        if(_id_root_rc EQUAL 0 AND _id_prefix_rc EQUAL 0)
+            message(STATUS
+                "${CMAKE_INSTALL_PREFIX} is on a different filesystem than /; installing the "
+                "system unit to /etc/systemd/system so systemd can read it at boot.")
+        else()
+            message(STATUS
+                "Could not determine whether ${CMAKE_INSTALL_PREFIX} shares a filesystem with /; "
+                "installing the system unit to /etc/systemd/system to be safe.")
+        endif()
+    endif()
 endif()
+
+set(INSTALL_SYSTEM_SERVICE_DIR "${_id_system_unit_dir}" CACHE PATH "Installation directory for the system level dc_event_detection service")
 set(INSTALL_SYSTEM_SERVICE_PRESET_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/system-preset" CACHE PATH "System service preset directory")
 set(INSTALL_USER_SERVICE_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/user" CACHE PATH "Installation directory for the user level dc_idle_detection service")
 set(INSTALL_USER_SERVICE_PRESET_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/user-preset" CACHE PATH "Installation directory for the user level dc_idle_detection service preset to auto enable")

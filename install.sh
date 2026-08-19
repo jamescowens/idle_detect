@@ -124,6 +124,26 @@ if [ -f "$SYSTEM_CONFIG_FILE" ]; then
     cp -a "$SYSTEM_CONFIG_FILE" "$PRESERVED_SYSTEM_CONFIG"
 fi
 
+# Where CMake decided to put the system unit. It picks ${prefix}/lib/systemd/system
+# when that is on the root filesystem, and /etc/systemd/system when it is not,
+# because systemd resolves the boot transaction before non-root filesystems are
+# mounted. See the comment on INSTALL_SYSTEM_SERVICE_DIR in CMakeLists.txt.
+SYSTEM_UNIT_DIR="$(sed -n 's/^INSTALL_SYSTEM_SERVICE_DIR:PATH=//p' "${BUILD_DIR}/CMakeCache.txt" 2>/dev/null | head -n 1)"
+if [ -z "$SYSTEM_UNIT_DIR" ]; then
+    echo "WARN: Could not read INSTALL_SYSTEM_SERVICE_DIR from the CMake cache;" >&2
+    echo "WARN: assuming /etc/systemd/system." >&2
+    SYSTEM_UNIT_DIR="/etc/systemd/system"
+fi
+SYSTEM_UNIT_FILE="${SYSTEM_UNIT_DIR}/dc_event_detection.service"
+
+# When the unit lands in /etc, it sits in the directory admins treat as their own.
+# Keep a copy of whatever was there so a hand-edited unit is never lost silently.
+PRESERVED_SYSTEM_UNIT=""
+if [ -f "$SYSTEM_UNIT_FILE" ]; then
+    PRESERVED_SYSTEM_UNIT="$(mktemp)"
+    cp -a "$SYSTEM_UNIT_FILE" "$PRESERVED_SYSTEM_UNIT"
+fi
+
 # Install FROM the build directory using the prefix set during configure
 if cmake --install "$BUILD_DIR" ; then
    echo "INFO: System files installed successfully."
@@ -131,6 +151,20 @@ else
    echo "ERROR: System file installation failed."
    [ -n "$PRESERVED_SYSTEM_CONFIG" ] && rm -f "$PRESERVED_SYSTEM_CONFIG"
    exit 1
+fi
+
+if [ -n "$PRESERVED_SYSTEM_UNIT" ]; then
+    if cmp -s "$PRESERVED_SYSTEM_UNIT" "$SYSTEM_UNIT_FILE"; then
+        rm -f "$PRESERVED_SYSTEM_UNIT"
+    else
+        UNIT_BACKUP="${SYSTEM_UNIT_FILE}.superseded-$(date +%Y%m%d%H%M%S)"
+        cp -a "$PRESERVED_SYSTEM_UNIT" "$UNIT_BACKUP"
+        rm -f "$PRESERVED_SYSTEM_UNIT"
+        echo "INFO: Replaced the existing ${SYSTEM_UNIT_FILE}."
+        echo "INFO: The previous version was kept as ${UNIT_BACKUP}."
+        echo "INFO: To customize the service, prefer a drop-in over editing the unit:"
+        echo "INFO:   ${SYSTEM_UNIT_DIR}/dc_event_detection.service.d/override.conf"
+    fi
 fi
 
 if [ -n "$PRESERVED_SYSTEM_CONFIG" ]; then
@@ -184,27 +218,22 @@ systemctl daemon-reload
 # because nothing looks wrong. Note this is NOT the same as the drop-in case handled further
 # down -- a drop-in overrides directives, whereas this replaces the whole unit, and
 # 'systemctl cat' shows the winning file without indicating that another was passed over.
-# The system unit goes to /etc/systemd/system for any prefix other than /usr; see
-# the comment on INSTALL_SYSTEM_SERVICE_DIR in CMakeLists.txt. In short, /usr/local
-# is a separate late-mounted subvolume on openSUSE, so a unit installed under it is
-# invisible to systemd at boot and the service silently never starts.
-if [ "$INSTALL_PREFIX" = "/usr" ]; then
-    INSTALLED_SYSTEM_UNIT="${INSTALL_PREFIX}/lib/systemd/system/dc_event_detection.service"
-else
-    INSTALLED_SYSTEM_UNIT="/etc/systemd/system/dc_event_detection.service"
+INSTALLED_SYSTEM_UNIT="$SYSTEM_UNIT_FILE"
 
-    # Releases up to 0.9.2.0 installed the unit under the prefix. Retire that copy so
-    # it cannot shadow or confuse the one we just installed.
-    STALE_PREFIX_UNIT="${INSTALL_PREFIX}/lib/systemd/system/dc_event_detection.service"
-    if [ -f "$STALE_PREFIX_UNIT" ]; then
-        echo "INFO: Removing the unit left under the prefix by an earlier release:"
-        echo "INFO:   ${STALE_PREFIX_UNIT}"
-        echo "INFO: systemd cannot read that path at boot when ${INSTALL_PREFIX} is a"
-        echo "INFO: separate filesystem, which is why the service is now installed to /etc."
-        rm -f "$STALE_PREFIX_UNIT"
-        systemctl daemon-reload
-    fi
+# Releases up to 0.9.2.0 always installed the unit under the prefix. If that is not
+# where it belongs on this system, retire the old copy so it cannot shadow ours or
+# leave a stale enable symlink pointing into an unmounted filesystem.
+STALE_PREFIX_UNIT="${INSTALL_PREFIX}/lib/systemd/system/dc_event_detection.service"
+if [ "$STALE_PREFIX_UNIT" != "$INSTALLED_SYSTEM_UNIT" ] && [ -f "$STALE_PREFIX_UNIT" ]; then
+    echo "INFO: Removing the unit an earlier release left at:"
+    echo "INFO:   ${STALE_PREFIX_UNIT}"
+    echo "INFO: systemd cannot read that path when it resolves the boot transaction,"
+    echo "INFO: because ${INSTALL_PREFIX} is on a filesystem mounted later."
+    rm -f "$STALE_PREFIX_UNIT"
+    systemctl daemon-reload
+    systemctl reenable dc_event_detection.service > /dev/null 2>&1 || true
 fi
+
 LOADED_SYSTEM_UNIT="$(systemctl show dc_event_detection.service -p FragmentPath --value 2>/dev/null)"
 
 if [ -n "$LOADED_SYSTEM_UNIT" ] && [ "$LOADED_SYSTEM_UNIT" != "$INSTALLED_SYSTEM_UNIT" ] \

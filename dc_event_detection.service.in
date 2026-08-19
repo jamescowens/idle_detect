@@ -1,3 +1,12 @@
+# Installed by idle_detect. This file is replaced on every install and package
+# upgrade, so do not edit it in place -- your changes will be overwritten (a copy
+# of the previous version is kept as .superseded-<timestamp>, but that is a safety
+# net, not a supported workflow).
+#
+# To customize, use a drop-in instead:
+#   /etc/systemd/system/dc_event_detection.service.d/override.conf
+#   systemctl daemon-reload && systemctl restart dc_event_detection
+#
 [Unit]
 Description=DC Event Detection Service
 # Order after udev has started and /dev/shm exists. Do NOT order after
