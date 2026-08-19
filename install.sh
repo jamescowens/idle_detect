@@ -111,12 +111,39 @@ fi
 
 # --- Install System Files ---
 echo "INFO: Installing system files (binaries, system service, system config) to prefix '${INSTALL_PREFIX}'..."
+
+# 'cmake --install' rewrites ${SYSTEM_CONFIG_DIR}/event_detect.conf unconditionally,
+# which silently discards local settings on an upgrade -- monitor_ttys, for one, which
+# an admin may deliberately have turned off. The Debian package marks that file as a
+# conffile so dpkg preserves it; do the same here. Keep the admin's file and leave the
+# new default beside it as .new.
+SYSTEM_CONFIG_FILE="${SYSTEM_CONFIG_DIR}/event_detect.conf"
+PRESERVED_SYSTEM_CONFIG=""
+if [ -f "$SYSTEM_CONFIG_FILE" ]; then
+    PRESERVED_SYSTEM_CONFIG="$(mktemp)"
+    cp -a "$SYSTEM_CONFIG_FILE" "$PRESERVED_SYSTEM_CONFIG"
+fi
+
 # Install FROM the build directory using the prefix set during configure
 if cmake --install "$BUILD_DIR" ; then
    echo "INFO: System files installed successfully."
 else
    echo "ERROR: System file installation failed."
+   [ -n "$PRESERVED_SYSTEM_CONFIG" ] && rm -f "$PRESERVED_SYSTEM_CONFIG"
    exit 1
+fi
+
+if [ -n "$PRESERVED_SYSTEM_CONFIG" ]; then
+    if cmp -s "$PRESERVED_SYSTEM_CONFIG" "$SYSTEM_CONFIG_FILE"; then
+        rm -f "$PRESERVED_SYSTEM_CONFIG"
+    else
+        cp -a "$SYSTEM_CONFIG_FILE" "${SYSTEM_CONFIG_FILE}.new"
+        cp -a "$PRESERVED_SYSTEM_CONFIG" "$SYSTEM_CONFIG_FILE"
+        rm -f "$PRESERVED_SYSTEM_CONFIG"
+        echo "INFO: Kept the existing ${SYSTEM_CONFIG_FILE} rather than overwriting it."
+        echo "INFO: The new default was written to ${SYSTEM_CONFIG_FILE}.new; diff the two"
+        echo "      if you want to pick up newly added settings."
+    fi
 fi
 
 # --- Remove the Retired Wrapper Script ---
