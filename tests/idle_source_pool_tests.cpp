@@ -1134,8 +1134,13 @@ TEST(IdleSourcePool, AnErrorRunAtTheThresholdTearsTheSourceDownAndRebuildsIt)
     // the very tick its dead source was torn down.
     FakeIdleSource* rebuilt = harness.EndpointSource(g_x11_one);
     ASSERT_NE(rebuilt, nullptr);
-    EXPECT_NE(rebuilt, source);
     EXPECT_EQ(harness.Pool().GetIdleSeconds(), 12);
+
+    // Deliberately no pointer comparison against the old source. The allocator is free to hand the
+    // rebuilt object the address the destroyed one just released, and on 32-bit ARM it reliably does,
+    // which failed this test while the pool was behaving correctly. The destruction and factory-call
+    // counts above already prove a new object was constructed, and the reading proves it is the one
+    // being served.
 }
 
 TEST(IdleSourcePool, ASuccessfulResolutionResetsTheErrorRun)
