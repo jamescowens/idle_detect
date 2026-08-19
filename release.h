@@ -24,7 +24,7 @@ ID_STRINGIFY(IDLE_DETECT_VERSION_MAJOR) "." \
     ID_STRINGIFY(IDLE_DETECT_VERSION_PATCH) "." \
     ID_STRINGIFY(IDLE_DETECT_VERSION_TWEAK)
 
-const std::string g_version_datetime = "20260818";
+const std::string g_version_datetime = "20260819";
 
 const std::string g_version = std::string("version ") + std::string(IDLE_DETECT_VERSION_STRING) + " - " + g_version_datetime;
 
