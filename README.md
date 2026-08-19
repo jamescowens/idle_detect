@@ -269,6 +269,7 @@ and troubleshooting — see **[docs/building.md](docs/building.md)**.
 | [docs/building.md](docs/building.md) | build options, tests, packaging, troubleshooting |
 | [docs/idle_detection_logic.md](docs/idle_detection_logic.md) | how idle time is determined per session type |
 | [docs/testing.md](docs/testing.md) | what was tested for the current release, and what was not |
+| [docs/releasing.md](docs/releasing.md) | release checklist: version fields, packaging audit, tag, GitHub, OBS |
 | [docs/ROADMAP_1.0.md](docs/ROADMAP_1.0.md) | planned work toward 1.0 |
 
 ## Branching and releases
