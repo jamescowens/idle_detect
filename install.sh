@@ -291,6 +291,18 @@ echo ""
 echo "You may want to customize configuration files:"
 echo "  System config: sudo nano ${SYSTEM_CONFIG_DIR}/event_detect.conf"
 echo "  Helper scripts (installed in ${INSTALL_PREFIX}/bin): dc_pause, dc_unpause, dc_fah_v8"
+
+# SELinux blocks the BOINC client from reading event_detect's shared memory
+# segment, and the denial is dontaudit-suppressed, so the only symptom is BOINC
+# quietly using its legacy idle detection. Point the admin at the workaround.
+if command -v getenforce >/dev/null 2>&1 && [ "$(getenforce 2>/dev/null)" != "Disabled" ]; then
+    echo ""
+    echo "  NOTE: SELinux is $(getenforce 2>/dev/null) on this system. BOINC cannot read"
+    echo "        idle_detect's shared memory segment under stock policy, and the denial is"
+    echo "        suppressed, so BOINC will silently fall back to legacy idle detection."
+    echo "        If you run BOINC, review and then run:"
+    echo "          sudo ${INSTALL_PREFIX}/bin/boinc_selinux_shmem_policy.sh"
+fi
 echo ""
 
 exit 0

@@ -100,12 +100,39 @@ scripts: set `execute_dc_control_scripts=1` in
 > segment, so it fails at open rather than at discovery, and simply never
 > observes user activity.
 >
-> No distribution currently ships a BOINC new enough to hit this — Fedora 43
-> and 44 package 8.2.4, openSUSE Leap 16.0 packages 8.0.4, both below 8.2.10.
-> It will activate when they update past 8.2.10. **Until this is resolved, on
-> an SELinux-enforcing system set `execute_dc_control_scripts=1` and use the
-> bundled scripts regardless of BOINC version** — `boinccmd` runs as the
-> desktop user and is unconfined, so the script path is unaffected.
+> **Confirmed in practice** on openSUSE Leap 16.0 with BOINC 8.2.15, which the
+> BOINC project publishes as a GitHub release asset
+> (`boinc-client-8.2.15-4612.x86_64_suse16_0.rpm`). The exact denial is:
+>
+> ```
+> avc: denied { read } for comm="boinc" name="idle_detect_shmem" dev="tmpfs"
+>   scontext=system_u:system_r:boinc_t:s0
+>   tcontext=system_u:object_r:tmpfs_t:s0 tclass=file permissive=0
+> ```
+>
+> It is `dontaudit`-suppressed, so `ausearch -m AVC` shows nothing; it only
+> appears after `semodule -DB` or by grepping `/var/log/audit/audit.log`. The
+> user-visible symptom is BOINC recommending that you install idle_detect while
+> idle_detect is installed and running.
+>
+> **A workaround ships with this release.** Review it, then run as root:
+>
+> ```bash
+> sudo boinc_selinux_shmem_policy.sh     # --remove to undo
+> ```
+>
+> It installs a small policy module granting `boinc_t` `open`/`read` on
+> `tmpfs_t`, after which BOINC maps the segment and stops logging the legacy
+> notice. That rule is broader than ideal — the proper fix is a dedicated type
+> for the segment, which needs coordination with distribution policy — so treat
+> it as a stopgap until BOINC and the distributions ship policy covering this.
+>
+> Distribution packages are mostly still below 8.2.10 (Fedora 43/44 package
+> 8.2.4, openSUSE Leap 16.0 packages 8.0.4), so most users will not hit this
+> until those update. **Alternatively, on an SELinux-enforcing system set
+> `execute_dc_control_scripts=1` and use the bundled scripts regardless of BOINC
+> version** — `boinccmd` runs as the desktop user and is unconfined, so the
+> script path is unaffected.
 >
 > Check with `sestatus`. Note you cannot infer this from the distribution
 > alone: an openSUSE system manually upgraded from Leap 15.x keeps AppArmor
