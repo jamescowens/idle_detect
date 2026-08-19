@@ -46,6 +46,14 @@ preserved — the shipped defaults only apply to fresh installs. If a
 future release changes a default and you want the new behavior, edit
 the file manually.
 
+Source installs behave the same way. `cmake --install` would rewrite
+`/etc/event_detect.conf` unconditionally, so `install.sh` keeps your
+file and writes the incoming default beside it as
+`/etc/event_detect.conf.new`. Diff the two if you want to pick up newly
+added settings. Releases before 0.9.2.0 overwrote the file without a
+backup, so a source upgrade from an earlier version may have reset it —
+`monitor_ttys` in particular is worth checking.
+
 ---
 
 ## `event_detect.conf` — system daemon settings
@@ -208,6 +216,11 @@ this on if your DC client does not read the shared-memory segment and
 you want `idle_detect` to drive it via the configured scripts. See
 `active_command` and `idle_command` below.
 
+Turn it on if you run **Folding@home** (no version reads the segment),
+**BOINC older than 8.2.10**, or BOINC on an **SELinux-enforcing**
+system, where the client is blocked from reading the segment unless the
+bundled `boinc_selinux_shmem_policy.sh` has been applied.
+
 ### `last_active_time_cpp_filename`
 
 - **Type:** string (basename only)
@@ -249,9 +262,18 @@ State transitions fire `active_command` / `idle_command` when
   idle to active (user returns to the machine).
 
 Fires only when `execute_dc_control_scripts=1`. The default script
-calls `boinccmd --set_run_mode never` to pause BOINC. Edit the script
-at `/usr/bin/dc_pause`, or point this setting at a different
-executable, to control other DC clients.
+pauses **BOINC** (`boinccmd --set_run_mode never`) and **Folding@home**
+(v7 `FAHClient --send-pause`, v8 via the bundled `dc_fah_v8` helper),
+each attempted only if present and handled independently — the absence
+or failure of one never prevents the other.
+
+To customize, copy the script to `~/.local/bin/`, edit the copy, and
+point this setting at it with a full path (`~/` is not expanded in the
+config file). The shipped script is replaced on every install. For
+common adjustments no edit is needed: set `BOINC_DATA_DIR`,
+`DC_PAUSE_BOINC=0`, `DC_PAUSE_FAH=0` or `DC_FAH_CLIENT=v7|v8` in the
+environment, for example via a user-service drop-in at
+`~/.config/systemd/user/dc_idle_detection.service.d/override.conf`.
 
 ### `idle_command`
 
@@ -263,7 +285,11 @@ executable, to control other DC clients.
   seconds).
 
 Fires only when `execute_dc_control_scripts=1`. The default script
-calls `boinccmd --set_run_mode always` to resume BOINC.
+resumes **BOINC** (`boinccmd --set_run_mode always`) and
+**Folding@home** (v7 `FAHClient --send-unpause`, v8 via `dc_fah_v8`).
+Note that v8 spells resume as `fold`, not `unpause`; `dc_fah_v8` hides
+that difference. The same environment overrides listed under
+`active_command` apply here.
 
 ---
 
@@ -279,7 +305,53 @@ copy-paste these as replacements for the whole file.
 
 Required for **BOINC versions older than 8.2.10**, which do not read
 `/idle_detect_shmem` and therefore need idle_detect to drive them
-via `boinccmd`. In `~/.config/idle_detect.conf`, change:
+via `boinccmd`.
+
+**Also required, at any BOINC version, on a system running SELinux in
+enforcing mode** — currently Fedora, and openSUSE Leap 16.0 / Tumbleweed
+on fresh installs. Those ship a confined `boinc_t` domain that is granted
+only `getattr` on a `tmpfs_t` file it did not create, with no `open` and no
+`read`, and `/dev/shm/idle_detect_shmem` has no fcontext rule of its own so
+it is plain `tmpfs_t`. `shm_open()` is an `open()`, so the read is denied —
+silently, since BOINC can still search the directory and stat the segment.
+The script path is unaffected because `boinccmd` runs as the desktop user
+and is unconfined.
+
+Confirmed on openSUSE Leap 16.0 with BOINC 8.2.15. The denial is
+`dontaudit`-suppressed, so `ausearch -m AVC` reports nothing and it is only
+visible after `semodule -DB` or by grepping `/var/log/audit/audit.log`:
+
+```
+avc: denied { read } for comm="boinc" name="idle_detect_shmem" dev="tmpfs"
+  scontext=system_u:system_r:boinc_t:s0
+  tcontext=system_u:object_r:tmpfs_t:s0 tclass=file permissive=0
+```
+
+The symptom users actually see is BOINC logging that it uses legacy idle
+detection and recommending they install idle_detect — while idle_detect is
+installed and running. The segment's `0644` permissions are irrelevant and
+mislead the investigation.
+
+**Two ways to deal with it.** Either enable the control scripts as described
+below, or grant BOINC the access with the bundled workaround:
+
+```bash
+sudo boinc_selinux_shmem_policy.sh      # --remove to undo
+sudo systemctl restart boinc-client
+```
+
+That installs a small policy module allowing `boinc_t` to `open` and `read`
+`tmpfs_t`, after which BOINC maps the segment and the legacy notice stops.
+Review it before running it: the rule is broader than ideal, and the proper
+fix is a dedicated type for the segment, which needs coordination with
+distribution policy. Treat it as a stopgap until BOINC and the distributions
+ship policy covering this access.
+
+Check with `sestatus`. A system manually upgraded from openSUSE Leap 15.x
+keeps AppArmor and is not affected, so the distribution name alone does not
+tell you.
+
+In `~/.config/idle_detect.conf`, change:
 
 ```ini
 execute_dc_control_scripts=1

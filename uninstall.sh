@@ -53,6 +53,35 @@ else
     echo "         System files installed by 'cmake --install' might need manual removal."
 fi
 
+# --- Remove the Retired Wrapper Script ---
+# The CMake uninstall script above removes it when it exists, using the exact bin
+# directory it was configured with. This is the backstop for the case that script
+# does not exist -- a build directory that was cleaned or never kept -- since the
+# wrapper is precisely the file that survives when nothing else does: it is absent
+# from any manifest a current build produces.
+#
+# The prefix is read from the build directory's CMake cache when there is one, and
+# otherwise defaults to the prefix install.sh uses. Only this exact filename is
+# removed, and a failure is a warning: an inert leftover must not fail an
+# uninstall.
+WRAPPER_PREFIX=""
+if [ -f "${BUILD_DIR}/CMakeCache.txt" ]; then
+    WRAPPER_PREFIX=$(grep -m1 '^CMAKE_INSTALL_PREFIX:PATH=' "${BUILD_DIR}/CMakeCache.txt" | cut -d= -f2- || true)
+fi
+if [ -z "$WRAPPER_PREFIX" ]; then
+    WRAPPER_PREFIX="/usr/local"
+fi
+
+STALE_WRAPPER="${WRAPPER_PREFIX}/bin/idle_detect_wrapper.sh"
+if [ -e "$STALE_WRAPPER" ]; then
+    echo "INFO: Found retired wrapper script: ${STALE_WRAPPER}"
+    if rm -f "$STALE_WRAPPER"; then
+        echo "INFO: Removed ${STALE_WRAPPER}."
+    else
+        echo "WARN: Could not remove ${STALE_WRAPPER}. It is unused; remove it manually."
+    fi
+fi
+
 # --- Remove Runtime Directory ---
 RUNTIME_DIR="/run/event_detect"
 if [ -d "$RUNTIME_DIR" ]; then

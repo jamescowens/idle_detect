@@ -108,6 +108,16 @@ set(SOURCES_IDLE_DETECT
     "util.h"
     "tinyformat.h"
     "idle_detect.h"
+    "idle_source.h"
+    "idle_source.cpp"
+    "idle_source_pool.h"
+    "idle_source_pool.cpp"
+    "session_discovery.h"
+    "session_discovery.cpp"
+    # idle_sources_system.* makes the actual D-Bus/Wayland/X11 contact and must never be added to
+    # idle_detect_tests, which deliberately links none of those libraries.
+    "idle_sources_system.h"
+    "idle_sources_system.cpp"
     "util.cpp"
     "idle_detect.cpp"
     # No generated Wayland sources needed anymore
@@ -138,12 +148,48 @@ pkg_check_modules(GLIB REQUIRED glib-2.0 gobject-2.0 gio-2.0)
 # For ext-idle-notify-v1 wayland interface
 pkg_check_modules(WAYLAND_CLIENT REQUIRED wayland-client)
 
+# --- Check for XSetIOErrorExitHandler (libX11 >= 1.7) ---
+#
+# A fatal X I/O error is terminal for the process unless the application takes control of it:
+# libX11's _XDefaultIOError is declared _X_NORETURN and calls exit(1). idle_detect queries X
+# displays it does not own, so a display dying mid-query must not take the daemon with it.
+#
+# libX11 >= 1.7 provides XSetIOErrorExitHandler, which lets the application replace the
+# terminal exit. Older libX11 has no such hook and GetIdleTimeXss() falls back to
+# siglongjmp; see the X error handling section of idle_detect.cpp. Both the header
+# declaration and the library symbol are checked, since a mismatched pair is what actually
+# breaks the link.
+message(STATUS "Checking for XSetIOErrorExitHandler (libX11 >= 1.7)...")
+set(CMAKE_REQUIRED_FLAGS "-std=c++17")
+set(CMAKE_REQUIRED_INCLUDES ${X11_INCLUDE_DIR})
+set(CMAKE_REQUIRED_LIBRARIES ${X11_LIBRARIES})
+check_cxx_source_compiles(
+"
+#include <X11/Xlib.h>
+static void handler(Display*, void*) {}
+int main() {
+    XSetIOErrorExitHandler(static_cast<Display*>(nullptr), handler, nullptr);
+    return 0;
+}
+"
+HAVE_X11_IO_ERROR_EXIT_HANDLER
+)
+unset(CMAKE_REQUIRED_INCLUDES)
+unset(CMAKE_REQUIRED_LIBRARIES)
+unset(CMAKE_REQUIRED_FLAGS)
+
+if(HAVE_X11_IO_ERROR_EXIT_HANDLER)
+    message(STATUS "Checking for XSetIOErrorExitHandler (libX11 >= 1.7)... - Success")
+else()
+    message(STATUS "Checking for XSetIOErrorExitHandler (libX11 >= 1.7)... - Not found, "
+                   "using the siglongjmp fallback for fatal X I/O errors.")
+endif()
+
 # --- Configure Files from Templates ---
 # This creates the final files in the build directory with paths filled in
-message(STATUS "Configuring service files and wrapper script with install paths...")
+message(STATUS "Configuring service and config files with install paths...")
 configure_file(dc_event_detection.service.in ${CMAKE_CURRENT_BINARY_DIR}/dc_event_detection.service @ONLY)
 configure_file(dc_idle_detection.service.in ${CMAKE_CURRENT_BINARY_DIR}/dc_idle_detection.service @ONLY)
-configure_file(idle_detect_wrapper.sh.in ${CMAKE_CURRENT_BINARY_DIR}/idle_detect_wrapper.sh @ONLY)
 configure_file(event_detect.conf.in ${CMAKE_CURRENT_BINARY_DIR}/event_detect.conf @ONLY)
 configure_file(idle_detect.conf.in ${CMAKE_CURRENT_BINARY_DIR}/idle_detect.conf @ONLY)
 configure_file(idle-detect-autostart.desktop.in ${CMAKE_CURRENT_BINARY_DIR}/idle-detect-autostart.desktop @ONLY)
@@ -211,6 +257,10 @@ target_include_directories(idle_detect PRIVATE
     ${WAYLAND_CLIENT_INCLUDE_DIRS}
 )
 
+if(HAVE_X11_IO_ERROR_EXIT_HANDLER)
+    target_compile_definitions(idle_detect PRIVATE HAVE_X11_IO_ERROR_EXIT_HANDLER)
+endif()
+
 # Link libraries
 target_link_libraries(idle_detect PRIVATE
     ${X11_LIBRARIES}
@@ -242,7 +292,62 @@ else()
     set(INSTALL_CONFIG_DIR "/${CMAKE_INSTALL_SYSCONFDIR}" CACHE PATH "Installation directory for configuration files")
 endif()
 
-set(INSTALL_SYSTEM_SERVICE_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/system" CACHE PATH "Installation directory for the system level dc_event_detection service")
+# The system unit must live somewhere systemd can read when it resolves the boot
+# transaction, which happens at PID 1 startup before fstab mounts are processed.
+#
+# Measured on openSUSE Leap 16 with systemd debug logging, where /usr/local is a
+# separate btrfs subvolume:
+#
+#   +6.713s  dc_event_detection.service: Failed to load configuration: No such file
+#   +6.716s  Cannot add dependency job, ignoring: Unit ... not found.
+#   +7.835s  unit_file_build_name_map: normal unit file: /usr/local/lib/systemd/...
+#
+# systemd loses the race by about a second, drops the job, and never re-resolves.
+# The message is debug-level, so at default log level nothing is reported at all:
+# the unit stays 'enabled', reports a valid FragmentPath once queried, starts fine
+# by hand, and simply never runs at boot. No After=, RequiresMountsFor=, or fstab
+# option helps, because the job never enters the transaction to be ordered.
+#
+# So prefer the spec's "installed by the administrator" tier, but only when it is
+# on the root filesystem and therefore populated at resolution time. Otherwise use
+# /etc/systemd/system, which always is. Package builds pass -DCMAKE_INSTALL_PREFIX=/usr
+# and are unaffected. The user unit needs no such treatment: user@.service starts
+# long after local-fs.target.
+if(CMAKE_INSTALL_PREFIX STREQUAL "/usr")
+    set(_id_system_unit_dir "${CMAKE_INSTALL_PREFIX}/lib/systemd/system")
+else()
+    # Compare the filesystem holding the prefix with the one holding /. The prefix
+    # may not exist yet, so probe its nearest existing ancestor.
+    set(_id_probe "${CMAKE_INSTALL_PREFIX}")
+    while(NOT EXISTS "${_id_probe}" AND NOT _id_probe STREQUAL "/")
+        get_filename_component(_id_probe "${_id_probe}" DIRECTORY)
+    endwhile()
+
+    execute_process(COMMAND stat -c %d "/"
+                    OUTPUT_VARIABLE _id_root_dev OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET RESULT_VARIABLE _id_root_rc)
+    execute_process(COMMAND stat -c %d "${_id_probe}"
+                    OUTPUT_VARIABLE _id_prefix_dev OUTPUT_STRIP_TRAILING_WHITESPACE
+                    ERROR_QUIET RESULT_VARIABLE _id_prefix_rc)
+
+    if(_id_root_rc EQUAL 0 AND _id_prefix_rc EQUAL 0 AND _id_root_dev STREQUAL _id_prefix_dev)
+        set(_id_system_unit_dir "${CMAKE_INSTALL_PREFIX}/lib/systemd/system")
+    else()
+        # Separate filesystem, or we could not tell. Choose the location that works.
+        set(_id_system_unit_dir "/etc/systemd/system")
+        if(_id_root_rc EQUAL 0 AND _id_prefix_rc EQUAL 0)
+            message(STATUS
+                "${CMAKE_INSTALL_PREFIX} is on a different filesystem than /; installing the "
+                "system unit to /etc/systemd/system so systemd can read it at boot.")
+        else()
+            message(STATUS
+                "Could not determine whether ${CMAKE_INSTALL_PREFIX} shares a filesystem with /; "
+                "installing the system unit to /etc/systemd/system to be safe.")
+        endif()
+    endif()
+endif()
+
+set(INSTALL_SYSTEM_SERVICE_DIR "${_id_system_unit_dir}" CACHE PATH "Installation directory for the system level dc_event_detection service")
 set(INSTALL_SYSTEM_SERVICE_PRESET_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/system-preset" CACHE PATH "System service preset directory")
 set(INSTALL_USER_SERVICE_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/user" CACHE PATH "Installation directory for the user level dc_idle_detection service")
 set(INSTALL_USER_SERVICE_PRESET_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/user-preset" CACHE PATH "Installation directory for the user level dc_idle_detection service preset to auto enable")
@@ -251,12 +356,7 @@ set(INSTALL_CUSTOMIZABLE_USER_SERVICE_DIR "$ENV{HOME}/.config/systemd/user" CACH
 
 # Install the executable and scripts
 install(TARGETS event_detect idle_detect read_shmem_timestamps DESTINATION ${INSTALL_BIN_DIR})
-install(FILES "dc_pause" "dc_unpause" "idle_detect_resources.sh" "force_state.sh" "event_detect_control.sh" "idle_detect_new_user_setup.sh"
-        PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ GROUP_EXECUTE GROUP_READ WORLD_EXECUTE WORLD_READ
-        DESTINATION ${INSTALL_BIN_DIR} )
-
-# Install GENERATED wrapper script
-install(FILES ${CMAKE_CURRENT_BINARY_DIR}/idle_detect_wrapper.sh
+install(FILES "dc_pause" "dc_unpause" "dc_fah_v8" "boinc_selinux_shmem_policy.sh" "idle_detect_resources.sh" "force_state.sh" "event_detect_control.sh" "idle_detect_new_user_setup.sh"
         PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ GROUP_EXECUTE GROUP_READ WORLD_EXECUTE WORLD_READ
         DESTINATION ${INSTALL_BIN_DIR} )
 
@@ -347,7 +447,13 @@ if(BUILD_TESTING)
         tests/util_tests.cpp
         tests/event_message_tests.cpp
         tests/config_tests.cpp
+        tests/idle_aggregation_tests.cpp
+        tests/idle_source_pool_tests.cpp
+        tests/session_discovery_tests.cpp
         util.cpp
+        idle_source.cpp
+        idle_source_pool.cpp
+        session_discovery.cpp
     )
 
     target_include_directories(idle_detect_tests PRIVATE
@@ -367,7 +473,6 @@ endif()
 add_custom_target(install_executables_only
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/event_detect" "${INSTALL_BIN_DIR}/event_detect"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/idle_detect" "${INSTALL_BIN_DIR}/idle_detect"
-    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_BINARY_DIR}/idle_detect_wrapper.sh" "${INSTALL_BIN_DIR}/idle_detect_wrapper.sh"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/idle_detect_resources.sh" "${INSTALL_BIN_DIR}/idle_detect_resources.sh"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/force_state.sh" "${INSTALL_BIN_DIR}/force_state.sh"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/event_detect_control.sh" "${INSTALL_BIN_DIR}/event_detect_control.sh"
@@ -380,6 +485,7 @@ add_custom_target(install_executables_only
 add_custom_target(dc_control_scripts_only
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_pause" "${INSTALL_BIN_DIR}/dc_pause"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_unpause" "${INSTALL_BIN_DIR}/dc_unpause"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_fah_v8" "${INSTALL_BIN_DIR}/dc_fah_v8"
 
     COMMENT "installing executables only"
 )

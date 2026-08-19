@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 James C. Owens
+ * Copyright (C) 2025-2026 James C. Owens
  *
  * This code is licensed under the MIT license. See LICENSE.md in the repository.
  */
@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <vector>
 
 namespace fs = std::filesystem;
 
@@ -471,4 +472,140 @@ TEST(ThreadException, IsEventIdleDetectException)
     ThreadException ex("test");
     const EventIdleDetectException& base_ref = ex;
     EXPECT_STREQ(base_ref.what(), "test");
+}
+
+// ============================================================================
+// FailureReportThrottle
+//
+// The ladder that keeps a once-per-second failure from becoming a once-per-second log line. Its shape is
+// load bearing: reports must land on the onset and on each widening of the interval, and must stop
+// widening at the ceiling, or a permanently broken input still produces unbounded output.
+// ============================================================================
+
+namespace {
+
+//!
+//! \brief Feeds consecutive failures to a throttle and returns the 1-based ordinals it reported on.
+//!
+std::vector<int> ReportedFailureOrdinals(FailureReportThrottle& throttle, int failures)
+{
+    std::vector<int> reported;
+
+    for (int i = 1; i <= failures; ++i) {
+        if (throttle.RecordFailure()) {
+            reported.push_back(i);
+        }
+    }
+
+    return reported;
+}
+
+} // namespace
+
+TEST(FailureReportThrottle, ReportsTheFirstFailureImmediately)
+{
+    FailureReportThrottle throttle(1, 64);
+
+    // The onset of a fault must never be suppressed: a throttle that swallowed it would hide a genuine
+    // problem behind the mechanism meant to stop the noise from it.
+    EXPECT_TRUE(throttle.RecordFailure());
+    EXPECT_EQ(throttle.ConsecutiveFailures(), 1);
+}
+
+TEST(FailureReportThrottle, DoublesTheSuppressionIntervalOnTheDocumentedLadder)
+{
+    FailureReportThrottle throttle(1, 64);
+
+    // The same ladder IdleSourcePool::RecordCandidateFailure() and ShellIdleSource::NoteQueryOutcome()
+    // apply, and the documented sequence in both: 1st, 3rd, 6th, 11th, 20th, 37th, 70th.
+    const std::vector<int> expected = {1, 3, 6, 11, 20, 37, 70};
+
+    EXPECT_EQ(ReportedFailureOrdinals(throttle, 70), expected);
+}
+
+TEST(FailureReportThrottle, CapsTheIntervalAtTheCeiling)
+{
+    FailureReportThrottle throttle(1, 64);
+
+    ReportedFailureOrdinals(throttle, 70);
+
+    EXPECT_EQ(throttle.Interval(), 64);
+
+    // Past the ceiling the interval must stay put rather than going on doubling. Doubling forever is the
+    // failure this bound exists to prevent in the other direction: it would eventually stop reporting a
+    // standing fault altogether. Exactly 64 more failures are suppressed and the 65th is reported, which
+    // is the 135th of the run.
+    const std::vector<int> expected = {65};
+
+    EXPECT_EQ(ReportedFailureOrdinals(throttle, 65), expected);
+    EXPECT_EQ(throttle.Interval(), 64);
+    EXPECT_EQ(throttle.ConsecutiveFailures(), 135);
+}
+
+TEST(FailureReportThrottle, BoundsOutputForAPermanentlyBrokenInput)
+{
+    FailureReportThrottle throttle(1, 64);
+
+    // 86400 failures is one per second for a day, which is exactly the measurement that motivated the
+    // ladder. Unthrottled that is 86400 lines; the ceiling has to hold it to about one per minute.
+    const std::vector<int> reported = ReportedFailureOrdinals(throttle, 86400);
+
+    EXPECT_LT(reported.size(), 1400u);
+}
+
+TEST(FailureReportThrottle, ResetClearsTheLadderAndReturnsTheRunLength)
+{
+    FailureReportThrottle throttle(1, 64);
+
+    ReportedFailureOrdinals(throttle, 10);
+
+    // The count is what the caller puts in its recovery line, and it is the only place the size of the
+    // outage appears at normal level, since the middle of the run was suppressed.
+    EXPECT_EQ(throttle.Reset(), 10);
+    EXPECT_EQ(throttle.ConsecutiveFailures(), 0);
+    EXPECT_EQ(throttle.Interval(), 0);
+}
+
+TEST(FailureReportThrottle, ResetWithNoRunReportsNothingToRecoverFrom)
+{
+    FailureReportThrottle throttle(1, 64);
+
+    // Called on every success, which is most ticks. It must be able to say "there was no outage" so the
+    // caller does not announce a recovery from a fault that never happened.
+    EXPECT_EQ(throttle.Reset(), 0);
+}
+
+TEST(FailureReportThrottle, AFailureAfterResetIsReportedImmediatelyAgain)
+{
+    FailureReportThrottle throttle(1, 64);
+
+    ReportedFailureOrdinals(throttle, 70);
+    throttle.Reset();
+
+    // A new fault must not inherit a suppression window earned by the previous one. Leaving the ladder
+    // standing would hide the onset of the next outage behind up to 64 silent ticks.
+    EXPECT_TRUE(throttle.RecordFailure());
+    EXPECT_EQ(throttle.ConsecutiveFailures(), 1);
+    EXPECT_EQ(throttle.Interval(), 1);
+}
+
+TEST(FailureReportThrottle, ClampsADegenerateInitialInterval)
+{
+    // An interval of zero would report every failure and defeat the object entirely.
+    FailureReportThrottle throttle(0, 64);
+
+    const std::vector<int> expected = {1, 3, 6, 11, 20};
+
+    EXPECT_EQ(ReportedFailureOrdinals(throttle, 20), expected);
+}
+
+TEST(FailureReportThrottle, ClampsACeilingBelowTheFloor)
+{
+    // A ceiling under the floor would make the ladder shrink on its second step instead of growing.
+    FailureReportThrottle throttle(4, 1);
+
+    const std::vector<int> expected = {1, 6, 11, 16};
+
+    EXPECT_EQ(ReportedFailureOrdinals(throttle, 20), expected);
+    EXPECT_EQ(throttle.Interval(), 4);
 }

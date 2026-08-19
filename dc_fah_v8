@@ -1,0 +1,227 @@
+#!/usr/bin/env python3
+"""dc_fah_v8 — pause or resume a Folding@home v8 client.
+
+Speaks the client's local WebSocket API (default ws://127.0.0.1:7396/api/websocket)
+using only the Python 3 standard library: no websocket-client, no pip, no fahctl.
+
+Why this exists:
+  The v8 package ships no command-line control at all. The official 'fahctl'
+  helper lives in the client source repo, is not installed by the package, needs
+  the third-party websocket-client module, and sends {"cmd":"state","state":...},
+  which client 8.1.18 ignores -- while fahctl still exits 0. A silent no-op is
+  unacceptable when the job is to stop compute, so this helper sends the verb and
+  then re-reads the client's state to confirm the change actually took effect.
+
+Verb compatibility:
+  8.1.x  {"cmd":"pause"} / {"cmd":"unpause"}       (legacy; verified on 8.1.18)
+  8.3+   {"cmd":"state","state":"pause"|"fold"}    (newer shape)
+  Newer clients still accept the legacy verbs, so we try legacy first and fall
+  back to the newer shape.
+
+The connection is to the loopback API only; it never contacts the hosted web
+control or any Folding@home server.
+
+Exit status: 0 only if the client's paused flag reached the requested value.
+"""
+
+import base64
+import hashlib
+import json
+import os
+import socket
+import struct
+import sys
+import time
+
+GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+PATH = "/api/websocket"
+
+
+def _connect(host, port, timeout):
+    """Open a WebSocket connection and complete the RFC 6455 handshake."""
+    sock = socket.create_connection((host, port), timeout=timeout)
+    sock.settimeout(timeout)
+
+    key = base64.b64encode(os.urandom(16)).decode()
+    req = (
+        "GET %s HTTP/1.1\r\n"
+        "Host: %s:%d\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Key: %s\r\n"
+        "Sec-WebSocket-Version: 13\r\n\r\n" % (PATH, host, port, key)
+    )
+    sock.sendall(req.encode())
+
+    # Read just the response headers, byte-wise, so we do not consume frame data.
+    head = b""
+    while b"\r\n\r\n" not in head:
+        chunk = sock.recv(1)
+        if not chunk:
+            raise IOError("connection closed during handshake")
+        head += chunk
+        if len(head) > 8192:
+            raise IOError("handshake response too large")
+
+    status = head.split(b"\r\n", 1)[0].decode("latin-1")
+    if "101" not in status:
+        raise IOError("server refused upgrade: %s" % status)
+
+    expect = base64.b64encode(hashlib.sha1((key + GUID).encode()).digest()).decode()
+    if expect.lower().encode() not in head.lower():
+        raise IOError("bad Sec-WebSocket-Accept in handshake")
+
+    return sock
+
+
+def _recv_exact(sock, count):
+    buf = b""
+    while len(buf) < count:
+        chunk = sock.recv(count - len(buf))
+        if not chunk:
+            raise IOError("connection closed mid-frame")
+        buf += chunk
+    return buf
+
+
+def _recv_message(sock):
+    """Return the payload of the next text message, skipping control frames."""
+    while True:
+        header = _recv_exact(sock, 2)
+        opcode = header[0] & 0x0F
+        masked = header[1] & 0x80
+        length = header[1] & 0x7F
+
+        if length == 126:
+            length = struct.unpack(">H", _recv_exact(sock, 2))[0]
+        elif length == 127:
+            length = struct.unpack(">Q", _recv_exact(sock, 8))[0]
+
+        mask = _recv_exact(sock, 4) if masked else None
+        payload = _recv_exact(sock, length) if length else b""
+
+        if mask:
+            payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+        if opcode == 0x8:                      # close
+            raise IOError("server closed the connection")
+        if opcode in (0x1, 0x2):
+            return payload.decode("utf-8", "replace")
+        # 0x0 continuation, 0x9 ping, 0xA pong: not expected here, keep reading.
+
+
+def _send_text(sock, text):
+    """Send one masked text frame. Clients MUST mask (RFC 6455 section 5.3)."""
+    payload = text.encode()
+    mask = os.urandom(4)
+    masked = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+
+    frame = bytearray([0x81])
+    size = len(payload)
+    if size < 126:
+        frame.append(0x80 | size)
+    elif size < 65536:
+        frame.append(0x80 | 126)
+        frame += struct.pack(">H", size)
+    else:
+        frame.append(0x80 | 127)
+        frame += struct.pack(">Q", size)
+
+    sock.sendall(bytes(frame) + mask + masked)
+
+
+def read_state(host, port, timeout):
+    """Return the client's first state dump as a dict."""
+    sock = _connect(host, port, timeout)
+    try:
+        return json.loads(_recv_message(sock))
+    finally:
+        sock.close()
+
+
+def is_paused(host, port, timeout):
+    state = read_state(host, port, timeout)
+    return bool(state.get("config", {}).get("paused", False))
+
+
+def send_command(host, port, timeout, message):
+    sock = _connect(host, port, timeout)
+    try:
+        _recv_message(sock)                    # initial state dump
+        _send_text(sock, json.dumps(message))
+        # Give the client a moment to act before we tear the socket down;
+        # closing immediately is exactly how fahctl loses the command.
+        time.sleep(0.5)
+    finally:
+        sock.close()
+
+
+def apply_paused(host, port, timeout, want):
+    """Drive the client to the requested paused state. Returns True if confirmed."""
+    legacy = {"cmd": "pause" if want else "unpause"}
+    modern = {"cmd": "state", "state": "pause" if want else "fold"}
+
+    for attempt, message in enumerate((legacy, modern)):
+        try:
+            send_command(host, port, timeout, message)
+        except (IOError, OSError) as exc:
+            print("dc_fah_v8: %s" % exc, file=sys.stderr)
+            return False
+
+        for _ in range(6):                     # up to ~3s for the flag to settle
+            time.sleep(0.5)
+            try:
+                if is_paused(host, port, timeout) == want:
+                    return True
+            except (IOError, OSError, ValueError):
+                pass
+
+        if attempt == 0:
+            print("dc_fah_v8: legacy verb had no effect; trying the newer API "
+                  "shape.", file=sys.stderr)
+
+    return False
+
+
+def main(argv):
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="Pause or resume a Folding@home v8 client.")
+    parser.add_argument("command", choices=["pause", "unpause", "state"],
+                        help="pause and unpause are verified; state prints JSON")
+    parser.add_argument("-a", "--address", default="127.0.0.1:7396",
+                        help="client address (default: %(default)s)")
+    parser.add_argument("-t", "--timeout", type=float, default=5.0,
+                        help="socket timeout in seconds (default: %(default)s)")
+    args = parser.parse_args(argv)
+
+    host, _, port = args.address.partition(":")
+    host = host or "127.0.0.1"
+    try:
+        port = int(port) if port else 7396
+    except ValueError:
+        print("dc_fah_v8: bad port in '%s'" % args.address, file=sys.stderr)
+        return 2
+
+    try:
+        if args.command == "state":
+            print(json.dumps(read_state(host, port, args.timeout), indent=2))
+            return 0
+    except (IOError, OSError, ValueError) as exc:
+        print("dc_fah_v8: cannot reach the client at %s:%d: %s"
+              % (host, port, exc), file=sys.stderr)
+        return 1
+
+    want = args.command == "pause"
+    if apply_paused(host, port, args.timeout, want):
+        print("Folding@home v8 %s." % ("paused" if want else "resumed"))
+        return 0
+
+    print("dc_fah_v8: could not confirm the client reached the requested state.",
+          file=sys.stderr)
+    return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

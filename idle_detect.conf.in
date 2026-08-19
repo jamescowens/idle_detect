@@ -1,4 +1,5 @@
 debug=0
+event_count_files_path="/run/event_detect"
 use_event_detect=1
 update_event_detect=1
 execute_dc_control_scripts=0

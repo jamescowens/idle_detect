@@ -2,10 +2,25 @@
 Description=BOINC Idle Detection Service
 After=graphical-session.target
 
+# Bound the restart loop, for the same reason as dc_event_detection.service.
+# idle_detect no longer exits when there is no graphical session: that is an
+# ordinary running state which it re-evaluates on every check interval. The
+# non-zero exits left are permanent failures, such as a config file it cannot
+# read. A restart cycle is then RestartSec plus startup, which is longer than the
+# systemd user manager's default 10s rate-limit window, so the burst limit would
+# never trip and a permanently broken install would restart-loop forever. A 300s
+# window lets systemd give up after 5 failed starts and mark the unit failed,
+# where it is visible in 'systemctl --user status'.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
 [Service]
 Type=simple
-ExecStartPre=/bin/sleep 5
-ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/idle_detect_wrapper.sh
+# Started directly. There is no wrapper waiting for the session environment and
+# no ExecStartPre delay, because startup ordering no longer matters: idle_detect
+# discovers its graphical session at runtime and picks one up whenever it
+# appears.
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/idle_detect
 Restart=on-failure
 RestartSec=5s
 ProtectSystem=strict

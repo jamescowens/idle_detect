@@ -46,7 +46,7 @@ sudo dnf install \
 # openSUSE
 sudo zypper install \
     gcc-c++ cmake ninja pkgconf \
-    libevdev-devel libXScrnSaver-devel dbus-1-devel glib2-devel \
+    libevdev-devel libXss-devel dbus-1-devel glib2-devel \
     wayland-devel wayland-protocols-devel \
     gtest
 ```
@@ -54,6 +54,14 @@ sudo zypper install \
 Package name differences between the two (`ninja` vs `ninja-build`,
 `gtest` vs `gtest-devel`) are accounted for in the OBS spec file; as a
 local builder you just need whichever your distro calls them.
+
+**The XScreenSaver package differs between the two, and the difference bites.**
+Fedora calls it `libXScrnSaver-devel`; openSUSE calls it **`libXss-devel`**.
+`libXScrnSaver-devel` does not exist on openSUSE Leap 16 at all — `zypper se
+libXScrnSaver` returns "No matching items found" — so copying the Fedora line
+fails with no obvious hint about the right name. The `pkg-config` module is
+`xscrnsaver` on both. `libXss-devel` requires `pkgconfig(x11)`, so `libX11-devel`
+arrives transitively and does not need listing.
 
 #### Arch Linux
 
@@ -154,6 +162,40 @@ ctest --test-dir build --output-on-failure
 # Install (usually needs sudo for /usr/local or /usr)
 sudo cmake --install build
 ```
+
+Two things `install.sh` does that a bare `cmake --install` does not:
+
+- It **preserves `/etc/event_detect.conf`**. `cmake --install` rewrites it
+  unconditionally, discarding local settings. Back it up first if you are
+  installing by hand over an existing system.
+- It retires files earlier releases installed elsewhere (the old
+  `idle_detect_wrapper.sh`, a unit left under a previous prefix) and
+  restarts already-running services so they are not left executing a
+  deleted binary.
+
+### Where the system unit is installed
+
+CMake chooses this automatically; it is not a knob, but it is worth
+understanding if you package or relocate the project.
+
+| condition | system unit goes to |
+|---|---|
+| `CMAKE_INSTALL_PREFIX=/usr` (packages) | `/usr/lib/systemd/system` |
+| prefix on the same filesystem as `/` | `${prefix}/lib/systemd/system` |
+| prefix on a **separate** filesystem | `/etc/systemd/system` |
+
+systemd resolves the boot transaction at PID 1 startup, before filesystems
+from `/etc/fstab` are mounted. On distributions where `/usr/local` is a
+separate subvolume — openSUSE, notably — a unit installed under that prefix
+does not exist yet at that moment, so systemd drops the start job and the
+service never runs at boot. The failure is silent: the unit still reports
+`enabled`, resolves a valid `FragmentPath` once queried, and starts by hand.
+CMake therefore compares the device holding the prefix with the one holding
+`/` and falls back to `/etc/systemd/system` only when it has to, keeping the
+tier `systemd.unit(5)` documents for administrator-installed units otherwise.
+
+The user unit is always installed under the prefix; `user@.service` starts
+well after `local-fs.target`, so it is unaffected.
 
 ### Relevant CMake options
 

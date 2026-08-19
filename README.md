@@ -7,6 +7,10 @@ aggregates raw input activity, and a per-user daemon handles
 session-aware idle time with desktop inhibit propagation (KDE, GNOME,
 Wayland via `ext_idle_notifier_v1`, X11 via XScreenSaver).
 
+Activity state is published for any DC client to read, and bundled
+control scripts can drive **BOINC** and **Folding@home** (both the v7
+and v8 clients) directly when a client cannot read it for itself.
+
 Status: stable for daily use. Please file issues on GitHub for bugs
 or unsupported desktop configurations.
 
@@ -79,14 +83,94 @@ publishes activity state to `event_detect`, which exports
 client that reads either of those can decide for itself when to pause.
 
 If your DC client does not read the shared memory segment directly —
-including **BOINC versions before 8.2.10** — enable the bundled
-scripts: set `execute_dc_control_scripts=1` in
-`~/.config/idle_detect.conf` and
-`systemctl --user restart dc_idle_detection`. The default
-`/usr/bin/dc_pause` and `/usr/bin/dc_unpause` target BOINC via
-`boinccmd --set_run_mode`. BOINC 8.2.10 and later read
-`/idle_detect_shmem` directly; for those the shipped default
-(scripts disabled) is correct.
+including **BOINC versions before 8.2.10**, and **Folding@home at any
+version** — enable the bundled scripts: set
+`execute_dc_control_scripts=1` in `~/.config/idle_detect.conf` and
+`systemctl --user restart dc_idle_detection`.
+
+`dc_pause` and `dc_unpause` handle BOINC and Folding@home
+independently. Each is attempted only if present, and the absence or
+failure of one never prevents the other:
+
+| client | how it is driven |
+|---|---|
+| BOINC | `boinccmd --set_run_mode never` / `always` |
+| Folding@home v7 | `FAHClient --send-pause` / `--send-unpause` |
+| Folding@home v8 | `dc_fah_v8`, bundled (see below) |
+
+Folding@home v8 ships no command-line control, so `dc_fah_v8` speaks
+the client's local WebSocket API on `127.0.0.1:7396` using only the
+Python 3 standard library — no `pip`, no `fahctl`. It stays on this
+machine and never involves the hosted web control. It confirms the
+client actually changed state rather than trusting an exit code, and
+fails loudly if it cannot.
+
+Behavior can be adjusted without editing the scripts:
+
+| variable | effect |
+|---|---|
+| `BOINC_DATA_DIR` | BOINC data directory, skipping the probe |
+| `DC_PAUSE_BOINC=0` | leave BOINC alone |
+| `DC_PAUSE_FAH=0` | leave Folding@home alone |
+| `DC_FAH_CLIENT` | force `v7` or `v8` instead of auto-detecting |
+
+If BOINC is installed but its `gui_rpc_auth.cfg` is unreadable — the
+usual `root:boinc 0640` — the scripts say so rather than skipping
+silently. Add your user to the `boinc` group to fix it.
+
+BOINC 8.2.10 and later read `/idle_detect_shmem` directly; for those
+the shipped default (scripts disabled) is correct, **except on SELinux
+systems** — see the note below.
+
+> **On SELinux systems, the shared-memory path is currently blocked.**
+> Fedora and openSUSE (Leap 16.0 and Tumbleweed on fresh installs) run
+> SELinux in enforcing mode with a **confined `boinc_t` domain**. Querying
+> the compiled policy on openSUSE Leap 16.0 shows `boinc_t` is granted only
+> `getattr` on a `tmpfs_t` file it did not create — **no `open`, no `read`** —
+> while `/dev/shm/idle_detect_shmem` is plain `tmpfs_t` (no fcontext rule
+> exists for it). Since `shm_open()` is an `open()`, the read is denied.
+>
+> The failure is **silent**: BOINC can search `/dev/shm` and `getattr` the
+> segment, so it fails at open rather than at discovery, and simply never
+> observes user activity.
+>
+> **Confirmed in practice** on openSUSE Leap 16.0 with BOINC 8.2.15, which the
+> BOINC project publishes as a GitHub release asset
+> (`boinc-client-8.2.15-4612.x86_64_suse16_0.rpm`). The exact denial is:
+>
+> ```
+> avc: denied { read } for comm="boinc" name="idle_detect_shmem" dev="tmpfs"
+>   scontext=system_u:system_r:boinc_t:s0
+>   tcontext=system_u:object_r:tmpfs_t:s0 tclass=file permissive=0
+> ```
+>
+> It is `dontaudit`-suppressed, so `ausearch -m AVC` shows nothing; it only
+> appears after `semodule -DB` or by grepping `/var/log/audit/audit.log`. The
+> user-visible symptom is BOINC recommending that you install idle_detect while
+> idle_detect is installed and running.
+>
+> **A workaround ships with this release.** Review it, then run as root:
+>
+> ```bash
+> sudo boinc_selinux_shmem_policy.sh     # --remove to undo
+> ```
+>
+> It installs a small policy module granting `boinc_t` `open`/`read` on
+> `tmpfs_t`, after which BOINC maps the segment and stops logging the legacy
+> notice. That rule is broader than ideal — the proper fix is a dedicated type
+> for the segment, which needs coordination with distribution policy — so treat
+> it as a stopgap until BOINC and the distributions ship policy covering this.
+>
+> Distribution packages are mostly still below 8.2.10 (Fedora 43/44 package
+> 8.2.4, openSUSE Leap 16.0 packages 8.0.4), so most users will not hit this
+> until those update. **Alternatively, on an SELinux-enforcing system set
+> `execute_dc_control_scripts=1` and use the bundled scripts regardless of BOINC
+> version** — `boinccmd` runs as the desktop user and is unconfined, so the
+> script path is unaffected.
+>
+> Check with `sestatus`. Note you cannot infer this from the distribution
+> alone: an openSUSE system manually upgraded from Leap 15.x keeps AppArmor
+> and is not affected.
 
 For the full list of every setting in both config files — types,
 defaults, interactions, common configurations — see
@@ -113,7 +197,9 @@ Two processes, coordinated via a named pipe and POSIX shared memory:
   seconds UTC) and optionally `/run/event_detect/last_active_time.dat`
 
 **`idle_detect`** (per-user daemon, one per session):
-- Detects session type and uses the most appropriate idle source:
+- Continuously discovers the session's idle sources rather than deciding
+  once at startup, so it recovers on its own when a GUI session is
+  logged out, crashes, or appears after the daemon has already started:
   - **KDE X11 / Plasma 5**: `org.kde.ksmserver` `GetSessionIdleTime`
     (includes inhibit propagation)
   - **KDE Wayland / Plasma 6**: `ext_idle_notifier_v1` + D-Bus
@@ -121,7 +207,12 @@ Two processes, coordinated via a named pipe and POSIX shared memory:
   - **GNOME**: `org.gnome.SessionManager.IsInhibited` + Mutter idle time
   - **Other Wayland**: `ext_idle_notifier_v1`
   - **X11 fallback**: XScreenSaver (`libXss`)
-  - **TTY**: falls back to `event_detect`
+  - **TTY**: no GUI source is found, so `event_detect` decides
+- More than one graphical endpoint can be live at once (a Wayland
+  compositor and its XWayland display, say). Each is validated by
+  connecting to it, never trusted from an environment variable, and the
+  session's idle time is the smallest value any of them reports —
+  unless something is inhibiting idle, which wins outright.
 - Reports activity to `event_detect` via named pipe as
   `timestamp:USER_ACTIVE` messages
 
@@ -147,9 +238,9 @@ sudo dnf install gcc-c++ cmake ninja-build pkgconf \
     libevdev-devel libXScrnSaver-devel dbus-devel glib2-devel \
     wayland-devel wayland-protocols-devel gtest-devel
 
-# openSUSE
+# openSUSE  (note: libXss-devel, NOT libXScrnSaver-devel — that name does not exist here)
 sudo zypper install gcc-c++ cmake ninja pkgconf \
-    libevdev-devel libXScrnSaver-devel dbus-1-devel glib2-devel \
+    libevdev-devel libXss-devel dbus-1-devel glib2-devel \
     wayland-devel wayland-protocols-devel gtest
 
 # Arch
@@ -169,6 +260,16 @@ sudo ./install.sh            # system side
 For the full build guide — CMake options, manual CMake invocation,
 tests, sanitizer builds, developer workflow, local package builds,
 and troubleshooting — see **[docs/building.md](docs/building.md)**.
+
+## Documentation
+
+| document | covers |
+|---|---|
+| [docs/configuration.md](docs/configuration.md) | every setting in both config files |
+| [docs/building.md](docs/building.md) | build options, tests, packaging, troubleshooting |
+| [docs/idle_detection_logic.md](docs/idle_detection_logic.md) | how idle time is determined per session type |
+| [docs/testing.md](docs/testing.md) | what was tested for the current release, and what was not |
+| [docs/ROADMAP_1.0.md](docs/ROADMAP_1.0.md) | planned work toward 1.0 |
 
 ## Branching and releases
 

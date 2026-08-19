@@ -1,6 +1,32 @@
+# Installed by idle_detect. This file is replaced on every install and package
+# upgrade, so do not edit it in place -- your changes will be overwritten (a copy
+# of the previous version is kept as .superseded-<timestamp>, but that is a safety
+# net, not a supported workflow).
+#
+# To customize, use a drop-in instead:
+#   /etc/systemd/system/dc_event_detection.service.d/override.conf
+#   systemctl daemon-reload && systemctl restart dc_event_detection
+#
 [Unit]
 Description=DC Event Detection Service
-After=multi-user.target dev-shm.mount
+# Order after udev has started and /dev/shm exists. Do NOT order after
+# multi-user.target: this unit is WantedBy=multi-user.target, so ordering it
+# after that target forms a dependency cycle and systemd silently drops the
+# start job, leaving the service enabled but never started at boot.
+# The ExecStartPre delay below is what gives USB input devices time to
+# enumerate, which is what the multi-user.target ordering was reaching for.
+After=systemd-udevd.service dev-shm.mount
+
+# Bound the restart loop. event_detect exits non-zero on permanent environmental
+# failures (no pointing devices to monitor, unusable data directory), and a full
+# restart cycle here takes about 10s (ExecStartPre sleep + RestartSec). Under the
+# systemd default 10s rate-limit window at most one start lands per window, so the
+# burst limit never trips and such a failure would restart-loop forever, logging an
+# error every 10s. A 300s window lets systemd give up after 5 failed starts and put
+# the unit in the failed state, where it is visible in 'systemctl status'. Transient
+# failures still recover, since they succeed well before the burst is exhausted.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple

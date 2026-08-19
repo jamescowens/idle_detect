@@ -1,11 +1,13 @@
 /*
- * Copyright (C) 2025 James C. Owens
+ * Copyright (C) 2025-2026 James C. Owens
  *
  * This code is licensed under the MIT license. See LICENSE.md in the repository.
  */
 
 #include <idle_detect.h>
+#include <idle_sources_system.h>
 #include <optional>
+#include <session_discovery.h>
 #include <util.h> // Includes tinyformat.h, filesystem, etc.
 #include <release.h>
 
@@ -23,6 +25,8 @@
 #include <cerrno>      // For errno
 #include <future>      // For std::async in Stop() timeout
 #include <filesystem> // Needed for first-run config copy logic
+#include <mutex>       // For std::call_once installing the X error handlers
+#include <csetjmp>     // For sigsetjmp/siglongjmp in the pre-libX11-1.7 I/O error fallback
 
 // Platform Specific Libs
 #include <X11/Xlib.h>
@@ -47,8 +51,18 @@ IdleDetectConfig g_config;
 //! Global idle_detect event monitor singleton for state overrides
 IdleDetect::IdleDetectControlMonitor g_idle_detect_control_monitor;
 
-//! Global idle_detect event monitor singleton for Wayland idle detection for non-KDE, non-GNOME sessions
-IdleDetect::WaylandIdleMonitor g_wayland_idle_monitor;
+//!
+//! \brief Global pool of live idle sources. Declared in idle_sources_system.h.
+//!
+//! The production factories are bound here, which is the only place in the program where the pool's abstract
+//! interface meets real D-Bus, Wayland and X11 contact. None of them makes system contact at construction, so
+//! this is safe to build at static initialization time; the pool is empty until main() reconciles it against
+//! discovery for the first time.
+//!
+IdleDetect::IdleSourcePool IdleDetect::g_idle_source_pool(
+    IdleDetect::MakeEndpointSourceFactory(IdleDetect::WAYLAND_IDLE_NOTIFICATION_TIMEOUT_MS),
+    IdleDetect::MakeShellSourceFactory(),
+    IdleDetect::MakeInhibitionQuery());
 
 //! Global flag for signal handling
 std::atomic<bool> g_shutdown_requested = false;
@@ -56,8 +70,9 @@ std::atomic<bool> g_shutdown_requested = false;
 //! Global flag for exit code
 std::atomic<int> g_exit_code;
 
-const int MAX_X_CONNECT_RETRIES = 6;  // e.g., 6 attempts
-const int X_RETRY_DELAY_MS = 500;     // e.g., 500ms between attempts (~3 sec total)
+// The attempt count is no longer a constant: it is a parameter of GetIdleTimeXss(), defaulting to
+// IdleDetect::X_STARTUP_CONNECT_RETRIES. See idle_detect.h for why.
+const int X_RETRY_DELAY_MS = 500;     // e.g., 500ms between attempts
 
 //! \brief Function to safely get XDG_RUNTIME_DIR environment variable.
 std::optional<std::string> GetXdgRuntimeDir() {
@@ -192,18 +207,42 @@ int DEFAULT_IDLE_THRESHOLD_SECONDS = 0;
 constexpr int DEFAULT_CHECK_INTERVAL_SECONDS = 1;
 
 //!
-//! \brief Helper function to determine whether GUI session is Wayland.
-//! \return true if GUI session is Wayland.
+//! \brief Failures suppressed between the first and second report of a repeating main loop failure.
 //!
-static bool IsWaylandSession() {
-    const char* waylandDisplay = getenv("WAYLAND_DISPLAY");
-    return (waylandDisplay != nullptr && strlen(waylandDisplay) > 0);
-}
+constexpr int MAIN_LOOP_FAILURE_REPORT_INITIAL_INTERVAL = 1;
+
+//!
+//! \brief Ceiling on how many consecutive failures pass between reports of a repeating main loop failure.
+//!
+//! The main loop runs once per second, so a condition that fails on every iteration and logs on every
+//! iteration is one line per second for the life of the process. This is the same bound
+//! ENDPOINT_RETRY_BACKOFF_MAX_TICKS puts on a candidate endpoint that can never validate and
+//! SHELL_QUERY_FAILURE_REPORT_MAX_INTERVAL puts on a shell that can never answer, applied to the loop body
+//! itself -- which is where the last unthrottled examples of the same flood were still living.
+//!
+constexpr int MAIN_LOOP_FAILURE_REPORT_MAX_INTERVAL = 64;
+
+//!
+//! \brief Throttle for reports that a send to the event_detect pipe failed. See SendPipeNotification().
+//!
+//! At file scope rather than inside the function because SendPipeNotification() is a free function with no
+//! object to hang state on. It is safe as shared state because there is exactly one caller -- the body of
+//! main()'s loop -- on exactly one thread, which is also the condition FailureReportThrottle documents for
+//! not being thread safe.
+//!
+static FailureReportThrottle g_pipe_send_failure_throttle(MAIN_LOOP_FAILURE_REPORT_INITIAL_INTERVAL,
+                                                          MAIN_LOOP_FAILURE_REPORT_MAX_INTERVAL);
 
 /**
  * @brief Reads the timestamp from event_detect's data file.
  * @param file_path Path to the last_active_time.dat file.
  * @return int64_t Timestamp read from file, or 0 if file doesn't exist or error occurs.
+ *
+ * Everything this reports about a failure is at debug level, and that is a contract with its one caller
+ * rather than an oversight. It is the same contract GetIdleTimeKdeDBus() keeps for the same reason: this
+ * runs once per main loop iteration, so an error line here is an error line every second for as long as the
+ * file stays unreadable, which for a truncated or root-owned file is forever. The operator-visible report
+ * belongs to the caller, which is the only place that can count consecutive failures and throttle them.
  */
 static int64_t ReadLastActiveTimeFile(const fs::path& file_path) {
     if (!fs::exists(file_path)) {
@@ -213,7 +252,7 @@ static int64_t ReadLastActiveTimeFile(const fs::path& file_path) {
 
     std::ifstream time_file(file_path);
     if (!time_file.is_open()) {
-        error_log("%s: Could not open data file: %s", __func__, file_path.string());
+        debug_log("INFO: %s: Could not open data file: %s", __func__, file_path.string());
         return 0;
     }
 
@@ -225,11 +264,14 @@ static int64_t ReadLastActiveTimeFile(const fs::path& file_path) {
             debug_log("INFO: %s: Read timestamp %lld from %s", __func__, timestamp, file_path.string());
             return timestamp;
         } catch (const std::exception& e) {
-            error_log("%s: Failed to parse timestamp from data file '%s': %s", __func__, file_path.string(), e.what());
+            debug_log("INFO: %s: Failed to parse timestamp from data file '%s': %s",
+                      __func__,
+                      file_path.string(),
+                      e.what());
             return 0;
         }
     } else {
-        error_log("%s: Failed to read line from data file: %s", __func__, file_path.string());
+        debug_log("INFO: %s: Failed to read line from data file: %s", __func__, file_path.string());
         return 0;
     }
 }
@@ -239,9 +281,14 @@ static int64_t ReadLastActiveTimeFile(const fs::path& file_path) {
 //! \param shm_name
 //! \return
 //!
+//! Failures are reported at debug level for the same reason as in ReadLastActiveTimeFile() above: this runs
+//! once per main loop iteration, and every condition it can fail on -- a misconfigured name, a segment we
+//! are not permitted to open, a mapping that will not take -- persists across iterations, so an
+//! unconditional line here is an unbounded line. The throttled operator-visible report is the caller's.
+//!
 static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
     if (shm_name.empty() || shm_name[0] != '/') {
-        error_log("%s: Invalid shared memory name provided: %s", __func__, shm_name.c_str());
+        debug_log("INFO: %s: Invalid shared memory name provided: %s", __func__, shm_name.c_str());
         return -1;
     }
     debug_log("INFO: %s: Attempting to read timestamp from shm: %s", __func__, shm_name.c_str());
@@ -256,7 +303,11 @@ static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
     shm_fd = shm_open(shm_name.c_str(), O_RDONLY, 0);
     if (shm_fd == -1) {
         if (errno != ENOENT) {
-            error_log("%s: shm_open(RO) failed for '%s': %s (%d)", __func__, shm_name.c_str(), strerror(errno), errno);
+            debug_log("INFO: %s: shm_open(RO) failed for '%s': %s (%d)",
+                      __func__,
+                      shm_name.c_str(),
+                      strerror(errno),
+                      errno);
         }
         else { debug_log("INFO: %s: Shared memory '%s' not found (ENOENT).", __func__, shm_name.c_str()); }
         return -1;
@@ -267,7 +318,11 @@ static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
     close(shm_fd);
 
     if (mapped_mem == MAP_FAILED) {
-        error_log("%s: mmap(RO) failed for shm '%s': %s (%d)", __func__, shm_name.c_str(), strerror(errno), errno);
+        debug_log("INFO: %s: mmap(RO) failed for shm '%s': %s (%d)",
+                  __func__,
+                  shm_name.c_str(),
+                  strerror(errno),
+                  errno);
         return -1;
     }
 
@@ -277,10 +332,57 @@ static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
 
     errno = 0;
     if (munmap(mapped_mem, shmem_size) == -1) {
-        normal_log("WARN: %s: munmap failed for shm '%s': %s (%d)", __func__, shm_name.c_str(), strerror(errno), errno);
+        debug_log("WARN: %s: munmap failed for shm '%s': %s (%d)",
+                  __func__,
+                  shm_name.c_str(),
+                  strerror(errno),
+                  errno);
     }
 
     return last_active_timestamp;
+}
+
+//!
+//! \brief Reports that a send to the event_detect pipe failed, through g_pipe_send_failure_throttle.
+//!
+//! Every way a send can fail is a standing condition rather than a momentary one -- event_detect is not
+//! running, the path is not a FIFO, we cannot open it -- and the main loop retries on the next tick, so an
+//! unconditional line per failure is a line per second for as long as event_detect is absent. That is the
+//! ordinary state of a machine where event_detect was never installed and update_event_detect was left at
+//! its default of true.
+//!
+//! The first failure of a run stays at error level so a genuine problem is visible immediately. The
+//! transitions after it are follow-ups to a fault already reported, so they go out at normal level, and
+//! everything in between is debug material.
+//!
+//! \param reason What went wrong, already formatted.
+//!
+static void ReportPipeSendFailure(const std::string& reason)
+{
+    if (!g_pipe_send_failure_throttle.RecordFailure()) {
+        debug_log("INFO: %s: %s (%d consecutive).",
+                  __func__,
+                  reason,
+                  g_pipe_send_failure_throttle.ConsecutiveFailures());
+
+        return;
+    }
+
+    if (g_pipe_send_failure_throttle.ConsecutiveFailures() == 1) {
+        error_log("%s: %s Further failures are debug only until %d more have occurred.",
+                  __func__,
+                  reason,
+                  g_pipe_send_failure_throttle.Interval());
+
+        return;
+    }
+
+    normal_log("WARNING: %s: %s (%d consecutive). Further failures are debug only until %d more have "
+               "occurred.",
+               __func__,
+               reason,
+               g_pipe_send_failure_throttle.ConsecutiveFailures(),
+               g_pipe_send_failure_throttle.Interval());
 }
 
 /**
@@ -288,6 +390,10 @@ static int64_t ReadTimestampViaShmem(const std::string& shm_name) {
  *
  * @param pipe_path The full path to the event_detect named pipe.
  * @param the last active time to send to event_detect
+ *
+ * Failures are reported through ReportPipeSendFailure(), which throttles them: this is called from the
+ * main loop, which runs once per second, and everything that can go wrong here goes on being wrong until
+ * event_detect appears.
  */
 void SendPipeNotification(const std::filesystem::path& pipe_path,
                           const int64_t& last_active_time,
@@ -295,8 +401,7 @@ void SendPipeNotification(const std::filesystem::path& pipe_path,
     // Construct the message payload using EventMessage format
     EventMessage msg(last_active_time, event_type);
     if (!msg.IsValid()) {
-        error_log("%s: Failed to construct valid EventMessage.",
-                  __func__);
+        ReportPipeSendFailure("Failed to construct a valid EventMessage.");
         return;
     }
 
@@ -308,16 +413,14 @@ void SendPipeNotification(const std::filesystem::path& pipe_path,
 
     std::error_code error_code;
     if (!std::filesystem::exists(pipe_path, error_code) || error_code) {
-        error_log("%s: Pipe '%s' does not exist or cannot be accessed. Is event_detect running?",
-                  __func__,
-                  pipe_path);
+        ReportPipeSendFailure(tfm::format("Pipe '%s' does not exist or cannot be accessed. Is event_detect "
+                                          "running?",
+                                          pipe_path.string()));
         return;
     }
 
     if (!std::filesystem::is_fifo(pipe_path, error_code) || error_code) {
-        error_log("%s: Path '%s' is not a named pipe (FIFO).",
-                  __func__,
-                  pipe_path);
+        ReportPipeSendFailure(tfm::format("Path '%s' is not a named pipe (FIFO).", pipe_path.string()));
         return;
     }
 
@@ -325,10 +428,9 @@ void SendPipeNotification(const std::filesystem::path& pipe_path,
     std::ofstream pipe_stream(pipe_path, std::ios::out);
 
     if (!pipe_stream.is_open()) {
-        error_log("%s: Failed to open pipe '%s' for writing: %s",
-                  __func__,
-                  pipe_path,
-                  strerror(errno));
+        ReportPipeSendFailure(tfm::format("Failed to open pipe '%s' for writing: %s",
+                                          pipe_path.string(),
+                                          strerror(errno)));
         return;
     }
 
@@ -336,34 +438,37 @@ void SendPipeNotification(const std::filesystem::path& pipe_path,
     pipe_stream.flush();
 
     if (pipe_stream.fail()) {
-        error_log("%s: Failed to write message to pipe '%s'. Pipe full or other error?",
-                  __func__,
-                  pipe_path);
-    } else {
-        debug_log("INFO: %s: Sent message to pipe '%s'.",
-                  __func__,
-                  pipe_path.string().c_str());
+        ReportPipeSendFailure(tfm::format("Failed to write the message to pipe '%s'. Pipe full or other "
+                                          "error?",
+                                          pipe_path.string()));
+
+        return;
     }
+
+    // A run of failures ends on the first send that gets through. The count is reported because this is the
+    // only place at normal level where the size of the outage appears: the failures in the middle of it
+    // were suppressed by the very throttle this reports the end of.
+    const int cleared = g_pipe_send_failure_throttle.Reset();
+
+    if (cleared > 0) {
+        normal_log("INFO: %s: Sending to pipe '%s' is working again after %d consecutive failure(s).",
+                   __func__,
+                   pipe_path.string().c_str(),
+                   cleared);
+    }
+
+    debug_log("INFO: %s: Sent message to pipe '%s'.",
+              __func__,
+              pipe_path.string().c_str());
 }
 
-//!
-//! \brief Helper function that determines whether session is tty only.
-//! \return true if session is tty only (i.e. non-GUI).
-//!
-static bool IsTtySession() {
-    const char* display = getenv("DISPLAY");
-    const char* wayland_display = getenv("WAYLAND_DISPLAY");
-
-    // If neither display variable is set, likely a TTY.
-    return (display == nullptr || strlen(display) == 0) &&
-           (wayland_display == nullptr || strlen(wayland_display) == 0);
-}
-
-//!
-//! \brief Helper function to get idle time from KDE DBus interface for KDE sessions, either X or Wayland.
-//! \return int64_t idle time in seconds. -1 for error.
-//!
-static int64_t GetIdleTimeKdeDBus() {
+// Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this for the shell idle source.
+//
+// Everything this reports about a failure is at debug level, and that is a contract with the one caller
+// rather than an oversight; see the header for the reasoning. The short version is that this runs once per
+// main loop iteration, so an error line here is an error line every second, and the operator-visible report
+// belongs to ShellIdleSource, which is the only thing that can count consecutive failures and throttle them.
+int64_t GetIdleTimeKdeDBus() {
     debug_log("INFO: %s: Querying org.kde.ksmserver GetSessionIdleTime via D-Bus.", __func__);
 
     GDBusConnection* connection = nullptr;
@@ -374,10 +479,10 @@ static int64_t GetIdleTimeKdeDBus() {
     connection = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, &dbus_error);
     if (!connection) {
         if (dbus_error) {
-            error_log("%s: Failed to connect to session bus for KDE idle query: %s", __func__, dbus_error->message);
+            debug_log("INFO: %s: Failed to connect to session bus for KDE idle query: %s", __func__, dbus_error->message);
             g_error_free(dbus_error);
         } else {
-            error_log("%s: Failed to connect to session bus for KDE idle query (unknown error).", __func__);
+            debug_log("INFO: %s: Failed to connect to session bus for KDE idle query (unknown error).", __func__);
         }
         return -1; // Return error
     }
@@ -397,8 +502,9 @@ static int64_t GetIdleTimeKdeDBus() {
                                               &dbus_error);
 
     if (dbus_error) {
-        // Error during D-Bus call
-        error_log("%s: Error calling %s on %s: %s", __func__, method_name, interface_name, dbus_error->message);
+        // Error during D-Bus call. Debug level: this is the arm a Plasma 6 Wayland session takes if it is
+        // ever misrouted here, and it would otherwise log once per second forever.
+        debug_log("INFO: %s: Error calling %s on %s: %s", __func__, method_name, interface_name, dbus_error->message);
         g_error_free(dbus_error);
         idle_time_seconds = -1; // Error
     } else if (dbus_result) {
@@ -418,7 +524,7 @@ static int64_t GetIdleTimeKdeDBus() {
         g_variant_unref(dbus_result); // Clean up reply variant
     } else {
         // Should not happen if error is null, but handle defensively
-        error_log("%s: Call to %s on %s returned no result and no error.", __func__, method_name, interface_name);
+        debug_log("INFO: %s: Call to %s on %s returned no result and no error.", __func__, method_name, interface_name);
         idle_time_seconds = -1; // Treat as error
     }
 
@@ -426,14 +532,12 @@ static int64_t GetIdleTimeKdeDBus() {
     return idle_time_seconds;
 }
 
-//!
-//! \brief Checks for screen idle inhibition on KDE Plasma 6 via the PowerManagement PolicyAgent D-Bus interface.
-//! This is needed because ext_idle_notifier_v1 may not reflect D-Bus-level inhibitions (e.g. from video players
-//! using org.freedesktop.ScreenSaver.Inhibit). The HasInhibition(1) call checks for ChangeScreenSettings inhibitions
-//! (type 1), which prevent screen idle/blanking.
-//! \return true if screen idle is inhibited, false otherwise (including on D-Bus errors).
-//!
-static bool CheckKdeInhibition() {
+// Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this from ShellMonitor.
+//
+// This is needed because ext_idle_notifier_v1 may not reflect D-Bus-level inhibitions (e.g. from video players
+// using org.freedesktop.ScreenSaver.Inhibit). The HasInhibition(1) call checks for ChangeScreenSettings
+// inhibitions (type 1), which prevent screen idle/blanking.
+bool CheckKdeInhibition() {
     debug_log("INFO: %s: Checking KDE screen idle inhibitions via PolicyAgent D-Bus HasInhibition.", __func__);
 
     GDBusConnection* connection = nullptr;
@@ -489,11 +593,8 @@ static bool CheckKdeInhibition() {
     return is_inhibited;
 }
 
-//!
-//! \brief This helper function checks for idle inhibited on Gnome sessions and works for both Gnome X and Wayland.
-//! \return
-//!
-static bool CheckGnomeInhibition() {
+// Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this from ShellMonitor.
+bool CheckGnomeInhibition() {
     // This function assumes it might be called even if not strictly a GNOME session,
     // relying on the D-Bus call to fail gracefully if the service/method isn't present.
     debug_log("INFO: %s: Checking GNOME session inhibitions via D-Bus IsInhibited.", __func__);
@@ -554,12 +655,13 @@ static bool CheckGnomeInhibition() {
     return is_inhibited;
 }
 
-//!
-//! \brief This is the D-Bus implementation for Gnome Mutter. Note that it does NOT take into account
-//! idle inhibit, unlike the corresponding KDE D-Bus call.
-//! \return int64_t idle time in seconds. -1 for error.
-//!
-static int64_t GetIdleTimeWaylandGnomeViaDBus() {
+// Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this for the shell idle source.
+//
+// Note that this does NOT take idle inhibit into account, unlike the corresponding KDE D-Bus call.
+//
+// Failures are reported at debug level for the same reason as in GetIdleTimeKdeDBus() above: this runs once
+// per main loop iteration, and the throttled operator-visible report is ShellIdleSource's.
+int64_t GetIdleTimeWaylandGnomeViaDBus() {
     // Assumes IsGnomeSession() has already confirmed this is appropriate to call
     debug_log("INFO: %s: Querying GNOME Mutter IdleMonitor via D-Bus.",
               __func__);
@@ -572,12 +674,12 @@ static int64_t GetIdleTimeWaylandGnomeViaDBus() {
     connection = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, &dbus_error);
     if (!connection) {
         if (dbus_error) {
-            error_log("%s: Error connecting to session bus for Gnome idle query: %s",
+            debug_log("INFO: %s: Error connecting to session bus for Gnome idle query: %s",
                       __func__,
                       dbus_error->message);
             g_error_free(dbus_error);
         } else {
-            error_log("%s: Error connecting to session bus for Gnome idle query (unknown error).",
+            debug_log("INFO: %s: Error connecting to session bus for Gnome idle query (unknown error).",
                       __func__);
         }
         return -1; // Return -1 on connection error
@@ -595,12 +697,13 @@ static int64_t GetIdleTimeWaylandGnomeViaDBus() {
                                               500, nullptr, &dbus_error);
 
     if (dbus_error) {
-        error_log("%s: Error calling %s on %s: %s",
+        debug_log("INFO: %s: Error calling %s on %s: %s",
                   __func__,
                   method_name,
                   interface_name,
                   dbus_error->message);
         g_error_free(dbus_error);
+        g_object_unref(connection);
         return -1;
     } else if (dbus_result) {
         uint64_t idle_time_ms = 0;
@@ -612,10 +715,11 @@ static int64_t GetIdleTimeWaylandGnomeViaDBus() {
                   idle_time_seconds);
         g_variant_unref(dbus_result);
     } else {
-        error_log("%s: Call to %s on %s returned no result and no error.",
+        debug_log("INFO: %s: Call to %s on %s returned no result and no error.",
                   __func__,
                   method_name,
                   interface_name);
+        g_object_unref(connection);
         return -1;
     }
 
@@ -624,164 +728,667 @@ static int64_t GetIdleTimeWaylandGnomeViaDBus() {
     return idle_time_seconds;
 }
 
-//!
-//! \brief This determines whether the GUI session is KDE.
-//! \return true if KDE session, false otherwise.
-//!
-static bool IsKdeSession() {
-    // Checking for KSMServer D-Bus service might be more reliable than env vars
-    GDBusConnection* connection = g_bus_get_sync(G_BUS_TYPE_SESSION, nullptr, nullptr);
-    if (!connection) return false; // Cannot check if bus unavailable
+namespace {
 
-    GError* error = nullptr;
-    GVariant* result = g_dbus_connection_call_sync(connection,
-                                                   "org.freedesktop.DBus", // Standard service
-                                                   "/org/freedesktop/DBus", // Standard path
-                                                   "org.freedesktop.DBus",   // Standard interface
-                                                   "NameHasOwner",           // Method
-                                                   g_variant_new("(s)", "org.kde.ksmserver"), // Parameter: service name
-                                                   G_VARIANT_TYPE("(b)"),    // Reply: boolean
-                                                   G_DBUS_CALL_FLAGS_NONE,
-                                                   500, // Short timeout
-                                                   nullptr, &error);
-    bool has_owner = false;
-    if (error) {
-        debug_log("INFO: %s: Error checking D-Bus owner for org.kde.ksmserver: %s", __func__, error->message);
-        g_error_free(error);
-    } else if (result) {
-        g_variant_get(result, "(b)", &has_owner);
-        g_variant_unref(result);
+//
+// ---------------------------------------------------------------------------------------------------
+// X error handling
+// ---------------------------------------------------------------------------------------------------
+//
+// Xlib's defaults terminate the process, which is unacceptable for a daemon that queries X displays it
+// does not own. GetIdleTimeXss() is aimed at displays discovered from other sessions, so a display that
+// dies while it is being read must cost one reading, not the daemon. That is exactly the multi-endpoint
+// VNC case this design exists for: an endpoint appearing and disappearing is normal operation, not an
+// error condition.
+//
+// Xlib splits this into two unrelated failures, and they need different treatment.
+//
+// 1. PROTOCOL errors (X_Error events, e.g. BadWindow from a root window that vanished with its screen)
+//    are non-fatal. Xlib's _XDefaultError calls exit(1), but a replacement handler is explicitly
+//    permitted to return and Xlib carries on with the connection intact. HandleXProtocolError() logs and
+//    returns 0.
+//
+// 2. Fatal I/O errors (the connection itself is gone) are terminal by default, and no single hook fixes
+//    them. Reading libX11 1.8.10's XlibInt.c, _XIOError does:
+//
+//        if (_XIOErrorFunction != NULL) (*_XIOErrorFunction)(dpy); else _XDefaultIOError(dpy);
+//        exit_handler(dpy, exit_handler_data);
+//
+//    _XDefaultIOError is _X_NORETURN and calls exit(1), and the per-display exit_handler defaults to
+//    _XDefaultIOErrorExit, which also calls exit(1). Two consequences, both measured against a killed
+//    Xvfb rather than assumed:
+//
+//      - XSetIOErrorHandler is MANDATORY even on a libX11 that has XSetIOErrorExitHandler. With the I/O
+//        handler omitted the probe died with "X connection to :82 broken" and status 1, because
+//        _XDefaultIOError never returns and the exit hook is therefore never reached.
+//      - Returning from both hooks is safe. _XIOError returns 1 to its Xlib caller, the in-flight call
+//        unwinds normally, XScreenSaverQueryInfo() returns Status 0, and the subsequent XFree() and
+//        XCloseDisplay() on the dead Display both complete cleanly. A later connection to a different,
+//        live display is unaffected, so no global state is poisoned.
+//
+// THE WINDOW THE EXIT HANDLER CANNOT COVER
+//
+// XSetIOErrorExitHandler takes a Display*, so it cannot be installed until XOpenDisplay() has returned.
+// An I/O error raised INSIDE XOpenDisplay therefore still falls through to _XDefaultIOErrorExit and
+// exits. This is not theoretical: driving GetIdleTimeXss() through a proxy that severs the connection
+// after a chosen number of client writes, severing anywhere in the connection handshake killed the
+// process with status 1 while our I/O handler was logging, and only a severance after the handshake was
+// recoverable by the exit handler. That window matters here more than in a normal X client, because this
+// function opens a fresh connection on every single query rather than holding one open.
+//
+// So the two mechanisms are used where each is actually clean:
+//
+//   - XOpenDisplay() is wrapped in sigsetjmp/siglongjmp. The global I/O handler is the ONLY hook that
+//     runs in this phase, on every libX11 version, so escaping through it is the only available fix.
+//   - Everything after the open relies on the exit handler, which lets Xlib unwind its own call and
+//     leaves the Display safe to close normally. This is the common case and it is leak-free: 200
+//     induced post-open failures left the descriptor count unchanged at 4.
+//
+// A jump is not free, which is the other reason to confine it to the open. It cannot be followed by
+// XCloseDisplay(), because siglongjmp leaves Xlib's request buffers mid-write and a failed
+// XOpenDisplay() never hands out the pointer at all, so the Display structure is lost. Measured over 200
+// induced failures, abandoning it whole grew the descriptor table from 4 to 204 and RSS by 14 MB, which
+// is an outage for a daemon rather than a wasted reading. ReclaimDyingXConnection() therefore closes the
+// socket, which bounds the damage to memory; see it for why that is safe.
+//
+// On libX11 < 1.7 there is no exit hook at all, so the guard is widened to cover the post-open phases
+// too, and those failures pay the same cost. Doing that on a build that predates 2021 is the lesser evil
+// against exiting.
+//
+// Constraints the jump imposes, all satisfied by construction below:
+//   - The guarded regions are OpenXDisplayGuarded() and QueryXssIdleMs(), whose locals are raw pointers
+//     and integers only. Nothing in either has a non-trivial destructor, so the jump skips no cleanup.
+//     Both deliberately keep logging OUT of the guarded region, so no string temporary can ever be live
+//     across a jump.
+//   - No local written between sigsetjmp() and siglongjmp() is read on the jump path unless it is
+//     declared volatile, so no local can be read with an indeterminate value.
+//   - The jump buffer and its armed flag are thread_local, not global, so two threads resolving two X
+//     displays cannot land in each other's stack frame. The handler is re-entrant-safe because it
+//     disarms before jumping, so a second I/O error cannot jump into a frame that has already been left.
+//
+// A failed query leaves its XScreenSaverInfo untouched, which is why the Status return is now checked.
+// The old code ignored it and published info->idle regardless; since XScreenSaverAllocInfo() zeroes the
+// struct, a dying display would have reported "idle 0 seconds", i.e. "the user is active right now", on
+// a display that no longer exists. Suspending compute forever on a display that is gone is a worse
+// failure than the crash this fix is about.
+//
+// XInitThreads() is deliberately NOT called. It would have to be the first Xlib call in the process, and
+// it is not needed today: every X resolution runs on the main loop thread, and GetIdleTimeXss() opens and
+// closes its own Display inside the call, so no Display is ever shared between threads or even between
+// calls. If Phase 3 ever resolves X11IdleSources on worker threads, XInitThreads() becomes REQUIRED --
+// not for the per-display state, but because XOpenDisplay() mutates a process-global display list under
+// _Xglobal_lock, which is a no-op until XInitThreads() is called. It must then be added as the first
+// statement of main(). Note that it would also make _XIOError take the display's user lock without
+// releasing it before our handler runs, so the jump paths above would leave that lock held; that is
+// another reason not to enable it until it is actually needed.
+//
+
+//!
+//! \brief Set by the fatal I/O error handlers when the display being queried has died, so that
+//! GetIdleTimeXss() can report the failure and choose a safe teardown. Thread local because the handlers
+//! are process-global but the failure belongs to one call on one thread.
+//!
+thread_local bool t_x_display_died = false;
+
+//!
+//! \brief Landing point for the fatal I/O error escape. Always compiled: it guards XOpenDisplay() on
+//! every libX11 version, because the per-display exit handler cannot exist during the open.
+//!
+thread_local sigjmp_buf t_x_io_error_jump;
+
+//!
+//! \brief Whether t_x_io_error_jump currently refers to a live frame that is willing to be jumped into.
+//! When false the I/O handler returns instead, leaving the outcome to the exit handler.
+//!
+thread_local bool t_x_io_error_jump_armed = false;
+
+//!
+//! \brief The Display the fatal I/O error arrived on, handed from the handler to the landing site so
+//! that the abandoned connection's socket can be reclaimed. Only ever set immediately before a jump, and
+//! cleared as soon as it is consumed, so it can never name a stale Display.
+//!
+thread_local Display* t_x_dying_display = nullptr;
+
+//!
+//! \brief Closes the socket of a Display abandoned by a jump, bounding the cost of a failure that a
+//! daemon will meet repeatedly.
+//!
+//! A jump cannot be followed by XCloseDisplay(): siglongjmp leaves Xlib's request buffers mid-write, and
+//! during a failed XOpenDisplay() Xlib never even hands out the Display pointer, so the structure is only
+//! half built. The memory is therefore lost, and there is no public API to reclaim it.
+//!
+//! The file descriptor is a different matter, and is the one that actually threatens the process.
+//! Measured over 200 induced failures, abandoning the connection outright grew the descriptor table one
+//! entry per failure, 4 to 204, which walks a long-running daemon into its descriptor limit. Closing it
+//! here is safe because the Display is unreachable the moment we return: nothing in this process holds a
+//! pointer to it, no thread can query it, and Xlib only ever revisits a Display through a caller-supplied
+//! pointer.
+//!
+void ReclaimDyingXConnection()
+{
+    Display* dying = t_x_dying_display;
+    t_x_dying_display = nullptr;
+
+    if (dying == nullptr) {
+        return;
     }
-    g_object_unref(connection);
-    debug_log("INFO: %s: org.kde.ksmserver D-Bus service running? %s", __func__, has_owner ? "Yes" : "No");
-    return has_owner;
-    // Alternative: Keep using getenv("KDE_SESSION_VERSION") if preferred/reliable
-    // const char* kdeSession = getenv("KDE_SESSION_VERSION");
-    // return (kdeSession != nullptr && strlen(kdeSession) > 0);
+
+    int connection_fd = ConnectionNumber(dying);
+
+    if (connection_fd >= 0) {
+        close(connection_fd);
+    }
 }
 
 //!
-//! \brief Helper function for X11 XScreenSaver query
-//! \return int64_t idle time in seconds. -1 for error.
+//! \brief Replacement for Xlib's _XDefaultError, which calls exit(1). Returning from a protocol error
+//! handler is explicitly safe and Xlib continues with the connection.
 //!
-static int64_t GetIdleTimeXss() {
-    debug_log("INFO: %s: Using XScreenSaver.", __func__);
-    Display* display = nullptr;
+//! Only the numeric codes are logged. The handler must not perform operations on the display, and
+//! XGetErrorText() would allocate and consult the resource database on a connection that may be in the
+//! process of dying. The codes are sufficient here because this process issues exactly one kind of
+//! request on these displays.
+//!
+//! \param x_display Display the error arrived on. Unused; logging it would mean touching it.
+//! \param error_event The X error.
+//! \return 0 always. Xlib ignores the value.
+//!
+int HandleXProtocolError(Display* x_display, XErrorEvent* error_event)
+{
+    (void) x_display;
 
-    for (int attempt = 1; attempt <= MAX_X_CONNECT_RETRIES; ++attempt) {
-        display = XOpenDisplay(nullptr);
-        if (display) break;
-        if (attempt < MAX_X_CONNECT_RETRIES) {
-            error_log("WARNING: %s: Could not open X display (attempt %d/%d). Retrying...", __func__, attempt, MAX_X_CONNECT_RETRIES);
+    error_log("WARNING: %s: X protocol error: error_code=%d request_code=%d minor_code=%d serial=%lu. "
+              "Continuing; this display's reading is discarded.",
+              __func__,
+              (int) error_event->error_code,
+              (int) error_event->request_code,
+              (int) error_event->minor_code,
+              (unsigned long) error_event->serial);
+
+    return 0;
+}
+
+//!
+//! \brief Replacement for Xlib's _XDefaultIOError, which is _X_NORETURN and calls exit(1).
+//!
+//! Installing this is mandatory even when XSetIOErrorExitHandler() is available, because _XIOError runs
+//! this hook first and the default never returns, so the exit hook would otherwise never be reached.
+//!
+//! \param x_display Display whose connection was lost. Unused; the connection is gone.
+//! \return 0 when a guarded region is not active, handing control to the exit handler. When one is
+//!         active this does not return at all, having jumped back into that region.
+//!
+int HandleXIoError(Display* x_display)
+{
+    t_x_display_died = true;
+
+    if (t_x_io_error_jump_armed) {
+        // Disarmed before jumping so that a second I/O error cannot target a frame that has already
+        // been left, which is what makes this handler safe to re-enter.
+        t_x_io_error_jump_armed = false;
+
+        // Xlib passes the Display even when the failure happened inside XOpenDisplay() and the caller
+        // therefore never received it. That is the only chance to reclaim its socket.
+        t_x_dying_display = x_display;
+
+        siglongjmp(t_x_io_error_jump, 1);
+    }
+
+    return 0;
+}
+
+#ifdef HAVE_X11_IO_ERROR_EXIT_HANDLER
+//!
+//! \brief Replacement for Xlib's _XDefaultIOErrorExit, which calls exit(1). Returning from here makes
+//! _XIOError return to its Xlib caller, which then unwinds the in-flight call normally and leaves the
+//! Display safe to close.
+//! \param x_display Display whose connection was lost. Unused.
+//! \param user_data Unused; the per-call state is the thread_local flag above.
+//!
+void HandleXIoErrorExit(Display* x_display, void* user_data)
+{
+    (void) x_display;
+    (void) user_data;
+
+    t_x_display_died = true;
+}
+#endif
+
+//!
+//! \brief Installs the two process-global X error handlers exactly once.
+//!
+//! These are process-global, not per-display, so re-registering them on every GetIdleTimeXss() call
+//! would be a pointless write to shared state from whichever thread happened to call first. The
+//! per-display exit handler is a different thing and must be set on each Display, since it is a field of
+//! the Display itself; GetIdleTimeXss() does that after each successful open.
+//!
+void EnsureXErrorHandlersInstalled()
+{
+    static std::once_flag installed;
+
+    std::call_once(installed, []() {
+        XSetErrorHandler(HandleXProtocolError);
+        XSetIOErrorHandler(HandleXIoError);
+
+        debug_log("INFO: %s: Installed X protocol and I/O error handlers (%s).",
+                  __func__,
+#ifdef HAVE_X11_IO_ERROR_EXIT_HANDLER
+                  "XSetIOErrorExitHandler available for the post-open phases"
+#else
+                  "no XSetIOErrorExitHandler; siglongjmp guards the whole cycle"
+#endif
+                  );
+    });
+}
+
+//!
+//! \brief Serializes the file descriptor 2 redirection below, so that two captures can never save and
+//! restore each other's descriptor.
+//!
+//! Uncontended today, because every X resolution runs on the main loop thread -- the same invariant the
+//! XInitThreads() commentary above depends on. It is taken anyway because the failure mode if that ever
+//! changes is not a lost log line but a permanently redirected stderr.
+//!
+std::mutex mtx_x_connect_stderr_capture;
+
+//!
+//! \brief Routes anything written straight to file descriptor 2 during an X connection attempt into this
+//! process's own logging.
+//!
+//! The message this exists for is "Authorization required, but no authorization protocol specified",
+//! which is the X server's refusal reason relayed by libxcb. Verified with strace: libxcb emits it with a
+//! bare write(2, ...) from inside XOpenDisplay(), two lines per attempt. That bypasses everything -- it is
+//! not an Xlib protocol error, so XSetErrorHandler() never sees it; it is not an I/O error, so
+//! XSetIOErrorHandler() never sees it; it is not stdio, so no stream can be rebound; and libxcb exposes no
+//! logging hook. Redirecting the descriptor is the only interception point that exists.
+//!
+//! Captured text is re-emitted at error level rather than debug level, even though a rejected candidate is
+//! ordinary and the rest of this function reports rejection at debug level. The reason is that the capture
+//! is indiscriminate: for the duration of the open, ANY thread's stderr lands in it, including one of our
+//! own error_log() lines. Re-emitting at debug level would delete that line outright on a default
+//! configuration. Volume is bounded by the pool's validation backoff, which stops offering a candidate
+//! that keeps failing.
+//!
+//! The object must be constructed OUTSIDE the sigsetjmp region in OpenXDisplayGuarded(), which is why it
+//! lives in the caller's frame. siglongjmp() runs no destructors, so a capture in scope at the jump would
+//! leave stderr pointing at the capture buffer for the rest of the process's life. In the caller's frame
+//! the jump is invisible: OpenXDisplayGuarded() returns normally on the jump path and this destructor runs
+//! as usual.
+//!
+class XConnectStderrCapture
+{
+public:
+    //!
+    //! \brief Redirects file descriptor 2 to an in-memory buffer for the lifetime of this object.
+    //!
+    //! Every step is allowed to fail, and failure means no capture rather than no connection attempt: the
+    //! reading is the point, and the chatter is a diagnostic.
+    //!
+    //! \param display_label Display being opened, used to attribute the captured text.
+    //!
+    explicit XConnectStderrCapture(const char* display_label)
+        : m_display_label(display_label)
+        , m_lock(mtx_x_connect_stderr_capture)
+        , m_capture_fd(-1)
+        , m_saved_stderr_fd(-1)
+    {
+        m_capture_fd = memfd_create("x_connect_stderr", MFD_CLOEXEC);
+
+        if (m_capture_fd == -1) {
+            return;
+        }
+
+        m_saved_stderr_fd = dup(STDERR_FILENO);
+
+        if (m_saved_stderr_fd == -1 || dup2(m_capture_fd, STDERR_FILENO) == -1) {
+            if (m_saved_stderr_fd != -1) {
+                close(m_saved_stderr_fd);
+                m_saved_stderr_fd = -1;
+            }
+
+            close(m_capture_fd);
+            m_capture_fd = -1;
+        }
+    }
+
+    //!
+    //! \brief Restores file descriptor 2 and logs whatever was captured.
+    //!
+    ~XConnectStderrCapture()
+    {
+        if (m_capture_fd == -1) {
+            return;
+        }
+
+        // Restored before anything is logged, so that the logging of the captured text does not land in
+        // the capture buffer.
+        dup2(m_saved_stderr_fd, STDERR_FILENO);
+        close(m_saved_stderr_fd);
+
+        const std::string captured = ReadCaptured();
+
+        close(m_capture_fd);
+
+        if (captured.empty()) {
+            return;
+        }
+
+        error_log("WARNING: %s: X display '%s' wrote to stderr while connecting: %s",
+                  __func__,
+                  m_display_label,
+                  captured.c_str());
+    }
+
+    XConnectStderrCapture(const XConnectStderrCapture&) = delete;
+    XConnectStderrCapture& operator=(const XConnectStderrCapture&) = delete;
+
+private:
+    //!
+    //! \brief Reads the capture buffer back and flattens it into a single log line.
+    //! \return Captured text with its line breaks turned into separators, empty if nothing was written.
+    //!
+    std::string ReadCaptured() const
+    {
+        if (lseek(m_capture_fd, 0, SEEK_SET) == static_cast<off_t>(-1)) {
+            return {};
+        }
+
+        std::string captured;
+        char buffer[512];
+        ssize_t bytes_read = 0;
+
+        // Bounded so that a library that decides to write without limit cannot be turned into unbounded
+        // memory growth here.
+        while (captured.size() < 4096 && (bytes_read = read(m_capture_fd, buffer, sizeof(buffer))) > 0) {
+            captured.append(buffer, static_cast<size_t>(bytes_read));
+        }
+
+        // libxcb writes the reason and its newline as separate writes, so the raw text is full of line
+        // breaks that would fragment one diagnostic into several journal entries. Runs of whitespace are
+        // collapsed rather than merely translated, because the refusal reason arrives twice per open --
+        // once per address libxcb tries -- and the seam between the two is several characters of nothing.
+        std::string flattened;
+        bool in_whitespace = false;
+
+        for (const char c : captured) {
+            const bool is_whitespace = (c == '\n' || c == '\r' || c == '\t' || c == ' ');
+
+            if (is_whitespace) {
+                in_whitespace = true;
+                continue;
+            }
+
+            if (in_whitespace && !flattened.empty()) {
+                flattened.push_back(' ');
+            }
+
+            in_whitespace = false;
+            flattened.push_back(c);
+        }
+
+        return flattened;
+    }
+
+    //! \brief Display being opened. Borrowed for the lifetime of this object.
+    const char* m_display_label;
+
+    //! \brief Held for the whole redirect, so two captures cannot interleave.
+    std::unique_lock<std::mutex> m_lock;
+
+    //! \brief In-memory buffer standing in for stderr, or -1 if the capture could not be set up.
+    int m_capture_fd;
+
+    //! \brief The real stderr, restored on destruction.
+    int m_saved_stderr_fd;
+};
+
+//!
+//! \brief Opens an X display, surviving a connection that dies during the handshake.
+//!
+//! The guard is what distinguishes this from a bare XOpenDisplay(). An I/O error raised inside the open
+//! cannot be caught by the per-display exit handler, because there is no Display to attach one to yet,
+//! so the global I/O handler jumps back here instead.
+//!
+//! Only raw pointers live in this frame, so the jump skips no cleanup, and x_display is written after
+//! the sigsetjmp() but read only on the path that did not jump.
+//!
+//! \param display_name Display to open, or nullptr for the DISPLAY environment variable.
+//! \return The open display, or nullptr if it could not be opened or died during connection setup.
+//!
+Display* OpenXDisplayGuarded(const char* display_name)
+{
+    if (sigsetjmp(t_x_io_error_jump, 1) != 0) {
+        // Arrived from HandleXIoError(). Xlib never handed us a Display, so the half-built structure is
+        // unreachable and only its socket can be recovered.
+        ReclaimDyingXConnection();
+        return nullptr;
+    }
+
+    t_x_io_error_jump_armed = true;
+    Display* x_display = XOpenDisplay(display_name);
+    t_x_io_error_jump_armed = false;
+
+    return x_display;
+}
+
+//!
+//! \brief Outcome of the post-open XScreenSaver sequence, kept separate from the value so that the
+//! logging can happen outside the guarded region.
+//!
+enum class XssOutcome {
+    OK,
+    NO_EXTENSION,
+    ALLOC_FAILED,
+    QUERY_FAILED,
+    DISPLAY_DIED
+};
+
+//!
+//! \brief Runs the post-open XScreenSaver sequence: extension probe, info allocation, and the idle
+//! query.
+//!
+//! This is a separate function so that the guarded region is small enough to audit at a glance. Its
+//! locals are two ints, a raw pointer and an enum, none of which has a non-trivial destructor, and it
+//! contains no logging so that no string temporary can be live across a jump.
+//!
+//! On a libX11 with an exit handler no jump is armed here at all: Xlib unwinds the failed call by itself
+//! and the caller can close the Display normally. The guard is only compiled in for the fallback.
+//!
+//! \param x_display Open display to query.
+//! \param outcome Set to the reason for failure, or OK.
+//! \return Idle milliseconds >= 0 when outcome is OK, otherwise -1.
+//!
+int64_t QueryXssIdleMs(Display* x_display, XssOutcome* outcome)
+{
+    // volatile because the fallback build reads it on the jump path, where a non-volatile local written
+    // after sigsetjmp() would be indeterminate. The pointer is volatile, not the pointee, so it still
+    // passes to XFree() without a cast.
+    XScreenSaverInfo* volatile info = nullptr;
+
+#ifndef HAVE_X11_IO_ERROR_EXIT_HANDLER
+    if (sigsetjmp(t_x_io_error_jump, 1) != 0) {
+        // Arrived from HandleXIoError(). info is our own Xmalloc'd buffer and Xlib holds no reference to
+        // it, so reclaiming it is safe even though the stack was unwound from inside Xlib. The Display
+        // is NOT closed here; see the caller.
+        if (info != nullptr) {
+            XFree(info);
+        }
+
+        ReclaimDyingXConnection();
+
+        *outcome = XssOutcome::DISPLAY_DIED;
+        return -1;
+    }
+
+    t_x_io_error_jump_armed = true;
+#endif
+
+    int64_t idle_time_ms = -1;
+    int event_base = 0;
+    int error_base = 0;
+
+    if (!XScreenSaverQueryExtension(x_display, &event_base, &error_base)) {
+        *outcome = XssOutcome::NO_EXTENSION;
+    } else if ((info = XScreenSaverAllocInfo()) == nullptr) {
+        *outcome = XssOutcome::ALLOC_FAILED;
+    } else {
+        // A failed query leaves info->idle exactly as XScreenSaverAllocInfo() zeroed it, so the Status
+        // must gate the read. Publishing the zero would mean "the user is active right now" on a display
+        // that has just died.
+        if (XScreenSaverQueryInfo(x_display, DefaultRootWindow(x_display), info)) {
+            idle_time_ms = static_cast<int64_t>(info->idle);
+            *outcome = XssOutcome::OK;
+        } else {
+            *outcome = XssOutcome::QUERY_FAILED;
+        }
+
+        XFree(info);
+        info = nullptr;
+    }
+
+#ifndef HAVE_X11_IO_ERROR_EXIT_HANDLER
+    t_x_io_error_jump_armed = false;
+#endif
+
+    // The exit-handler path unwinds through the normal return above rather than jumping, so the died
+    // flag is the only thing that distinguishes it from an ordinary query failure.
+    if (t_x_display_died) {
+        *outcome = XssOutcome::DISPLAY_DIED;
+        return -1;
+    }
+
+    return idle_time_ms;
+}
+
+} // anonymous namespace
+
+// Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this from X11IdleSource.
+//
+// A display that does not answer is reported at debug level rather than error level, with the one exception
+// noted below. This function's only caller is X11IdleSource::ResolveIdleSeconds(), which runs once per
+// discovered X candidate per reconcile tick. Discovery is deliberately over-inclusive and rejection is its
+// designed outcome, so "this display is not a usable endpoint" is ordinary information, not a fault: a KDE
+// Wayland desktop whose Xwayland does not advertise MIT-SCREEN-SAVER would otherwise write an error to the
+// journal every second, forever, about a display that is doing nothing wrong. Losing every source is still
+// reported, by the main loop, which is the level at which it is actually a problem.
+//
+// The local Display* is named x_display rather than display so it does not shadow the display name parameter.
+int64_t GetIdleTimeXss(const std::string& display, int max_connect_retries) {
+    const char* display_label = display.empty() ? "<default>" : display.c_str();
+
+    debug_log("INFO: %s: Using XScreenSaver on display '%s'.", __func__, display_label);
+
+    // A display that is not this process's own can die at any point below, including during the
+    // connection handshake. Without these handlers that takes the whole daemon down.
+    EnsureXErrorHandlersInstalled();
+
+    Display* x_display = nullptr;
+
+    // A null name is libX11's "use the DISPLAY environment variable", which is the historical behavior and
+    // what an empty parameter continues to mean.
+    const char* display_name = display.empty() ? nullptr : display.c_str();
+
+    // A caller asking for zero or fewer attempts still means "try", not "do nothing".
+    const int max_attempts = (max_connect_retries > 1) ? max_connect_retries : 1;
+
+    for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+        // Cleared before every attempt: a previous attempt's dead connection must not condemn this one.
+        t_x_display_died = false;
+
+        {
+            // Scoped so the capture is torn down and its contents logged before the retry decision
+            // below, and constructed here rather than inside OpenXDisplayGuarded() because a destructor
+            // in that frame would not run on the siglongjmp path.
+            XConnectStderrCapture capture(display_label);
+
+            x_display = OpenXDisplayGuarded(display_name);
+        }
+
+        if (x_display) break;
+        if (attempt < max_attempts) {
+            debug_log("INFO: %s: Could not open X display '%s' (attempt %d/%d). Retrying...",
+                      __func__,
+                      display_label,
+                      attempt,
+                      max_attempts);
             std::this_thread::sleep_for(std::chrono::milliseconds(X_RETRY_DELAY_MS));
         } else {
-            error_log("%s: Could not open X display after %d attempts.", __func__, MAX_X_CONNECT_RETRIES);
+            debug_log("INFO: %s: Could not open X display '%s' after %d attempt(s).",
+                      __func__,
+                      display_label,
+                      max_attempts);
             return -1;
         }
     }
 
-    int event_base, error_base;
-    if (!XScreenSaverQueryExtension(display, &event_base, &error_base)) {
-        error_log("%s: XScreenSaver extension unavailable.", __func__);
-        XCloseDisplay(display);
+    // Cleared again: the open succeeded, so anything the flag still holds belongs to an earlier attempt.
+    t_x_display_died = false;
+
+#ifdef HAVE_X11_IO_ERROR_EXIT_HANDLER
+    // Unlike the two handlers above this is a field of the Display, so it is set per connection. It only
+    // covers what happens from here on; the open itself was covered by the guard inside
+    // OpenXDisplayGuarded().
+    XSetIOErrorExitHandler(x_display, HandleXIoErrorExit, nullptr);
+#endif
+
+    XssOutcome outcome = XssOutcome::QUERY_FAILED;
+    int64_t idle_time_ms = QueryXssIdleMs(x_display, &outcome);
+
+    if (outcome == XssOutcome::DISPLAY_DIED) {
+#ifdef HAVE_X11_IO_ERROR_EXIT_HANDLER
+        // Xlib unwound its own call, so the Display is internally consistent and XCloseDisplay() tears it
+        // down without touching the dead socket. Verified against a killed Xvfb.
+        XCloseDisplay(x_display);
+        error_log("WARNING: %s: X display '%s' died during the query. Discarding this reading.",
+                  __func__,
+                  display_label);
+#else
+        // siglongjmp left Xlib's request buffers mid-write and XCloseDisplay() would walk them, so the
+        // structure is abandoned and only its socket was reclaimed. Only reachable on libX11 < 1.7.
+        error_log("WARNING: %s: X display '%s' died during the query. Discarding this reading; the "
+                  "Display structure cannot be freed safely on this libX11.",
+                  __func__,
+                  display_label);
+#endif
         return -1;
     }
-    XScreenSaverInfo* info = XScreenSaverAllocInfo();
-    if (!info) {
+
+    XCloseDisplay(x_display);
+
+    switch (outcome) {
+    case XssOutcome::OK:
+        break;
+    case XssOutcome::NO_EXTENSION:
+        debug_log("INFO: %s: XScreenSaver extension unavailable on display '%s'.", __func__, display_label);
+        return -1;
+    case XssOutcome::ALLOC_FAILED:
+        // Not a property of the display: this is a memory allocation failing, and it says nothing about
+        // whether this display is a usable endpoint. It stays at error level for that reason.
         error_log("%s: Could not allocate XScreenSaverInfo.", __func__);
-        XCloseDisplay(display);
+        return -1;
+    case XssOutcome::QUERY_FAILED:
+    case XssOutcome::DISPLAY_DIED:
+        debug_log("INFO: %s: XScreenSaver query failed on display '%s'.", __func__, display_label);
         return -1;
     }
-    Window root = DefaultRootWindow(display);
-    XScreenSaverQueryInfo(display, root, info);
-    int64_t idle_time_ms = info->idle;
-    XFree(info);
-    XCloseDisplay(display);
+
     int64_t idle_time_seconds = idle_time_ms / 1000;
     debug_log("INFO: %s: XScreenSaver reported: %lld ms (%lld seconds)", __func__, (int64_t)idle_time_ms, (int64_t)idle_time_seconds);
     return idle_time_seconds;
 }
 
-//!
-//! \brief This function determines the LOCAL session idle time using appropriate fallback logic based on the current
-//! API layout for GUI environments.
-//! \return int64_t idle time in seconds. -1 for error, -2 if tty session only.
-//!
+//
+// Declared in idle_detect.h. The session typing this replaced decided everything up front from
+// IsTtySession() and IsWaylandSession(), both of which read the process environment. That environment is
+// frozen at exec, so a daemon started before its graphical session saw a tty session forever, no matter what
+// appeared afterwards: the root cause of issue #12. IsKdeSession() went with them, superseded by
+// ShellMonitor::DetectShellKind(), which asks the same D-Bus question but also answers it for GNOME.
+//
+// The fix is that this function now determines nothing at all. It reports what the live source set currently
+// says, and keeping that set current is main()'s job.
+//
 int64_t GetIdleTimeSeconds() {
-    if (IsTtySession()) {
-        debug_log("INFO: %s: TTY session detected, idle check not applicable.", __func__);
-        // Returns -2 to indicate that idle_detect should use event_detect regardless of the config setting.
-        // (Tty monitoring is done in event_detect.)
-
-        return -2;
-    }
-
-    if (IsKdeSession()) {
-        if (IsWaylandSession()) {
-            // KDE Wayland (Plasma 6+): ksmserver GetSessionIdleTime is removed and
-            // org.freedesktop.ScreenSaver.GetSessionIdleTime returns "not supported" on Wayland.
-            // Use ext_idle_notifier_v1 for idle time with a separate D-Bus inhibition check via
-            // the PowerManagement PolicyAgent, since ext_idle_notifier_v1 may not reflect D-Bus-level
-            // inhibitions from applications using org.freedesktop.ScreenSaver.Inhibit.
-            debug_log("INFO: %s: KDE Wayland session detected. Using ext_idle_notifier_v1 with PolicyAgent inhibition check.",
-                      __func__);
-
-            if (CheckKdeInhibition()) {
-                debug_log("INFO: %s: KDE screen idle is inhibited, returning 0 idle seconds.", __func__);
-                return 0;
-            }
-
-            if (g_wayland_idle_monitor.IsAvailable()) {
-                return g_wayland_idle_monitor.GetIdleSeconds();
-            }
-
-            error_log("ERROR: %s: WaylandIdleMonitor not available for KDE Wayland session.", __func__);
-            return -1;
-        } else {
-            // KDE X11 (Plasma 5 or Plasma 6 on X11): ksmserver D-Bus method handles inhibition
-            // internally by periodically resetting the idle time returned.
-            debug_log("INFO: %s: KDE X11 session detected. Using KDE D-Bus method.", __func__);
-            return GetIdleTimeKdeDBus();
-        }
-    } else if (IsWaylandSession()) { // Non-KDE Wayland (Try GNOME D-Bus for both idle time and inhibition)
-        debug_log("INFO: %s: Non-KDE Wayland session. Checking GNOME D-Bus idle time and inhibition.", __func__);
-
-        // 1. Try GNOME D-Bus inhibition check first
-        if (CheckGnomeInhibition()) { // This returns false if call fails.
-            debug_log("INFO: %s: GNOME session is inhibited (Wayland), returning 0 idle seconds.", __func__);
-
-            return 0; // Treat as active if inhibited
-        } else {
-            // 2. Not inhibited (or check failed), try GNOME Mutter D-Bus for idle time
-            debug_log("INFO: %s: No GNOME inhibition detected. Querying Mutter D-Bus idle time...", __func__);
-            int64_t gnome_input_idle = GetIdleTimeWaylandGnomeViaDBus(); // Returns >= 0 or -1
-            if (gnome_input_idle >= 0) {
-                // Successfully got input idle time from Mutter
-                debug_log("INFO: %s: Using GNOME D-Bus for idle time.", __func__);
-                return gnome_input_idle;
-            } else {
-                // 3. Mutter D-Bus failed (maybe not Gnome?), try standard Wayland protocol as last resort
-                debug_log("INFO: %s: GNOME D-Bus failed. Trying WaylandIdleMonitor (ext-idle-notify-v1)...", __func__);
-                if (g_wayland_idle_monitor.IsAvailable()) { // Check if Wayland monitor started successfully
-                    debug_log("INFO: %s: Using WaylandIdleMonitor as final Wayland fallback.", __func__);
-                    return g_wayland_idle_monitor.GetIdleSeconds(); // Get state from monitor thread
-                } else {
-                    error_log("ERROR: %s: No working idle detection method found for this Wayland session.", __func__);
-                    return -1; // Signal failure
-                }
-            }
-        }
-    } else {
-        // Non-KDE X11 session
-        debug_log("INFO: %s: Non-KDE X11 session. Checking XSS idle time and GNOME D-Bus inhibition.", __func__);
-        if (CheckGnomeInhibition()) { // Also check inhibition for X11 (might be Gnome on X11)
-            debug_log("INFO: %s: GNOME session is inhibited (X11), returning 0 idle seconds.", __func__);
-            return 0; // Treat as active if inhibited
-        } else {
-            // Not inhibited, get input idle time from XScreenSaver
-            return GetIdleTimeXss(); // Returns >= 0 on success, -1 on error
-        }
-    }
+    return g_idle_source_pool.GetIdleSeconds();
 }
 
 /**
@@ -1081,6 +1688,17 @@ extern const struct ext_idle_notification_v1_listener g_idle_notification_listen
 const void* WaylandIdleMonitor::c_registry_listener_ptr = &g_registry_listener;
 const void* WaylandIdleMonitor::c_idle_notification_listener_ptr = &g_idle_notification_listener;
 
+//!
+//! \brief Renders a Wayland socket name for logging. Once more than one monitor can be alive at a time, the log
+//! has to say which endpoint each line is about, and an empty name has to read as something other than "".
+//!
+//! \param socket_name Socket name as stored by WaylandIdleMonitor::Start().
+//! \return The socket name, or a placeholder for the environment-derived socket.
+//!
+static std::string SocketNameForLog(const std::string& socket_name) {
+    return socket_name.empty() ? std::string("<WAYLAND_DISPLAY>") : socket_name;
+}
+
 // Constructor
 WaylandIdleMonitor::WaylandIdleMonitor() :
     m_seat(nullptr),
@@ -1091,6 +1709,7 @@ WaylandIdleMonitor::WaylandIdleMonitor() :
     m_idle_start_time(0),
     m_interrupt_monitor(false),
     m_initialized(false),
+    m_globals_lost(false),
     m_display(nullptr),
     m_registry(nullptr),
     m_idle_notification(nullptr),
@@ -1106,14 +1725,41 @@ WaylandIdleMonitor::~WaylandIdleMonitor() {
 }
 
 // Start method
-bool WaylandIdleMonitor::Start(int notification_timeout_ms) {
-    normal_log("INFO: %s: Starting Wayland idle monitor.", __func__); // Use log for start/stop
+bool WaylandIdleMonitor::Start(const std::string& socket_name, int notification_timeout_ms, int max_init_retries) {
+    // Debug rather than normal, because every call to this is now a validation attempt: the only caller is
+    // WaylandIdleSource::Start(), which IdleSourcePool's endpoint factory uses to decide whether a discovered
+    // candidate is a real compositor. Announcing the attempt at normal level made an ATTEMPT as loud as an
+    // OUTCOME, and attempts against a candidate that can never validate -- a stale socket with no listener, or
+    // any Wayland candidate in a GNOME session, which advertises no ext_idle_notifier_v1 -- repeat for the life
+    // of the process. The outcomes are still reported: the pool logs the source it added, and it logs the
+    // rejection and the backoff it applied.
+    debug_log("INFO: %s: Starting Wayland idle monitor on socket %s.",
+              __func__,
+              SocketNameForLog(socket_name));
+
     if (m_initialized.load()) {
-        debug_log("INFO: %s: Monitor already initialized.", __func__);
+        // The already-running monitor keeps the socket it was started with. Log both names so a mismatched
+        // restart request is visible rather than silently ignored.
+        debug_log("INFO: %s: Monitor already initialized on socket %s.",
+                  __func__,
+                  SocketNameForLog(m_socket_name));
         return true; // Already running
     }
 
+    // m_initialized being clear does not mean this object is clean. A monitor thread that exited unexpectedly
+    // clears m_initialized itself but cannot join itself or close the interrupt pipe, so it leaves a joinable
+    // std::thread and two open FDs behind. Reap that before touching anything else: the pipe2() below would
+    // otherwise overwrite the live FDs and the thread launch would move-assign onto a joinable std::thread,
+    // which calls std::terminate(). This is a no-op on the first-ever Start().
+    if (!ReapFailedThread()) {
+        error_log("%s: Could not reap the previous Wayland monitor thread. Not restarting.", __func__);
+        return false;
+    }
+
+    // Store the parameters before any fallible work below, so that InitializeWayland() and
+    // CreateIdleNotification() see them regardless of which failure path is taken from here.
     m_notification_timeout_ms = notification_timeout_ms;
+    m_socket_name = socket_name;
 
     // Create pipe for interrupting poll() before initializing Wayland
     // pipe2 is Linux-specific, use pipe() for broader POSIX if needed
@@ -1124,55 +1770,178 @@ bool WaylandIdleMonitor::Start(int notification_timeout_ms) {
 
     // Reset state flags
     m_interrupt_monitor.store(false);
+    m_globals_lost.store(false);
     m_is_idle.store(false);
     m_idle_start_time.store(0);
 
+    // Perform the fallible setup. StartInternal() does no cleanup of its own; the teardown below is the single
+    // failure path for everything it may have partially constructed. Note that StartInternal() sets
+    // m_initialized before it launches the monitor thread, so the store below clears it again on failure.
+    if (!StartInternal(max_init_retries)) {
+        CleanupWayland();
+        if (m_interrupt_pipe_fd[0] != -1) { close(m_interrupt_pipe_fd[0]); m_interrupt_pipe_fd[0] = -1; }
+        if (m_interrupt_pipe_fd[1] != -1) { close(m_interrupt_pipe_fd[1]); m_interrupt_pipe_fd[1] = -1; }
+        m_initialized.store(false);
+        return false;
+    }
+
+    normal_log("INFO: %s: Wayland idle monitor started successfully on socket %s.",
+               __func__,
+               SocketNameForLog(m_socket_name));
+    return true;
+}
+
+// StartInternal method. This performs no cleanup; Start() owns the failure teardown.
+bool WaylandIdleMonitor::StartInternal(int max_init_retries) {
     // Initialize Wayland connection, get initial state, and subscribe
     // Includes retries internally now
-    if (!InitializeWayland()) {
-        error_log("%s: Failed to initialize Wayland or find required protocols after retries.", __func__);
-        goto start_failed;
+    if (!InitializeWayland(max_init_retries)) {
+        // Debug, not error. A candidate that does not turn out to be an ext_idle_notifier_v1 compositor is an
+        // ordinary outcome of validating an over-inclusive discovery set, and InitializeWayland() has already
+        // said why at the same level. The pool decides what the operator hears about a rejected candidate.
+        debug_log("INFO: %s: Failed to initialize Wayland or find required protocols after retries.", __func__);
+        return false;
     }
 
     // Check again after InitializeWayland succeeded
     if (!m_seat || !m_idle_notifier) {
         error_log("%s: Required Wayland interfaces not bound even after InitializeWayland success (logic error?).", __func__);
-        goto start_failed;
+        return false;
     }
 
-    // Create the specific idle notification request object
+    // Create the specific idle notification request object. This uses m_notification_timeout_ms, which Start() has
+    // already stored.
     CreateIdleNotification();
     if (!m_idle_notification) {
         error_log("%s: Failed to create Wayland idle notification object.", __func__);
-        goto start_failed;
+        return false;
     }
 
-    // If Wayland setup okay, start the thread to run the event loop
+    // Clear the globals-lost flag now that setup has succeeded. OnGlobalRemoved() runs on this thread during
+    // InitializeWayland()'s roundtrips, so the flag may have been set by churn that the bound-pointer re-check
+    // above has already proven harmless: if both globals are bound at this instant the connection is healthy,
+    // whatever happened while it was being built. From here on the flag carries its intended meaning only -
+    // "a global went away while we were relying on it" - which is what the monitor thread tests. Without this
+    // the thread could break on its very first iteration and leave the monitor permanently unavailable despite
+    // a fully successful initialization.
+    m_globals_lost.store(false);
+
+    // If Wayland setup okay, start the thread to run the event loop.
+    //
+    // m_initialized is set *before* the thread is launched, not after it. The monitor thread clears
+    // m_initialized when it exits unexpectedly, and a thread that fails immediately would otherwise have its
+    // clear overwritten by a store(true) issued after the launch, leaving the monitor advertising itself as
+    // available with no thread behind it. Start() clears the flag again if the launch below fails.
+    m_initialized.store(true);
+
     try {
         m_monitor_thread = std::thread(&WaylandIdleMonitor::WaylandMonitorThread, this);
     } catch (const std::system_error& e) {
         error_log("%s: Failed to start Wayland monitor thread: %s", __func__, e.what());
-        goto start_failed;
+        return false;
     } catch (...) {
         error_log("%s: Unknown error starting Wayland monitor thread.", __func__);
-        goto start_failed;
+        return false;
     }
 
-    m_initialized.store(true); // Set initialized only after thread starts successfully
-    normal_log("INFO: %s: Wayland idle monitor started successfully.", __func__);
     return true;
+}
 
-start_failed:
+// ReapFailedThread method. Called by Start() before any setup work; see the header for why.
+bool WaylandIdleMonitor::ReapFailedThread() {
+    // Nothing to reap. This is both the first-ever Start() and the Start()-after-a-clean-Stop() path, since
+    // Stop() joins the thread itself.
+    if (!m_monitor_thread.joinable()) {
+        return true;
+    }
+
+    // Never reap from within the monitor thread. join() on self throws resource_deadlock_would_occur, and the
+    // teardown below would destroy the Wayland resources the caller is still standing on.
+    if (m_monitor_thread.get_id() == std::this_thread::get_id()) {
+        error_log("WARN: %s: called from within the Wayland monitor thread. Not reaping.", __func__);
+        return false;
+    }
+
+    error_log("WARN: %s: Reaping a Wayland monitor thread that exited on its own before restarting.", __func__);
+
+    // joinable() cannot distinguish "finished but not joined" from "still alive and blocked in poll()". Only the
+    // former is reachable today, because the thread clears m_initialized on its way out and Start() returns early
+    // while that flag is still set. Signal the interrupt anyway so this join is bounded by the same mechanism
+    // Stop() uses, rather than resting on that reasoning once the endpoint pool drives Start()/Stop() per
+    // endpoint. Setting m_interrupt_monitor also makes a still-live thread skip its unexpected-exit tail, which
+    // is correct here: this is a requested teardown, and the flags are reset below regardless.
+    m_interrupt_monitor.store(true);
+
+    if (m_interrupt_pipe_fd[1] != -1) {
+        char buf = 'X';
+        ssize_t written = write(m_interrupt_pipe_fd[1], &buf, 1);
+
+        if (written <= 0 && errno != EAGAIN) {
+            error_log("%s: Failed to write to interrupt pipe while reaping: %s (%d)",
+                      __func__,
+                      strerror(errno),
+                      errno);
+        }
+    }
+
+    try {
+        m_monitor_thread.join();
+    } catch (const std::system_error& e) {
+        // The thread may still be alive, so its Wayland resources must not be torn down here and the object
+        // must not be restarted. Leaving m_monitor_thread joinable is deliberate: the caller aborts the start.
+        error_log("%s: Error joining the previous Wayland monitor thread: %s", __func__, e.what());
+        return false;
+    }
+
+    // Past the join this is exactly the teardown Stop() performs, and for the same reason: the thread is gone,
+    // so nothing else can be touching the Wayland connection or the interrupt pipe. The FD guards are what keep
+    // this and a subsequent Stop() from double-closing.
     CleanupWayland();
+
     if (m_interrupt_pipe_fd[0] != -1) { close(m_interrupt_pipe_fd[0]); m_interrupt_pipe_fd[0] = -1; }
     if (m_interrupt_pipe_fd[1] != -1) { close(m_interrupt_pipe_fd[1]); m_interrupt_pipe_fd[1] = -1; }
-    m_initialized.store(false);
-    return false;
+
+    // Reset the state flags so the caller sees a pristine object. Start() sets these again itself, but a
+    // half-reset object between the two would report a stale idle time through IsIdle()/GetIdleSeconds().
+    //
+    // The reset stops at the flags on purpose. m_socket_name and m_notification_timeout_ms are configuration,
+    // not run state: clearing m_socket_name here would make a reap-then-restart silently fall back to the
+    // WAYLAND_DISPLAY-derived socket instead of reconnecting to the endpoint this monitor owns. Start()
+    // overwrites both from its arguments anyway, so there is nothing stale to guard against either.
+    m_interrupt_monitor.store(false);
+    m_globals_lost.store(false);
+    m_is_idle.store(false);
+    m_idle_start_time.store(0);
+
+    return true;
 }
 
 // Stop method
 void WaylandIdleMonitor::Stop() {
-    normal_log("INFO: %s: Stopping Wayland idle monitor...", __func__);
+    // A monitor that was never successfully started has nothing to stop, and now says nothing about it. This
+    // is the ordinary teardown of a REJECTED VALIDATION CANDIDATE: WaylandIdleSource discards the monitor it
+    // built, and the destructor arrives here with no thread, no interrupt pipe and no Wayland resources, all
+    // of which Start() already released on its own failure path. Announcing that at normal level and then
+    // reporting the absent interrupt pipe as a warning cost three journal lines per rejected candidate, on
+    // every reconcile tick, forever -- three of the seven lines that one stale socket was measured emitting
+    // per tick.
+    //
+    // The three conditions below are exactly what the rest of this method acts on: the thread it joins, the
+    // pipe it signals and closes, and the initialized flag that gates the Wayland teardown. If none of them
+    // is set there is provably no work here, so this is a silent no-op rather than a quieter one.
+    if (!m_initialized.load()
+            && !m_monitor_thread.joinable()
+            && m_interrupt_pipe_fd[0] == -1
+            && m_interrupt_pipe_fd[1] == -1) {
+        debug_log("INFO: %s: Nothing to stop on socket %s; the monitor was never started.",
+                  __func__,
+                  SocketNameForLog(m_socket_name));
+        return;
+    }
+
+    normal_log("INFO: %s: Stopping Wayland idle monitor on socket %s...",
+               __func__,
+               SocketNameForLog(m_socket_name));
 
     // Use exchange to prevent concurrent Stop calls and get previous state
     if (m_interrupt_monitor.exchange(true)) {
@@ -1221,34 +1990,71 @@ void WaylandIdleMonitor::Stop() {
     if (m_interrupt_pipe_fd[1] != -1) { close(m_interrupt_pipe_fd[1]); m_interrupt_pipe_fd[1] = -1; }
 
     m_initialized.store(false); // Mark as no longer initialized
-    normal_log("INFO: %s: Wayland idle monitor stopped.", __func__);
+
+    // m_socket_name is deliberately not cleared: it is what the next Start() would be reconnecting to, and it
+    // keeps GetSocketName() meaningful for a stopped monitor that is still sitting in an endpoint pool.
+    normal_log("INFO: %s: Wayland idle monitor on socket %s stopped.",
+               __func__,
+               SocketNameForLog(m_socket_name));
+}
+
+void WaylandIdleMonitor::ResetWaylandState() {
+    m_seat = nullptr;
+    m_idle_notifier = nullptr;
+    m_seat_id = 0;
+    m_idle_notifier_id = 0;
+    m_idle_notification = nullptr;
 }
 
 // InitializeWayland (with simplified retry logic focusing on connect and roundtrip check)
-bool WaylandIdleMonitor::InitializeWayland() {
-    const int MAX_INIT_RETRIES = 15; // Example retries
+bool WaylandIdleMonitor::InitializeWayland(int max_retries) {
+    // Every failure path below logs at debug level. This method is reached only through Start(), whose only
+    // caller validates a discovery candidate, and a candidate that fails to connect or that connects to a
+    // compositor without ext_idle_notifier_v1 is an ordinary outcome rather than an error: discovery is
+    // deliberately over-inclusive and validation is how the wrong guesses are removed. At normal and error
+    // level these lines were the bulk of a measured 87 journal messages in 8 seconds from a single stale
+    // socket, because each failed attempt emitted several of them and the attempt repeated every tick.
+    // IdleSourcePool reports the rejection itself, once, and backs the candidate off.
     const int INIT_RETRY_DELAY_SECONDS = 2; // Example delay
 
-    for (int attempt = 1; attempt <= MAX_INIT_RETRIES; ++attempt) {
-        debug_log("INFO: %s: Wayland initialization attempt %d/%d...", __func__, attempt, MAX_INIT_RETRIES);
+    // A caller asking for zero or fewer attempts still means "try", not "do nothing". Clamping here rather
+    // than rejecting keeps every caller's failure path identical to a genuine connection failure.
+    const int max_init_retries = (max_retries > 1) ? max_retries : 1;
+
+    for (int attempt = 1; attempt <= max_init_retries; ++attempt) {
+        debug_log("INFO: %s: Wayland initialization attempt %d/%d...", __func__, attempt, max_init_retries);
 
         // Reset pointers for this attempt
         CleanupWayland(); // Ensure clean slate before connection attempt
 
-        m_display = wl_display_connect(nullptr);
+        // A global removed during a previous attempt's roundtrips must not condemn this attempt.
+        //
+        // This reset is NOT sufficient on its own to guarantee a clear flag on success. The global_remove
+        // callback runs on this (the main) thread during the two roundtrips below, which happen after this
+        // store. If the compositor removes a global and advertises a replacement across those roundtrips,
+        // HandleGlobal re-binds it (its guard is the cached pointer being null, which OnGlobalRemoved just
+        // made true) and the bound-pointer check below passes with the flag still set. StartInternal()
+        // therefore clears the flag again once the bound-pointer re-check passes.
+        m_globals_lost.store(false);
+
+        // An empty socket name means "let libwayland derive the socket from WAYLAND_DISPLAY", which is what this
+        // call did unconditionally before the monitor became addressable.
+        m_display = wl_display_connect(m_socket_name.empty() ? nullptr : m_socket_name.c_str());
         if (!m_display) {
-            error_log("%s: Failed to connect to Wayland display (attempt %d).", __func__, attempt);
+            debug_log("INFO: %s: Failed to connect to Wayland display %s (attempt %d).",
+                      __func__,
+                      SocketNameForLog(m_socket_name),
+                      attempt);
             // Go directly to sleep and retry
         } else {
             m_registry = wl_display_get_registry(m_display);
             if (!m_registry) {
-                error_log("%s: Failed to get Wayland registry (attempt %d).", __func__, attempt);
-                wl_display_disconnect(m_display); m_display = nullptr;
+                debug_log("INFO: %s: Failed to get Wayland registry (attempt %d).", __func__, attempt);
+                CleanupWayland();
                 // Go to sleep and retry
             } else {
                 // Reset potential stale globals found from previous failed attempts
-                m_seat = nullptr; m_idle_notifier = nullptr;
-                m_seat_id = 0; m_idle_notifier_id = 0;
+                ResetWaylandState();
 
                 wl_registry_add_listener(m_registry, (const wl_registry_listener*)c_registry_listener_ptr, this);
 
@@ -1256,33 +2062,36 @@ bool WaylandIdleMonitor::InitializeWayland() {
                 if (wl_display_roundtrip(m_display) != -1 && wl_display_roundtrip(m_display) != -1) {
                     // Check if required globals were actually found and bound by the listener
                     if (m_seat != nullptr && m_idle_notifier != nullptr) {
-                        debug_log("INFO: %s: Wayland connection and required globals found on attempt %d.", __func__, attempt);
+                        debug_log("INFO: %s: Wayland connection to %s and required globals found on attempt %d.",
+                                  __func__,
+                                  SocketNameForLog(m_socket_name),
+                                  attempt);
                         // Success! Don't cleanup, just return true.
                         // Note: Registry listener remains attached.
                         return true;
                     } else {
-                        // Roundtrip succeeded but didn't get the needed globals yet
-                        error_log("%s: Wayland roundtrip ok, but required globals (wl_seat/ext_idle_notifier_v1) "
-                                  "not found (attempt %d).",
+                        // Roundtrip succeeded but didn't get the needed globals yet. This is the GNOME case, and
+                        // it is permanent there rather than a timing artifact: mutter implements no
+                        // ext_idle_notifier_v1 for this to find on any attempt, ever.
+                        debug_log("INFO: %s: Wayland roundtrip ok, but required globals "
+                                  "(wl_seat/ext_idle_notifier_v1) not found (attempt %d).",
                                   __func__,
                                   attempt);
                         // Clean up this attempt's resources before retrying
-                        wl_registry_destroy(m_registry); m_registry = nullptr;
-                        wl_display_disconnect(m_display); m_display = nullptr;
+                        CleanupWayland();
                         // Go to sleep and retry
                     }
                 } else {
-                    error_log("%s: Wayland display roundtrip failed (attempt %d).", __func__, attempt);
+                    debug_log("INFO: %s: Wayland display roundtrip failed (attempt %d).", __func__, attempt);
                     // Clean up this attempt's resources
-                    if (m_registry) { wl_registry_destroy(m_registry); m_registry = nullptr; }
-                    wl_display_disconnect(m_display); m_display = nullptr;
+                    CleanupWayland();
                     // Go to sleep and retry
                 }
             } // end registry check
         } // end display check
 
         // --- Wait before retrying if not the last attempt ---
-        if (attempt < MAX_INIT_RETRIES) {
+        if (attempt < max_init_retries) {
             debug_log("INFO: %s: Waiting %d seconds before next Wayland init attempt...", __func__, INIT_RETRY_DELAY_SECONDS);
             // Check for shutdown request to avoid waiting unnecessarily
             for (int i = 0; i < INIT_RETRY_DELAY_SECONDS * 10; ++i) { // Check every 100ms
@@ -1295,9 +2104,66 @@ bool WaylandIdleMonitor::InitializeWayland() {
         }
     } // end retry loop
 
-    error_log("%s: Failed to initialize Wayland after %d attempts.", __func__, MAX_INIT_RETRIES);
+    debug_log("INFO: %s: Failed to initialize Wayland on socket %s after %d attempts.",
+              __func__,
+              SocketNameForLog(m_socket_name),
+              max_init_retries);
     CleanupWayland(); // Final cleanup after all attempts fail
     return false;
+}
+
+void WaylandIdleMonitor::DestroySeat() {
+    if (!m_seat) {
+        return;
+    }
+
+    // Check version before calling release (available since v5). Below v5 there is no
+    // release request, so destroy the proxy directly rather than leaking it until
+    // wl_display_disconnect().
+    if (wl_proxy_get_version((struct wl_proxy *)m_seat) >= WL_SEAT_RELEASE_SINCE_VERSION) {
+        wl_seat_release(m_seat);
+    } else {
+        wl_proxy_destroy((struct wl_proxy *)m_seat);
+    }
+
+    m_seat = nullptr;
+}
+
+void WaylandIdleMonitor::OnGlobalRemoved(uint32_t name) {
+    debug_log("INFO: %s: Wayland global removed: %u", __func__, name);
+
+    // The proxies must be destroyed here rather than simply forgotten. CleanupWayland() gates its destroys on
+    // the cached pointers being non-null, and wl_display_disconnect() does not free live proxies, so nulling a
+    // pointer without destroying it leaks the proxy for the life of the connection. Destroying a proxy from
+    // inside a dispatch callback is legal, and clearing the pointer immediately afterwards keeps the later
+    // CleanupWayland() from destroying it a second time.
+    // The zero checks matter: an unbound global has a cached id of 0, and matching a removal against that
+    // would destroy a proxy this monitor never bound.
+    if (m_seat_id != 0 && name == m_seat_id) {
+        error_log("WARN: %s: Monitored wl_seat (name %u) was removed!", __func__, name);
+        DestroySeat();
+        m_seat_id = 0;
+    } else if (m_idle_notifier_id != 0 && name == m_idle_notifier_id) {
+        error_log("WARN: %s: Idle notifier global (name %u) was removed!", __func__, name);
+        if (m_idle_notifier) {
+            ext_idle_notifier_v1_destroy(m_idle_notifier);
+            m_idle_notifier = nullptr;
+        }
+        m_idle_notifier_id = 0;
+    } else {
+        // Not a global this monitor depends on.
+        return;
+    }
+
+    // Without either global this monitor can no longer report idle time, so flag it as failed. The monitor
+    // thread breaks out of its loop on this and marks the monitor unavailable, so GetIdleTimeSeconds() falls
+    // back to the other detection paths instead of serving a frozen value against a global that no longer
+    // exists. This is intentionally not m_interrupt_monitor, which means "asked to stop".
+    //
+    // Note the monitor is not rebuilt automatically today: Start() has a single caller in main(). Rebuilding is
+    // the job of the endpoint pool that replaces that call site, which reconciles sources against discovery and
+    // will restart a failed one. ReapFailedThread() exists to make that restart safe.
+    m_globals_lost.store(true);
 }
 
 void WaylandIdleMonitor::CleanupWayland() {
@@ -1315,17 +2181,11 @@ void WaylandIdleMonitor::CleanupWayland() {
         m_idle_notification = nullptr;
     }
     // Destroy/release globals
-    if (m_idle_notifier) { m_idle_notifier = nullptr; } // Global, no destroy in spec
-    if (m_seat) {
-        // Check version before calling release (available since v5)
-        if (wl_proxy_get_version((struct wl_proxy *)m_seat) >= WL_SEAT_RELEASE_SINCE_VERSION) {
-            wl_seat_release(m_seat);
-        }
-        // Even without release, we destroy the proxy reference below implicitly or explicitly?
-        // Wayland client library usually handles proxy destruction when display is disconnected/destroyed.
-        // Setting pointer to null is sufficient here.
-        m_seat = nullptr;
+    if (m_idle_notifier) {
+        ext_idle_notifier_v1_destroy(m_idle_notifier);
+        m_idle_notifier = nullptr;
     }
+    DestroySeat();
     // Destroy registry
     if (m_registry) { wl_registry_destroy(m_registry); m_registry = nullptr; }
     // Disconnect display
@@ -1334,6 +2194,9 @@ void WaylandIdleMonitor::CleanupWayland() {
         wl_display_disconnect(m_display);
         m_display = nullptr;
     }
+    m_seat_id = 0;
+    m_idle_notifier_id = 0;
+
     // Note: Interrupt pipe FDs are NOT closed here. They are owned by Start()/Stop(), not by the
     // Wayland connection lifecycle. CleanupWayland() is called from InitializeWayland() retry loops
     // where the pipe must survive across attempts.
@@ -1367,6 +2230,20 @@ void WaylandIdleMonitor::CreateIdleNotification() {
     debug_log("INFO: %s: Created idle notification object (timeout %d ms).", __func__, m_notification_timeout_ms);
 }
 
+// PrepareRead helper. Extracted from the monitor thread loop so that a dispatch failure in the inner loop can
+// terminate the outer loop rather than only the inner one.
+bool WaylandIdleMonitor::PrepareRead() {
+    while (wl_display_prepare_read(m_display) != 0) {
+        // Dispatch pending events that arrived before prepare_read locked the queue
+        if (wl_display_dispatch_pending(m_display) == -1) {
+            error_log("%s: wl_display_dispatch_pending() failed in prepare loop. Exiting thread.", __func__);
+            return false;
+        }
+    }
+
+    return true;
+}
+
 // WaylandMonitorThread (using poll)
 void WaylandIdleMonitor::WaylandMonitorThread() {
     debug_log("INFO: %s: Wayland monitor thread started.", __func__);
@@ -1386,30 +2263,42 @@ void WaylandIdleMonitor::WaylandMonitorThread() {
     int poll_ret;
 
     while (!m_interrupt_monitor.load(std::memory_order_relaxed)) {
-        // Prepare read BEFORE blocking in poll
-        while (wl_display_prepare_read(m_display) != 0) {
-            // Dispatch pending events that arrived before prepare_read locked the queue
-            if (wl_display_dispatch_pending(m_display) == -1) {
-                error_log("%s: wl_display_dispatch_pending() failed in prepare loop. Exiting thread.", __func__);
-                goto thread_exit; // Use goto for central exit point? Or just return?
-            }
+        // Prepare read BEFORE blocking in poll. A failure here must exit the thread, not just the prepare loop,
+        // otherwise we would flush and poll on a display that has already failed to dispatch.
+        if (!PrepareRead()) {
+            break;
+        }
+
+        // A global this monitor depends on may have been removed by a callback dispatched inside PrepareRead().
+        // The read lock is held at this point, so it must be released before leaving the loop.
+        if (m_globals_lost.load(std::memory_order_relaxed)) {
+            error_log("%s: Required Wayland global removed by the compositor. Exiting thread.", __func__);
+            wl_display_cancel_read(m_display);
+            break;
         }
 
         // Flush requests to ensure server gets listener setups etc. before we block
         if (wl_display_flush(m_display) == -1 && errno != EAGAIN) {
             error_log("%s: wl_display_flush() failed: %s (%d). Exiting thread.", __func__, strerror(errno), errno);
             wl_display_cancel_read(m_display);
-            goto thread_exit;
+            break;
         }
 
         // Block in poll() until Wayland FD has events OR interrupt pipe is written/closed
         poll_ret = poll(fds, 2, -1); // No timeout
 
         if (poll_ret < 0) {
-            if (errno == EINTR) { continue; } // Interrupted by unrelated signal
+            if (errno == EINTR) {
+                // Interrupted by an unrelated signal. The read lock taken by wl_display_prepare_read() must be
+                // released before restarting the loop, otherwise the next prepare_read() increments the reader
+                // count a second time for this thread and wl_display_read_events() blocks forever waiting for a
+                // reader that will never arrive.
+                wl_display_cancel_read(m_display);
+                continue;
+            }
             error_log("%s: poll() failed: %s (%d). Exiting thread.", __func__, strerror(errno), errno);
             wl_display_cancel_read(m_display); // Need to cancel before error exit? Yes.
-            goto thread_exit;
+            break;
         }
 
         // Check for interrupt first
@@ -1426,19 +2315,19 @@ void WaylandIdleMonitor::WaylandMonitorThread() {
         if (fds[0].revents & (POLLERR | POLLHUP)) {
             error_log("%s: Error/Hangup on Wayland display FD. Exiting thread.", __func__);
             // Don't need to cancel read if FD is likely dead
-            goto thread_exit;
+            break;
         }
 
         // If we woke up for Wayland FD, read events
         if (fds[0].revents & POLLIN) {
             if (wl_display_read_events(m_display) == -1) {
                 error_log("%s: wl_display_read_events() failed. Exiting thread.", __func__);
-                goto thread_exit;
+                break;
             }
             // Dispatch the read events which trigger callbacks
             if (wl_display_dispatch_pending(m_display) == -1) {
                 error_log("%s: wl_display_dispatch_pending() failed after read. Exiting thread.", __func__);
-                goto thread_exit;
+                break;
             }
         } else {
             // Woke up but not for Wayland FD (shouldn't happen with poll=-1 unless interrupted)
@@ -1450,10 +2339,38 @@ void WaylandIdleMonitor::WaylandMonitorThread() {
             debug_log("INFO: %s: Interrupt detected after event dispatch.", __func__);
             break;
         }
+
+        // The dispatch above may have run the global_remove callback. No read lock is held here, because
+        // wl_display_read_events() released it.
+        if (m_globals_lost.load(std::memory_order_relaxed)) {
+            error_log("%s: Required Wayland global removed by the compositor. Exiting thread.", __func__);
+            break;
+        }
     } // end while
 
-thread_exit:
     debug_log("INFO: %s: Wayland monitor thread exiting.", __func__);
+
+    // Every exit above other than the interrupt-driven one is a failure: the compositor hung up, a read or a
+    // dispatch failed, or a required global was removed. In those cases no further idle notifications will
+    // arrive, so the monitor must stop advertising itself as available. Leaving m_initialized set would make
+    // IsAvailable() keep returning true while GetIdleSeconds() served a frozen value for the life of the
+    // daemon, pinning the session as permanently active or permanently idle. Clearing it makes
+    // GetIdleTimeSeconds() fall back to the other detection paths and to event_detect.
+    //
+    // The requested-stop case is deliberately left alone: Stop() clears m_initialized itself after joining
+    // this thread and cleaning up the Wayland resources, and clearing it here would only duplicate that
+    // bookkeeping ahead of the join. Both orderings are harmless (the stores are idempotent and this tail
+    // touches no Wayland resource), but Stop() stays the single owner of the ordered shutdown.
+    if (!m_interrupt_monitor.load(std::memory_order_relaxed)) {
+        error_log("%s: Wayland monitor thread exited unexpectedly. Marking the monitor unavailable.", __func__);
+
+        // Reset the reported state first so that a reader that still sees m_initialized set does not observe a
+        // stale idle time, and so that a later Start() does not inherit it.
+        m_is_idle.store(false, std::memory_order_relaxed);
+        m_idle_start_time.store(0, std::memory_order_relaxed);
+        m_initialized.store(false);
+    }
+
     // Cleanup of Wayland resources happens in Stop() or ~WaylandIdleMonitor()
     // which is called after this thread is joined.
 }
@@ -1461,6 +2378,11 @@ thread_exit:
 // IsAvailable getter
 bool WaylandIdleMonitor::IsAvailable() const {
     return m_initialized.load();
+}
+
+// GetSocketName getter
+const std::string& WaylandIdleMonitor::GetSocketName() const {
+    return m_socket_name;
 }
 
 // IsIdle getter
@@ -1491,38 +2413,46 @@ void WaylandIdleMonitor_HandleGlobal(void *data, wl_registry *registry, uint32_t
     WaylandIdleMonitor *monitor = static_cast<WaylandIdleMonitor*>(data);
     debug_log("INFO: %s: Global: %s v%u (name %u)", __func__, interface, version, name);
 
-    if (strcmp(interface, wl_seat_interface.name) == 0) {
-        monitor->m_seat_id = name;
+    // wl_registry_bind() returns nullptr on allocation failure or object map exhaustion. The bound pointer must
+    // be checked before it is used at all: debug_log() is a function template, so wl_proxy_get_version() below
+    // is evaluated regardless of whether debug logging is enabled, and it dereferences the proxy unguarded.
+    if (strcmp(interface, wl_seat_interface.name) == 0 && monitor->m_seat == nullptr) {
         monitor->m_seat = static_cast<wl_seat*>(
             wl_registry_bind(registry, name, &wl_seat_interface, std::min(version, 5u)) // Request v5 for release
             );
-        debug_log("INFO: %s: Bound wl_seat (name %u) version %u.", __func__, name, wl_proxy_get_version((wl_proxy*)monitor->m_seat));
-    } else if (strcmp(interface, ext_idle_notifier_v1_interface.name) == 0) {
-        monitor->m_idle_notifier_id = name;
+
+        if (monitor->m_seat == nullptr) {
+            error_log("%s: Failed to bind wl_seat (name %u).", __func__, name);
+        } else {
+            monitor->m_seat_id = name;
+            debug_log("INFO: %s: Bound wl_seat (name %u) version %u.",
+                      __func__,
+                      name,
+                      wl_proxy_get_version((wl_proxy*)monitor->m_seat));
+        }
+    } else if (strcmp(interface, ext_idle_notifier_v1_interface.name) == 0 &&
+               monitor->m_idle_notifier == nullptr) {
         monitor->m_idle_notifier = static_cast<ext_idle_notifier_v1*>(
             wl_registry_bind(registry, name, &ext_idle_notifier_v1_interface, std::min(version, 1u)) // Request v1 or v2? Start with 1.
             );
-        debug_log("INFO: %s: Bound %s (name %u) version %u.",
-                  __func__,
-                  ext_idle_notifier_v1_interface.name,
-                  name,
-                  wl_proxy_get_version((wl_proxy*)monitor->m_idle_notifier));
+
+        if (monitor->m_idle_notifier == nullptr) {
+            error_log("%s: Failed to bind %s (name %u).", __func__, ext_idle_notifier_v1_interface.name, name);
+        } else {
+            monitor->m_idle_notifier_id = name;
+            debug_log("INFO: %s: Bound %s (name %u) version %u.",
+                      __func__,
+                      ext_idle_notifier_v1_interface.name,
+                      name,
+                      wl_proxy_get_version((wl_proxy*)monitor->m_idle_notifier));
+        }
     }
 }
 
 void WaylandIdleMonitor_HandleGlobalRemove(void *data, wl_registry * /* registry */, uint32_t name)
 {
     WaylandIdleMonitor *monitor = static_cast<WaylandIdleMonitor*>(data);
-    debug_log("INFO: %s: Wayland global removed: %u", __func__, name);
-    if (name == monitor->m_seat_id) {
-        error_log("WARN: %s: Monitored wl_seat (name %u) was removed!", __func__, name);
-        monitor->m_seat = nullptr; // Mark as gone, maybe trigger re-init?
-        monitor->m_seat_id = 0;
-    } else if (name == monitor->m_idle_notifier_id) {
-        error_log("WARN: %s: Idle notifier global (name %u) was removed!", __func__, name);
-        monitor->m_idle_notifier = nullptr; // Mark as gone
-        monitor->m_idle_notifier_id = 0;
-    }
+    monitor->OnGlobalRemoved(name);
 }
 
 void WaylandIdleMonitor_HandleIdled(void *data, ext_idle_notification_v1 * /* notification */)
@@ -1591,6 +2521,224 @@ static fs::path GetUserConfigPath() {
     }
     // Standard XDG config location
     return fs::path(home_dir_opt.value()) / ".config" / "idle_detect.conf";
+}
+
+//!
+//! \brief Runs one discovery-and-reconcile pass over the global idle source pool.
+//!
+//! Both inputs are re-derived from the running system on every call, and that is the entire point. The hints
+//! change when a compositor or X server starts or stops, and the shell's bus name ownership changes when the
+//! desktop shell starts or stops, so anything cached here would be the frozen-at-exec answer this design
+//! exists to eliminate, merely relocated.
+//!
+//! Finding nothing is a normal outcome rather than a failure, so this reports nothing and cannot fail. An
+//! empty pool makes GetIdleTimeSeconds() report IDLE_NO_GUI_SESSION, which the main loop already handles by
+//! deferring to event_detect, and the very next pass picks the session up once it exists.
+//!
+//! Neither input is smoothed here, and the shell one has a failure mode that needs smoothing: DetectShellKind()
+//! is a synchronous NameHasOwner call, and a bus hiccup, a timeout under load or a session bus restart makes it
+//! answer ShellKind::NONE for a session whose shell is perfectly healthy. In a shell-only session that is the
+//! only source there is, so acting on one such answer would empty the pool for a tick. The debounce that
+//! prevents it lives in IdleSourcePool::Reconcile() rather than here, because the pool is dependency-free and
+//! therefore testable, and because state kept in a function called once per tick from one place is state that
+//! nothing can assert on.
+//!
+//! ShellMonitor holds no state and no connection, so it is constructed per call rather than kept alive across
+//! calls. The D-Bus connection underneath it is GIO's shared per-process session bus connection, which is
+//! established once and reused.
+//!
+//! The XAUTHORITY hint is applied here, before Reconcile(), because Reconcile() is what connects: an X
+//! candidate is validated by opening it, and an X display opened without the credentials the graphical
+//! session is actually using is rejected as unusable no matter how correctly it was discovered. Applying it
+//! is a process-wide mutation and is therefore written out at this level rather than buried inside
+//! BuildDiscoveryInputs() or GetIdleTimeXss(); see ApplyXAuthorityHint() for why setenv() is the only
+//! mechanism Xlib leaves available.
+//!
+static void ReconcileIdleSources()
+{
+    const IdleDetect::ShellMonitor shell_monitor;
+
+    const IdleDetect::DiscoveryInputs inputs = IdleDetect::BuildDiscoveryInputs();
+
+    IdleDetect::ApplyXAuthorityHint(inputs.m_xauthority);
+
+    IdleDetect::g_idle_source_pool.Reconcile(IdleDetect::DiscoverEndpoints(inputs.m_hints),
+                                             shell_monitor.DetectShellKind());
+}
+
+//!
+//! \brief Reports, through a throttle, that neither event_detect's shared memory segment nor its data file
+//! yielded a usable timestamp on this iteration.
+//!
+//! event_detect not running is the case this exists for, and it is not a transient: the segment stays
+//! absent and the file stays stale for as long as the system daemon is down, so the condition is true on
+//! every one of the main loop's once-per-second iterations. The individual reasons -- ENOENT on the
+//! segment, an unparseable file, a file we may not open -- are reported at debug level by
+//! ReadTimestampViaShmem() and ReadLastActiveTimeFile() precisely so that this one line, counted and
+//! throttled, is the operator-visible report for all of them.
+//!
+//! \param throttle Ladder for this condition, owned by the main loop.
+//! \param dat_file_path Fallback data file that was tried after the shared memory segment.
+//!
+static void ReportEventDetectReadFailure(FailureReportThrottle& throttle, const fs::path& dat_file_path)
+{
+    if (!throttle.RecordFailure()) {
+        debug_log("INFO: %s: Getting idle_info from event_detect failed (%d consecutive).",
+                  __func__,
+                  throttle.ConsecutiveFailures());
+
+        return;
+    }
+
+    const char* message = "%s: Getting idle_info from event_detect failed: could not read a valid timestamp "
+                          "from shared memory or from '%s' (%d consecutive). Is event_detect running? "
+                          "Further failures are debug only until %d more have occurred.";
+
+    // The first failure of a run stays at error level so that a genuine problem is visible immediately.
+    // The reports after it are follow-ups to a fault already announced, so they go out at normal level.
+    if (throttle.ConsecutiveFailures() == 1) {
+        error_log(message, __func__, dat_file_path.string(), throttle.ConsecutiveFailures(), throttle.Interval());
+    } else {
+        normal_log(std::string("WARNING: ").append(message).c_str(),
+                   __func__,
+                   dat_file_path.string(),
+                   throttle.ConsecutiveFailures(),
+                   throttle.Interval());
+    }
+}
+
+//!
+//! \brief Reports, through a throttle, that the shared memory segment could not be read and the slower
+//! file fallback is being used instead.
+//!
+//! Every failure path inside ReadTimestampViaShmem() is debug level, and the caller falls straight through
+//! to ReadLastActiveTimeFile() when it returns a sentinel. That combination is deliberate -- an unreadable
+//! segment at error level once a second is a flood -- but it means a segment that is present and simply
+//! not readable by this process produces NO operator-visible output at all while the daemon quietly runs
+//! on the degraded path.
+//!
+//! That matters on SELinux systems, which are now the openSUSE default. /dev/shm/idle_detect_shmem has no
+//! policy rule of its own, and the segment is created by event_detect under one user and read by
+//! idle_detect under another, so a denial there is a realistic outcome that would otherwise be invisible.
+//! One throttled line makes the difference between "the fast path is blocked" and "everything looks fine".
+//!
+//! \param throttle Ladder for this condition, owned by the main loop.
+//! \param shmem_name Segment that could not be read.
+//!
+static void ReportShmemUnavailable(FailureReportThrottle& throttle, const std::string& shmem_name)
+{
+    if (!throttle.RecordFailure()) {
+        debug_log("INFO: %s: Shared memory '%s' still unreadable (%d consecutive).",
+                  __func__,
+                  shmem_name,
+                  throttle.ConsecutiveFailures());
+
+        return;
+    }
+
+    const char* message = "%s: Could not read shared memory '%s' (%d consecutive); falling back to the "
+                          "last_active_time file. If event_detect is running, check permissions on the "
+                          "segment -- on an SELinux system try 'ausearch -m avc -ts recent'. "
+                          "Further occurrences are debug only until %d more have passed.";
+
+    // The first occurrence of a run is announced so a blocked fast path is visible immediately. Later ones
+    // are follow-ups to a condition already reported, and the daemon is still functioning on the fallback,
+    // so they go out at normal level rather than error.
+    if (throttle.ConsecutiveFailures() == 1) {
+        normal_log(std::string("WARNING: ").append(message).c_str(),
+                   __func__,
+                   shmem_name,
+                   throttle.ConsecutiveFailures(),
+                   throttle.Interval());
+    } else {
+        debug_log(message, __func__, shmem_name, throttle.ConsecutiveFailures(), throttle.Interval());
+    }
+}
+
+//!
+//! \brief Ends a run of shared memory read failures and reports the recovery once.
+//! \param throttle Ladder for that condition, owned by the main loop.
+//! \param shmem_name Segment that became readable again.
+//!
+static void NoteShmemAvailable(FailureReportThrottle& throttle, const std::string& shmem_name)
+{
+    const int cleared = throttle.Reset();
+
+    if (cleared > 0) {
+        normal_log("INFO: %s: Shared memory '%s' is readable again after %d consecutive failure(s).",
+                   __func__,
+                   shmem_name,
+                   cleared);
+    }
+}
+
+//!
+//! \brief Ends a run of event_detect read failures and reports the recovery once.
+//! \param throttle Ladder for that condition, owned by the main loop.
+//!
+static void NoteEventDetectReadSuccess(FailureReportThrottle& throttle)
+{
+    const int cleared = throttle.Reset();
+
+    if (cleared > 0) {
+        normal_log("INFO: %s: event_detect is readable again after %d consecutive failed read(s).",
+                   __func__,
+                   cleared);
+    }
+}
+
+//!
+//! \brief Reports, through a throttle, that no source at all produced an idle time on this iteration.
+//!
+//! This is the last line of the resolution chain, and until this throttle existed it was also the last
+//! unthrottled per-tick log in the daemon: a session where nothing resolves -- no GUI endpoint, no shell
+//! value, no event_detect -- emitted this at error level once a second, forever. That is the same flood the
+//! endpoint backoff and the shell ladder were built to stop, in the one place neither of them reaches.
+//!
+//! It stays an error rather than being demoted, because unlike a single source failing it means the daemon
+//! has nothing to report activity from and is falling back to assuming the user is active. The first
+//! occurrence is therefore always visible.
+//!
+//! \param throttle Ladder for this condition, owned by the main loop.
+//!
+static void ReportIdleDeterminationFailure(FailureReportThrottle& throttle)
+{
+    if (!throttle.RecordFailure()) {
+        debug_log("INFO: %s: Idle time could not be determined from any available source (%d consecutive). "
+                  "Assuming active.",
+                  __func__,
+                  throttle.ConsecutiveFailures());
+
+        return;
+    }
+
+    const char* message = "%s: Idle time could not be determined from any available source (%d "
+                          "consecutive). Assuming active. Further occurrences are debug only until %d more "
+                          "have occurred.";
+
+    if (throttle.ConsecutiveFailures() == 1) {
+        error_log(message, __func__, throttle.ConsecutiveFailures(), throttle.Interval());
+    } else {
+        normal_log(std::string("WARNING: ").append(message).c_str(),
+                   __func__,
+                   throttle.ConsecutiveFailures(),
+                   throttle.Interval());
+    }
+}
+
+//!
+//! \brief Ends a run of failed idle determinations and reports the recovery once.
+//! \param throttle Ladder for that condition, owned by the main loop.
+//!
+static void NoteIdleDeterminationSuccess(FailureReportThrottle& throttle)
+{
+    const int cleared = throttle.Reset();
+
+    if (cleared > 0) {
+        normal_log("INFO: %s: Idle time is being determined again after %d consecutive failure(s).",
+                   __func__,
+                   cleared);
+    }
 }
 
 //!
@@ -1786,28 +2934,30 @@ int main(int argc, char* argv[])
         }
     } catch (const std::system_error& e) {
         error_log("%s: Failed to start Idle Detect Control Monitor thread: %s. Exiting.", __func__, e.what());
-        // Stop other monitors if started (e.g., Wayland) before exiting
-        // if (wayland_monitor_started) { g_wayland_idle_monitor.Stop(); }
         return 1;
     } catch (...) {
         error_log("%s: Unknown error starting Idle Detect Control Monitor thread. Exiting.", __func__);
-        // if (wayland_monitor_started) { g_wayland_idle_monitor.Stop(); }
         return 1;
     }
 
-    // Start Wayland Monitor AFTER control monitor (if Wayland session)
-    bool wayland_monitor_started = false;
-    if (IdleDetect::IsWaylandSession()) {
-        int notification_timeout_ms = 1000;
-        debug_log("INFO: %s: Attempting Wayland idle monitor (timeout %dms)...", __func__, notification_timeout_ms);
-        if (g_wayland_idle_monitor.Start(notification_timeout_ms)) {
-            debug_log("INFO: %s: Wayland idle monitor started successfully.", __func__);
-            wayland_monitor_started = true; // Track success
-        } else {
-            error_log("%s: Failed to start Wayland idle monitor. Relying on D-Bus/X11 fallbacks.", __func__);
-            // Continue without it, GetIdleTimeSeconds will handle fallback
-        }
-    }
+    // --- Initial discovery pass ---
+    //
+    // This replaces the one-shot Wayland monitor that used to be started here, which ran only when
+    // getenv("WAYLAND_DISPLAY") was set at exec, bound itself to whatever socket that named, and was never
+    // revisited.
+    //
+    // Startup is not special. Finding nothing here is a normal state, not a failure and not a reason to
+    // exit: the graphical session may simply not exist yet, which is the ordinary case for a user unit
+    // ordered after graphical-session.target on a machine that boots to a display manager. The main loop
+    // reconciles again on every iteration and picks the session up whenever it appears.
+    normal_log("INFO: %s: Running initial idle source discovery...", __func__);
+
+    ReconcileIdleSources();
+
+    normal_log("INFO: %s: Initial discovery found %u endpoint source(s)%s.",
+               __func__,
+               IdleDetect::g_idle_source_pool.EndpointSourceCount(),
+               IdleDetect::g_idle_source_pool.HasShellSource() ? " and a desktop shell source" : "");
 
     // --- Main Loop ---
     bool first_check = true;
@@ -1819,17 +2969,60 @@ int main(int argc, char* argv[])
     int64_t effective_last_active_time = 0;
     bool using_event_detect_as_only_source = false;
 
+    // Both of these conditions are re-evaluated on every iteration of a loop that runs once a second, and
+    // both stay true for as long as whatever broke stays broken, so reporting either unconditionally is one
+    // line per second for the life of the process. See FailureReportThrottle and
+    // MAIN_LOOP_FAILURE_REPORT_MAX_INTERVAL. They are owned here, by the loop, rather than being file
+    // globals, because the loop is the only thing that can say when a run of failures has ended.
+    FailureReportThrottle event_detect_read_failure_throttle(IdleDetect::MAIN_LOOP_FAILURE_REPORT_INITIAL_INTERVAL,
+                                                             IdleDetect::MAIN_LOOP_FAILURE_REPORT_MAX_INTERVAL);
+    FailureReportThrottle idle_determination_failure_throttle(IdleDetect::MAIN_LOOP_FAILURE_REPORT_INITIAL_INTERVAL,
+                                                              IdleDetect::MAIN_LOOP_FAILURE_REPORT_MAX_INTERVAL);
+    FailureReportThrottle shmem_unavailable_throttle(IdleDetect::MAIN_LOOP_FAILURE_REPORT_INITIAL_INTERVAL,
+                                                     IdleDetect::MAIN_LOOP_FAILURE_REPORT_MAX_INTERVAL);
+
     while (!g_shutdown_requested.load()) {
+        // Reconcile before resolving, so this iteration's reading comes from the sources that exist now. This
+        // is the self-heal path: a graphical session that appears after the daemon started is picked up here,
+        // within one check interval, with no restart and no external wrapper watching for it. It is equally
+        // the teardown path, since an endpoint whose socket is gone is evicted rather than left reporting
+        // against a compositor that no longer exists.
+        ReconcileIdleSources();
+
         int64_t idle_seconds = IdleDetect::GetIdleTimeSeconds();
 
         if (idle_seconds >= 0) {
             debug_log("INFO: %s: idle time from GUI session: %lld seconds.",
                       __func__,
                       (int64_t)idle_seconds);
-        } else if (idle_seconds == -2 && !use_event_detect) {
-            debug_log("INFO: %s: Tty session. Overriding use_event_detect and using event_detect anyway.",
-                      __func__);
+        }
+
+        // IDLE_NO_GUI_SESSION means no idle source exists at all, and it overrides the use_event_detect
+        // config setting, because in that state the only activity there is to see -- tty and ssh -- is
+        // visible only to event_detect.
+        //
+        // The override is re-derived on every iteration rather than latched. It used to be set once and
+        // never cleared, which pinned a daemon that started before its graphical session to event_detect for
+        // the rest of its life: discovery would find the session, GetIdleTimeSeconds() would report a real
+        // GUI idle time, and the pipe notification would still be suppressed as circular. That would have
+        // masked most of this fix, since starting before the session is exactly the case being fixed.
+        //
+        // IDLE_ERROR deliberately does not hold the override on. Sources exist in that case, so a GUI
+        // session exists and only the reading failed. Whether to fall back to event_detect for a failed
+        // reading is the use_event_detect setting's decision, not this override's.
+        if (idle_seconds == IdleDetect::IDLE_NO_GUI_SESSION && !use_event_detect) {
+            if (!using_event_detect_as_only_source) {
+                normal_log("INFO: %s: No GUI session found. Overriding use_event_detect and using "
+                           "event_detect as the only source.",
+                           __func__);
+            }
+
             using_event_detect_as_only_source = true;
+        } else if (using_event_detect_as_only_source) {
+            normal_log("INFO: %s: A GUI session is now present. No longer overriding use_event_detect.",
+                       __func__);
+
+            using_event_detect_as_only_source = false;
         }
 
         // This is how tty idle is captured -- use_event_detect defaults to true and is overridden to true if this is
@@ -1838,13 +3031,22 @@ int main(int argc, char* argv[])
             debug_log("INFO: %s: Attempting to use event_detect via shared memory: %s", __func__, shmem_name.c_str());
             int64_t shmem_timestamp = IdleDetect::ReadTimestampViaShmem(shmem_name);
 
+            // Announce the fast path being unavailable exactly once per run of failures. Without this the
+            // daemon degrades to the file fallback in complete silence at debug=0.
+            if (shmem_timestamp >= 0) {
+                NoteShmemAvailable(shmem_unavailable_throttle, shmem_name);
+            } else {
+                ReportShmemUnavailable(shmem_unavailable_throttle, shmem_name);
+            }
+
             if (shmem_timestamp >= 0) { // Use >= 0 check, as 0 might be valid initial state
                 int64_t current_time = GetUnixEpochTime();
                 int64_t calculated_idle = current_time - shmem_timestamp;
                 calculated_idle = (calculated_idle > 0) ? calculated_idle : 0; // Ensure non-negative
 
-                // If idle_seconds is < 0, this indicates an error state from IdleDetect::GetIdleTimeSeconds(), or
-                // tty only session if -2, in which case the value of idle_seconds should not be used directly.
+                // If idle_seconds is < 0, it is a sentinel from IdleDetect::GetIdleTimeSeconds() -- IDLE_ERROR if
+                // the GUI sources could not be read, or IDLE_NO_GUI_SESSION if there is no GUI session at all --
+                // and the value must not be used directly.
                 // If idle_seconds is >= 0, it indicates a valid idle time from GUI session.
                 // If shmem_timestamp == 0, it indicates that force_idle was set via event_detect directly, and we should use the
                 // calculated idle time. This is important to capture force_idle injected directly into event_detect via a script
@@ -1861,6 +3063,8 @@ int main(int argc, char* argv[])
                           (int64_t)idle_seconds,
                           (int64_t)current_time,
                           (int64_t)shmem_timestamp);
+
+                NoteEventDetectReadSuccess(event_detect_read_failure_throttle);
             } else {
                 // ReadTimestampViaShmem returns -1 on error
                 debug_log("INFO: %s: Attempting to get idle information from event_detect via file: %s",
@@ -1873,8 +3077,9 @@ int main(int argc, char* argv[])
                     int64_t calculated_idle = current_time - file_timestamp;
                     calculated_idle = (calculated_idle > 0) ? calculated_idle : 0; // Ensure non-negative
 
-                    // If idle_seconds is < 0, this indicates an error state from IdleDetect::GetIdleTimeSeconds(), or
-                    // tty only session if -2, in which case the value of idle_seconds should not be used directly.
+                    // If idle_seconds is < 0, it is a sentinel from IdleDetect::GetIdleTimeSeconds() -- IDLE_ERROR if
+                    // the GUI sources could not be read, or IDLE_NO_GUI_SESSION if there is no GUI session at all --
+                    // and the value must not be used directly.
                     // If idle_seconds is >= 0, it indicates a valid idle time from GUI session.
                     // If file_timestamp == 0, it indicates that force_idle was set via event_detect directly, and we should use the
                     // calculated idle time. This is important to capture force_idle injected directly into event_detect via a script
@@ -1891,19 +3096,20 @@ int main(int argc, char* argv[])
                               (int64_t)idle_seconds,
                               (int64_t)current_time,
                               (int64_t)file_timestamp);
+
+                    NoteEventDetectReadSuccess(event_detect_read_failure_throttle);
                 } else {
-                    error_log("%s: Getting idle_info from event_detect failed: Could not read/parse valid timestamp "
-                              "from event_detect file.",
-                              __func__);
+                    ReportEventDetectReadFailure(event_detect_read_failure_throttle, dat_file_path);
                 }
             }
         }
 
         if (idle_seconds < 0) {
-            error_log("%s: Idle time could not be determined from any available source. Assuming active.",
-                      __func__);
+            ReportIdleDeterminationFailure(idle_determination_failure_throttle);
 
             idle_seconds = 0;
+        } else {
+            NoteIdleDeterminationSuccess(idle_determination_failure_throttle);
         }
 
         // --- State Calculation & Actions (using effective idle_seconds) ---
@@ -1955,20 +3161,27 @@ int main(int argc, char* argv[])
             first_check = false; // Clear first check flag
         }
 
-        // Send Pipe Notification if not currently idle and should update event detect and
-        // effective last active time has changed. Note if using_event_detect_as_only_source is true, then
-        // the pipe message should not be sent as that would be circular and a waste of bandwidth on the
-        // pipe.
+        // Send Pipe Notification if not currently idle and effective last active time has changed. Note if
+        // using_event_detect_as_only_source is true, then the pipe message should not be sent as that would
+        // be circular and a waste of bandwidth on the pipe.
         //
         // With the addition of forced overrides, the message to propagate to event_detect must be sent when
         // a change in override state occurs, regardless of the effective last active time.
+        //
+        // should_update_event_detect gates the whole condition rather than only the activity disjunct. It
+        // used to be one term inside the first disjunct, which meant the control-state disjunct bypassed
+        // it: previous_control_state starts at UNKNOWN, so the very first iteration always saw a state
+        // change and always sent, and every later change sent too. A user who set update_event_detect=0
+        // got pipe traffic regardless. The config flag now genuinely gates every send, and the intent of
+        // the second disjunct is otherwise unchanged -- a control state CHANGE still forces a send, when
+        // updates are enabled.
         effective_last_active_time = GetUnixEpochTime() - idle_seconds;
 
-        if ((!is_currently_idle
-             && should_update_event_detect
-             && using_event_detect_as_only_source == false
-             && (effective_last_active_time != effective_last_active_time_prev))
-            || control_state != previous_control_state) {
+        if (should_update_event_detect
+            && ((!is_currently_idle
+                 && using_event_detect_as_only_source == false
+                 && (effective_last_active_time != effective_last_active_time_prev))
+                || control_state != previous_control_state)) {
             debug_log("INFO: %s: Sending active notification to pipe.", __func__);
 
             EventMessage::EventType event_type = EventMessage::USER_ACTIVE;
@@ -2028,12 +3241,14 @@ int main(int argc, char* argv[])
 
     // --- Shutdown sequence ---
 
-    // --- Stop Wayland monitor ---
-    if (wayland_monitor_started) {
-        normal_log("INFO: %s: Stopping Wayland idle monitor...", __func__);
-        g_wayland_idle_monitor.Stop(); // Stop calls interrupt pipe write + join
-        normal_log("INFO: %s: Wayland idle monitor stopped.", __func__);
-    }
+    // --- Tear down the idle sources ---
+    //
+    // Done before the control monitor stops, so that the compositor connections and monitor threads the pool
+    // owns are joined while the process is still otherwise intact. Shutdown() is idempotent and leaves the
+    // pool reusable, so the destructor that runs at exit finds nothing left to do.
+    normal_log("INFO: %s: Stopping idle sources...", __func__);
+    IdleDetect::g_idle_source_pool.Shutdown();
+    normal_log("INFO: %s: Idle sources stopped.", __func__);
 
     // --- Stop Idle Detect Control Monitor thread ---
     if (control_monitor_started && g_idle_detect_control_monitor.m_idle_detect_control_monitor_thread.joinable()) {

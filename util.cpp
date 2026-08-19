@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 James C. Owens
+ * Copyright (C) 2025-2026 James C. Owens
  * Portions Copyright (c) 2019 The Bitcoin Core developers
  * Portions Copyright (c) 2025 The Gridcoin developers
  *
@@ -116,6 +116,67 @@ bool IsValidTimestamp(const int64_t& timestamp)
     int64_t past_limit = now - 10 * 86400 * 365; // No more than ten years in the past.
 
     return timestamp >= past_limit && timestamp <= future_limit;
+}
+
+FailureReportThrottle::FailureReportThrottle(int initial_interval, int max_interval)
+    : m_initial_interval((initial_interval < 1) ? 1 : initial_interval)
+    , m_max_interval(max_interval)
+    , m_consecutive_failures(0)
+    , m_interval(0)
+    , m_failures_until_report(0)
+{
+    // A ceiling below the floor would make the ladder shrink on its second step instead of growing, so it
+    // is raised to the floor rather than honoured.
+    if (m_max_interval < m_initial_interval) {
+        m_max_interval = m_initial_interval;
+    }
+}
+
+bool FailureReportThrottle::RecordFailure()
+{
+    ++m_consecutive_failures;
+
+    // Still inside the suppression window opened by the last report.
+    if (m_failures_until_report > 0) {
+        --m_failures_until_report;
+
+        return false;
+    }
+
+    // Doubling the previous interval rather than shifting by the failure count. The failure count of a
+    // condition that is permanently broken grows for as long as the process runs, and a shift by it would
+    // be undefined long before the value it produced was clamped.
+    int interval = (m_interval == 0) ? m_initial_interval : m_interval * 2;
+
+    if (interval > m_max_interval) {
+        interval = m_max_interval;
+    }
+
+    m_interval = interval;
+    m_failures_until_report = interval;
+
+    return true;
+}
+
+int FailureReportThrottle::ConsecutiveFailures() const
+{
+    return m_consecutive_failures;
+}
+
+int FailureReportThrottle::Interval() const
+{
+    return m_interval;
+}
+
+int FailureReportThrottle::Reset()
+{
+    const int cleared = m_consecutive_failures;
+
+    m_consecutive_failures = 0;
+    m_interval = 0;
+    m_failures_until_report = 0;
+
+    return cleared;
 }
 
 [[nodiscard]] int ParseStringToInt(const std::string& str)

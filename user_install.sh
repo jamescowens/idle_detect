@@ -55,7 +55,45 @@ systemctl --user daemon-reload
 
 # --- Enable and Start User Service ---
 echo "INFO: Enabling and starting user service '$SERVICE_NAME'..."
-if systemctl --user enable --now "$SERVICE_NAME" ; then
+
+# Same three hazards as the system service, so handle them the same way.
+#
+# A drop-in under ~/.config/systemd/user outlives any reinstall and can pin ExecStart at a path
+# this install no longer provides; 'systemctl --user cat' does not reveal that an override is in
+# effect, only DropInPaths does.
+USER_DROP_IN_PATHS="$(systemctl --user show "$SERVICE_NAME" -p DropInPaths --value 2>/dev/null)"
+if [ -n "$USER_DROP_IN_PATHS" ]; then
+    for drop_in in $USER_DROP_IN_PATHS; do
+        [ -r "$drop_in" ] || continue
+        grep -qs '^ExecStart=.' "$drop_in" || continue
+
+        pinned_exec="$(grep -hs '^ExecStart=.' "$drop_in" | tail -n 1 | sed 's/^ExecStart=//' | awk '{print $1}')"
+        if [ -n "$pinned_exec" ] && [ ! -x "$pinned_exec" ]; then
+            echo "WARN: Drop-in '${drop_in}' pins ExecStart to '${pinned_exec}', which is not executable."
+            echo "WARN: The user service will fail to start until that drop-in is updated or removed."
+        elif [ -n "$pinned_exec" ]; then
+            echo "INFO: Drop-in '${drop_in}' pins ExecStart to '${pinned_exec}'."
+        fi
+    done
+fi
+
+# The unit sets StartLimitBurst, so a prior failure can latch it into 'failed' and refuse further
+# start requests until cleared.
+systemctl --user reset-failed "$SERVICE_NAME" 2>/dev/null || true
+
+# 'enable --now' will not restart an already-running instance, which on an upgrade leaves the old
+# binary executing against a deleted inode.
+if systemctl --user is-active --quiet "$SERVICE_NAME"; then
+    echo "INFO: User service is already running; restarting so the new binary takes effect."
+    systemctl --user enable "$SERVICE_NAME" > /dev/null 2>&1 || true
+    if systemctl --user restart "$SERVICE_NAME" ; then
+        echo "INFO: User service restarted successfully."
+    else
+        echo "WARN: Failed to restart user service. Check status with:"
+        echo "      systemctl --user status $SERVICE_NAME"
+        echo "      journalctl --user -u $SERVICE_NAME"
+    fi
+elif systemctl --user enable --now "$SERVICE_NAME" ; then
     echo "INFO: User service enabled and started successfully."
 else
     echo "WARN: Failed to enable/start user service. Check status with:"

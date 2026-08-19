@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 James C. Owens
+ * Copyright (C) 2025-2026 James C. Owens
  *
  * This code is licensed under the MIT license. See LICENSE.md in the repository.
  */
@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <fstream>
 #include <iostream>
+#include <memory>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
@@ -253,11 +254,14 @@ std::vector<fs::path> Monitor::EnumerateEventDevices()
     }
 
     if (event_devices.empty()) {
-        error_log("%s: No pointing devices identified to monitor. Exiting.",
+        error_log("%s: No pointing devices identified to monitor.",
                   __func__);
 
-        g_exit_code = 1;
-        Shutdown();
+        // Deliberately not fatal. This method is re-run every second by the monitor thread via
+        // UpdateEventDevices(), tty monitoring does not depend on pointing devices at all, and devices may be
+        // hotplugged at any time. Shutting down here killed the whole daemon on a mouseless or headless machine,
+        // and turned a transient unplug into a restart loop that the unit's start rate limit then converted into
+        // a permanently failed unit.
     }
 
     debug_log("INFO: %s: event_devices.size() = %u",
@@ -277,8 +281,7 @@ void Monitor::WriteLastActiveTimeToFile(const fs::path& last_active_time_filepat
                   __func__,
                   last_active_time_filepath);
 
-        g_exit_code = 1;
-        Shutdown();;
+        Shutdown(1);
     }
 
     output_file << m_last_active_time << std::endl;
@@ -289,8 +292,7 @@ void Monitor::WriteLastActiveTimeToFile(const fs::path& last_active_time_filepat
                   last_active_time_filepath);
         output_file.close();
 
-        g_exit_code = 1;
-        Shutdown();;
+        Shutdown(1);
     }
 }
 
@@ -384,6 +386,58 @@ bool InputEventRecorders::EventRecorder::IsDeviceLost() const
     return m_device_lost.load();
 }
 
+namespace {
+//!
+//! \brief Minimal RAII holder for a file descriptor, local to this translation unit. Closes the descriptor exactly
+//! once on destruction if it is valid. This exists only so that the event recorder read loop can exit from a nested
+//! loop without a C-style cleanup label, so it deliberately implements no more than that requires.
+//!
+class ScopedFileDescriptor
+{
+public:
+    explicit ScopedFileDescriptor(int fd)
+        : m_fd(fd)
+    {}
+
+    ~ScopedFileDescriptor()
+    {
+        if (m_fd >= 0) {
+            close(m_fd);
+            m_fd = -1;
+        }
+    }
+
+    ScopedFileDescriptor(const ScopedFileDescriptor&) = delete;
+    ScopedFileDescriptor& operator=(const ScopedFileDescriptor&) = delete;
+    ScopedFileDescriptor(ScopedFileDescriptor&&) = delete;
+    ScopedFileDescriptor& operator=(ScopedFileDescriptor&&) = delete;
+
+    //!
+    //! \brief Returns the held descriptor, which is negative if the open failed.
+    //!
+    int Get() const
+    {
+        return m_fd;
+    }
+
+    //!
+    //! \brief Returns true if the held descriptor is valid (i.e. the open succeeded).
+    //!
+    bool IsValid() const
+    {
+        return m_fd >= 0;
+    }
+
+private:
+    int m_fd;
+};
+
+//!
+//! \brief RAII owner for a libevdev device handle. libevdev_free() is a no-op on nullptr, so an empty holder is safe.
+//!
+using ScopedLibevdev = std::unique_ptr<libevdev, decltype(&libevdev_free)>;
+} // anonymous namespace
+
 void InputEventRecorders::EventRecorder::EventActivityRecorderThread()
 {
     debug_log("INFO: %s: started",
@@ -401,15 +455,20 @@ void InputEventRecorders::EventRecorder::EventActivityRecorderThread()
 
     // Note this c-string here should not be a problem for /dev/input, which is
     // standardized and doesn't do anything funky with filenames in other character sets.
-    int fd = open(device_access_path.c_str(), O_RDONLY | O_NONBLOCK);;
-    struct libevdev *dev = nullptr;
+    //
+    // From here on the descriptor and the libevdev handle are owned by RAII holders, so every exit path below --
+    // including the device disconnect exit from the nested read loop -- tears them down exactly once.
+    ScopedFileDescriptor fd(open(device_access_path.c_str(), O_RDONLY | O_NONBLOCK));
+    ScopedLibevdev dev(nullptr, &libevdev_free);
 
-    if (fd < 0) {
+    if (!fd.IsValid()) {
         error_log("%s: Failed to open device %s: %s",
                   __func__,
                   device_access_path,
                   strerror(errno));
         g_exit_code = 1;
+
+        return;
     }
 
     int rc;
@@ -417,23 +476,38 @@ void InputEventRecorders::EventRecorder::EventActivityRecorderThread()
     // Initialize libevdev
     if (g_exit_code == 0)
     {
-        rc = libevdev_new_from_fd(fd, &dev);
+        struct libevdev* dev_ptr = nullptr;
+
+        rc = libevdev_new_from_fd(fd.Get(), &dev_ptr);
+
+        // libevdev_new_from_fd() only assigns dev_ptr on success, so this is a no-op on failure.
+        dev.reset(dev_ptr);
+
         if (rc < 0) {
             error_log("%s: Failed to init libevdev for device %s: %s",
                       __func__,
                       device_access_path,
                       strerror(-rc));
 
-            close(fd);
             g_exit_code = 1;
+
+            return;
         }
 
         debug_log("INFO: %s: Device: %s, Path: %s, Physical Path: %s, Unique: %s",
                   __func__,
-                  libevdev_get_name(dev),
+                  libevdev_get_name(dev.get()),
                   device_access_path,
-                  libevdev_get_phys(dev),
-                  libevdev_get_uniq(dev));
+                  libevdev_get_phys(dev.get()),
+                  libevdev_get_uniq(dev.get()));
+    }
+
+    // The libevdev handle, not g_exit_code, is the authority on whether this recorder can read events. The
+    // initialization block above is entered under one read of g_exit_code and the read loop below under a later,
+    // separate one, and g_exit_code is not monotonic. A thread that observed a non-zero g_exit_code above therefore
+    // has an empty handle and must not fall through into the loop and call libevdev_next_event() on nullptr.
+    if (dev.get() == nullptr) {
+        return;
     }
 
     struct input_event ev;
@@ -455,7 +529,7 @@ void InputEventRecorders::EventRecorder::EventActivityRecorderThread()
 
         int libevdev_mode_flag = LIBEVDEV_READ_FLAG_NORMAL;
         while (true) {
-            rc = libevdev_next_event(dev, libevdev_mode_flag /* | LIBEVDEV_READ_FLAG_BLOCKING */, &ev);
+            rc = libevdev_next_event(dev.get(), libevdev_mode_flag /* | LIBEVDEV_READ_FLAG_BLOCKING */, &ev);
 
             if (rc == LIBEVDEV_READ_STATUS_SUCCESS) {
                 ++m_event_count;
@@ -477,7 +551,10 @@ void InputEventRecorders::EventRecorder::EventActivityRecorderThread()
                           __func__,
                           device_access_path);
                 m_device_lost = true;
-                goto cleanup;
+
+                // Returning here runs the RAII teardown of the libevdev handle and the descriptor, which is the same
+                // cleanup the fall-through exit at the bottom of the thread performs.
+                return;
             } else {
                 error_log("%s: reading event: %s",
                           __func__,
@@ -490,10 +567,7 @@ void InputEventRecorders::EventRecorder::EventActivityRecorderThread()
         }
     }
 
-cleanup:
-    // Cleanup
-    libevdev_free(dev);
-    close(fd);
+    // Cleanup of dev and fd is performed by their RAII holders as this function returns.
 }
 
 
@@ -1284,8 +1358,8 @@ void SetupDataDir(const fs::path& data_dir_path)
         error_log("%: Unable to create and/or set permissions on event_detect data directory at path: %s",
                   __func__,
                   data_dir_path);
-        g_exit_code = 1;
-        Shutdown();
+
+        Shutdown(1);
     }
 }
 

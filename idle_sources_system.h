@@ -1,0 +1,632 @@
+/*
+ * Copyright (C) 2025-2026 James C. Owens
+ *
+ * This code is licensed under the MIT license. See LICENSE.md in the repository.
+ */
+
+#ifndef IDLE_SOURCES_SYSTEM_H
+#define IDLE_SOURCES_SYSTEM_H
+
+#include <idle_detect.h>
+#include <idle_source.h>
+#include <idle_source_pool.h>
+#include <session_discovery.h>
+
+#include <memory>
+#include <optional>
+#include <string>
+
+//
+// This file, and only this file, makes actual system contact for idle detection: D-Bus (via GIO),
+// Wayland, and X11. idle_source.* and session_discovery.* are deliberately free of those
+// dependencies so they can link into idle_detect_tests, which links neither GLib nor X11 nor
+// libwayland. Nothing declared here may therefore be pulled into that test target.
+//
+
+namespace IdleDetect {
+
+//!
+//! \brief The WaylandIdleSource class is the idle source for one Wayland endpoint, backed by
+//! ext_idle_notifier_v1.
+//!
+//! It owns exactly one WaylandIdleMonitor bound to a specific socket, which is what allows more than one
+//! Wayland endpoint to be monitored from a single process. There is no inhibition handling here:
+//! inhibition is a per-user desktop shell concern and is evaluated separately, because the shell cannot be
+//! attributed to any particular endpoint.
+//!
+class WaylandIdleSource : public IdleSource
+{
+public:
+    //!
+    //! \brief Constructor. Does not connect to the compositor; call Start() for that.
+    //! \param socket_name Wayland socket to bind to, e.g. "wayland-0". Empty means use the WAYLAND_DISPLAY
+    //!        environment variable.
+    //!
+    explicit WaylandIdleSource(std::string socket_name);
+
+    //! \brief Destructor. Stops the monitor if it is running.
+    ~WaylandIdleSource() override;
+
+    //! \brief Deleted copy constructor and assignment operator. This owns a thread and a Wayland connection.
+    WaylandIdleSource(const WaylandIdleSource&) = delete;
+    WaylandIdleSource& operator=(const WaylandIdleSource&) = delete;
+
+    //!
+    //! \brief Connects to the socket and starts the monitor thread. A failure here means the candidate
+    //! endpoint is not real, which is how discovery candidates are validated.
+    //!
+    //! The retry budget defaults to a single attempt, unlike WaylandIdleMonitor::Start(), whose default
+    //! preserves the fifteen-attempt startup budget. That budget is wrong for a validator in two ways. The
+    //! pool re-runs discovery on every reconcile tick and calls this again for any candidate that is still
+    //! offered, so the reconcile loop already IS the retry loop and an internal one only duplicates it. And
+    //! because this call is synchronous, every second spent retrying one candidate is a second in which no
+    //! other endpoint is validated or read. The failure that makes this concrete is a compositor which does
+    //! not implement ext_idle_notifier_v1 at all: the connect and both roundtrips succeed, the globals never
+    //! appear, and the entire budget is spent on every tick forever rather than once.
+    //!
+    //! Everything this path logs about a failure is at debug level, which follows from the same reasoning. A
+    //! failed Start() here does not mean something went wrong; it means a candidate produced by a deliberately
+    //! over-inclusive discovery turned out not to be an endpoint, which is what validation is for. Such a
+    //! candidate offers itself on every reconcile tick, so anything emitted here at normal or error level is
+    //! emitted forever: 87 journal lines in 8 seconds were measured from one stale socket with no listener.
+    //! The rejection is reported once, by IdleSourcePool, which is also what decides when to try again.
+    //!
+    //! \param notification_timeout_ms Idle notification threshold in milliseconds.
+    //! \param max_init_retries Connect-and-bind attempts before declaring the candidate unusable. Exposed so
+    //!        the pool can tune it without reaching into the monitor.
+    //! \return true if the monitor was started.
+    //!
+    bool Start(int notification_timeout_ms, int max_init_retries = 1);
+
+    //!
+    //! \brief Stops the monitor and releases its Wayland resources. Idempotent, and a no-op if Start() was
+    //! never called or did not succeed.
+    //!
+    void Stop();
+
+    //!
+    //! \brief Resolves the idle time reported by this endpoint's compositor.
+    //! \return Idle seconds >= 0, or IDLE_ERROR if the monitor is not available.
+    //!
+    int64_t ResolveIdleSeconds() override;
+
+    //!
+    //! \brief Reports whether the monitor behind this source is still running.
+    //!
+    //! This is the monitor's own availability flag, which its thread clears on the way out when the
+    //! compositor hangs up or removes a global the monitor depends on. That state is unrecoverable from
+    //! inside the source -- the Wayland connection has to be rebuilt, and rebuilding is the pool's job --
+    //! so reporting it here is what gets the source torn down and a new one constructed. Without it the
+    //! pool would hold a permanently dead source, which is the frozen-value bug at a different layer:
+    //! ResolveIdleSeconds() would return IDLE_ERROR forever while the source's existence went on
+    //! suppressing IDLE_NO_GUI_SESSION, so the daemon would neither read this compositor nor fall back to
+    //! event_detect.
+    //!
+    //! \return true if the monitor is available.
+    //!
+    bool IsAlive() const override;
+
+    //!
+    //! \brief Human-readable description, "wayland:<socket>".
+    //! \return string representation
+    //!
+    std::string Describe() const override;
+
+private:
+    //! \brief Wayland socket this source is bound to.
+    std::string m_socket_name;
+
+    //! \brief The monitor implementing ext_idle_notifier_v1 against that socket.
+    std::unique_ptr<WaylandIdleMonitor> m_monitor;
+
+    //!
+    //! \brief Whether Start() succeeded and Stop() therefore still has work to do.
+    //!
+    //! This is deliberately not IsAvailable(): a monitor whose thread exited on its own clears the monitor's
+    //! initialized flag but leaves the thread joinable and the interrupt pipe open, and that state still has
+    //! to be torn down. Gating Stop() on availability would skip exactly the failure case that matters.
+    //!
+    bool m_started;
+};
+
+//!
+//! \brief The X11IdleSource class is the idle source for one X display, backed by XScreenSaver.
+//!
+//! It is stateless: the X connection is opened and closed within each query, so the CONNECTION cannot go
+//! stale. The ENDPOINT can, and the distinction matters. A display that has gone away simply starts
+//! returning IDLE_ERROR, and this source has no way to notice -- it holds nothing that could -- so it goes
+//! on answering IsAlive() true while producing nothing. Eviction of such a source is therefore its owner's
+//! job, performed on a run of consecutive errors; see DEAD_SOURCE_ERROR_THRESHOLD in idle_source_pool.h.
+//!
+class X11IdleSource : public IdleSource
+{
+public:
+    //!
+    //! \brief Constructor.
+    //! \param display Canonical X display string, e.g. ":1". Empty uses the DISPLAY environment variable.
+    //!
+    explicit X11IdleSource(std::string display);
+
+    //!
+    //! \brief Resolves the idle time reported by XScreenSaver on this display.
+    //! \return Idle seconds >= 0, or IDLE_ERROR.
+    //!
+    int64_t ResolveIdleSeconds() override;
+
+    //!
+    //! \brief Always true, because this source cannot tell. It holds nothing that could die between
+    //! queries: the X connection is opened and closed inside ResolveIdleSeconds(), so a display that has
+    //! gone away simply starts returning IDLE_ERROR, and there is no state here in which to record that.
+    //!
+    //! DO NOT READ THIS AS "THIS SOURCE NEVER NEEDS EVICTING". It says only that liveness is not the
+    //! mechanism, and the difference was demonstrated: SIGKILLing an X server leaves its socket in
+    //! /tmp/.X11-unix, so the candidate is still discovered and this source is still retained, resolving
+    //! IDLE_ERROR for the life of the process while its existence suppresses IDLE_NO_GUI_SESSION. What
+    //! evicts it is a run of consecutive errors counted by the pool, on DEAD_SOURCE_ERROR_THRESHOLD.
+    //!
+    //! Reporting death from a single error here would be the wrong fix rather than an early one. An X
+    //! server that is momentarily unreachable is answered by the next query, and this method is consulted
+    //! on every reconcile, so a one-tick fault would drop the endpoint and put it at the bottom of the
+    //! retry ladder. The threshold exists precisely to distinguish that from a display that is gone.
+    //!
+    //! \return true
+    //!
+    bool IsAlive() const override;
+
+    //!
+    //! \brief Human-readable description, "x11:<display>".
+    //! \return string representation
+    //!
+    std::string Describe() const override;
+
+private:
+    //! \brief X display this source queries.
+    std::string m_display;
+};
+
+//!
+//! \brief The ShellMonitor class determines which desktop shell owns the per-user session bus and whether
+//! that shell reports idle inhibition.
+//!
+//! The desktop shell is a per-user singleton living under user@UID.service, and cannot be attributed to any
+//! logind session, so it is detected by bus name ownership rather than by session enumeration. Only one
+//! process can own org.kde.ksmserver or org.gnome.Mutter.IdleMonitor, so there is at most one shell per user
+//! regardless of how many graphical endpoints exist.
+//!
+//! PRESENCE FOR INHIBITION AND PRESENCE FOR AN IDLE VALUE ARE DIFFERENT QUESTIONS, AND MUST NOT SHARE ONE
+//! PROBE. On GNOME they are answered by two different bus names owned by two different processes:
+//!
+//!   - org.gnome.SessionManager is gnome-session, and it is what answers IsInhibited. It is present in
+//!     every gnome-session desktop.
+//!   - org.gnome.Mutter.IdleMonitor is mutter, and it is what answers the idle time. It is present only
+//!     when the window manager actually is mutter.
+//!
+//! GNOME Flashback with Metacity, and other gnome-session variants, have the first and not the second.
+//! Probing only for Mutter would classify those as ShellKind::NONE and silently drop their inhibition,
+//! which is a regression against the behavior this replaced: the old GetIdleTimeSeconds() ran
+//! CheckGnomeInhibition() on every non-KDE session unconditionally, precisely because inhibition does not
+//! depend on the window manager. So DetectShellKind() answers the inhibition question and reports GNOME
+//! for either name, while HasGnomeIdleMonitor() answers the idle-value question separately.
+//!
+class ShellMonitor
+{
+public:
+    //!
+    //! \brief Detects which shell's INHIBITION rules apply, by checking session bus name ownership.
+    //!
+    //! KDE is checked first, matching the ordering the old IsKdeSession() branch had. GNOME is reported
+    //! when either org.gnome.Mutter.IdleMonitor or org.gnome.SessionManager has an owner; see the class
+    //! commentary for why the second name has to count. A shell reported on the strength of
+    //! org.gnome.SessionManager alone contributes inhibition only, exactly as KDE does on Wayland.
+    //!
+    //! \return ShellKind::KDE, ShellKind::GNOME, or ShellKind::NONE.
+    //!
+    ShellKind DetectShellKind() const;
+
+    //!
+    //! \brief Reports whether mutter's IdleMonitor is on the bus, i.e. whether a GNOME shell has an idle
+    //! value to give at all.
+    //!
+    //! Deliberately separate from DetectShellKind(). Folding it in would recreate the regression the
+    //! class commentary describes, because a single answer cannot serve both questions.
+    //!
+    //! \return true if org.gnome.Mutter.IdleMonitor has an owner.
+    //!
+    bool HasGnomeIdleMonitor() const;
+
+    //!
+    //! \brief Checks whether the given shell reports idle inhibition. This is a global override applied
+    //! ahead of every source, not a property of any one endpoint: there is one shell, and inhibition means
+    //! "do not let this machine go idle".
+    //! \param kind Shell to query.
+    //! \return true if inhibited, false if not inhibited, if the query failed, or if there is no shell.
+    //!
+    bool IsInhibited(ShellKind kind) const;
+};
+
+//!
+//! \brief Consecutive failed shell idle queries before the first suppressed report. Each report doubles
+//! the interval, up to SHELL_QUERY_FAILURE_REPORT_MAX_INTERVAL.
+//!
+constexpr int SHELL_QUERY_FAILURE_REPORT_INITIAL_INTERVAL = 1;
+
+//!
+//! \brief Ceiling on how many consecutive failed shell idle queries pass between normal-level reports.
+//!
+//! The shell source resolves once per main loop iteration, which is once per second, so any failure that
+//! logs unconditionally logs forever. This is the same bound ENDPOINT_RETRY_BACKOFF_MAX_TICKS puts on a
+//! candidate endpoint that can never validate, applied to the one source that is not a candidate and
+//! therefore never passes through that ladder. It was needed: a KDE shell misclassified as being on X11
+//! called a D-Bus method Plasma 6 had removed and logged the failure at error level on every tick,
+//! measured at 20 lines in a 20 second run and unbounded thereafter.
+//!
+//! Only the LOGGING is throttled, never the query. The endpoint ladder defers the work as well, because a
+//! candidate that will not validate has no value to offer in the meantime, whereas a shell that starts
+//! answering again must be read on the tick it recovers rather than at the convenience of a backoff.
+//!
+constexpr int SHELL_QUERY_FAILURE_REPORT_MAX_INTERVAL = 64;
+
+//!
+//! \brief The ShellIdleSource class is the idle source for the per-user desktop shell.
+//!
+//! It is deliberately NOT tied to any endpoint. With N endpoints and one shell, at most one endpoint is the
+//! shell's screen and there is no reliable way to determine which, so fusing the shell into an endpoint's
+//! chain would make every endpoint report the shell's idle time and silently discard a second endpoint's
+//! real activity. Inhibition is likewise not resolved here; ShellMonitor evaluates it separately.
+//!
+class ShellIdleSource : public IdleSource, public ShellSourceContext
+{
+public:
+    //!
+    //! \brief Constructor.
+    //! \param kind Shell kind as detected by ShellMonitor.
+    //!
+    explicit ShellIdleSource(ShellKind kind);
+
+    //!
+    //! \brief Updates the shell kind, e.g. after a NameOwnerChanged transition.
+    //! \param kind New shell kind.
+    //!
+    void SetKind(ShellKind kind);
+
+    //!
+    //! \brief Records whether a Wayland endpoint CANDIDATE was discovered, which is how this source learns
+    //! that a KDE shell is a Wayland shell.
+    //!
+    //! Plasma 6 removed ksmserver's GetSessionIdleTime on Wayland, so a KDE shell has an idle value on X11
+    //! and none on Wayland. The old code made that distinction with getenv("WAYLAND_DISPLAY"), which is the
+    //! frozen-at-exec environment read this design exists to eliminate. The owner of this source runs
+    //! discovery on every tick, so it tells the source instead. That is what ShellSourceContext, which this
+    //! class implements for the purpose, is for: IdleSourcePool calls this at the end of every reconcile.
+    //!
+    //! THE SIGNAL IS THE CANDIDATE SET, NOT THE LIVE SOURCE SET, AND THE TWO ARE NOT INTERCHANGEABLE.
+    //! "A Wayland session exists" is the question this source is asking, and a wayland-* socket in
+    //! $XDG_RUNTIME_DIR answers it. "A Wayland idle source is working" additionally requires the compositor
+    //! to advertise ext_idle_notifier_v1, the connection to be up at this instant, and the candidate not to
+    //! be serving out a validation backoff -- none of which has any bearing on which protocol the session
+    //! speaks. Reading the second as the first is not a rare edge: it made this very machine, a Plasma 6
+    //! Wayland desktop, take the X11 arm below and call a removed D-Bus method once per tick, logging an
+    //! error each time, for as long as no Wayland source happened to be live.
+    //!
+    //! Misclassification in the remaining direction stays benign, which is what makes the indirect signal
+    //! acceptable. A KDE X11 session sharing the machine with an unrelated Wayland compositor (a nested
+    //! weston, a headless remote desktop) suppresses a shell value that ksmserver derives from XScreenSaver
+    //! anyway, and which the X11 endpoint source is therefore already reporting. Inhibition is unaffected,
+    //! since it does not run through here.
+    //!
+    //! \param present true if at least one Wayland endpoint candidate was discovered.
+    //!
+    void SetWaylandEndpointPresent(bool present) override;
+
+    //!
+    //! \brief Records whether mutter's IdleMonitor is on the bus, which is how this source learns that a
+    //! GNOME shell is a GNOME shell WITHOUT an idle value.
+    //!
+    //! This is the GNOME counterpart of SetWaylandEndpointPresent(), and exists for the same reason: the
+    //! shell kind alone does not determine whether there is a value to read. A gnome-session desktop whose
+    //! window manager is not mutter -- GNOME Flashback with Metacity, and other variants -- is a GNOME
+    //! shell for inhibition purposes but has no IdleMonitor to query. See the ShellMonitor commentary.
+    //!
+    //! Without this the source would still behave correctly, because the Mutter D-Bus call fails and
+    //! returns IDLE_ERROR by itself. It would just pay a 500 ms D-Bus timeout to discover that on every
+    //! resolve, on a session where the answer never changes.
+    //!
+    //! \param present true if org.gnome.Mutter.IdleMonitor has an owner.
+    //!
+    void SetGnomeIdleMonitorPresent(bool present);
+
+    //!
+    //! \brief Resolves the shell's idle time per the source-chain table: KDE on X11 uses ksmserver, which
+    //! handles inhibition internally so no separate check is added; GNOME uses Mutter's IdleMonitor; KDE on
+    //! Wayland, and GNOME without mutter, have no idle value and contribute inhibition only.
+    //!
+    //! Two quite different things reach the caller as IDLE_ERROR, and this method keeps them apart in the
+    //! log even though the sentinel cannot. An arm that supplies no value BY DESIGN says so at debug level
+    //! and is otherwise silent, because there is nothing wrong with a Plasma 6 Wayland shell. An arm that
+    //! ATTEMPTED a query and failed is a fault worth reporting, and is reported through the throttle
+    //! described on SHELL_QUERY_FAILURE_REPORT_MAX_INTERVAL: this runs once per main loop iteration, so an
+    //! unconditional line here is an unbounded line.
+    //!
+    //! \return Idle seconds >= 0, or IDLE_ERROR when this shell supplies no value.
+    //!
+    int64_t ResolveIdleSeconds() override;
+
+    //!
+    //! \brief Always true. This source holds no connection and no thread; each resolve is a D-Bus call
+    //! made and completed within the call, so there is no state here that can go stale.
+    //!
+    //! A shell that has actually gone away is handled by the kind it is reconciled with rather than by
+    //! liveness: the pool drops the source when the detected shell becomes ShellKind::NONE.
+    //!
+    //! \return true
+    //!
+    bool IsAlive() const override;
+
+    //!
+    //! \brief Human-readable description, "shell:kde", "shell:gnome", or "shell:none".
+    //! \return string representation
+    //!
+    std::string Describe() const override;
+
+private:
+    //!
+    //! \brief Records the outcome of an idle query this source actually made, throttling the reporting of
+    //! consecutive failures, and returns the value unchanged so callers can tail-return it.
+    //!
+    //! Placed on the results of attempted queries only. An arm that declines to query has nothing to
+    //! report and calls NoteNoQueryAttempted() instead, so that a healthy shell with no idle value never
+    //! enters the failure ladder.
+    //!
+    //! \param value Value the query produced, >= 0 or IDLE_ERROR.
+    //! \return value, unchanged.
+    //!
+    int64_t NoteQueryOutcome(int64_t value);
+
+    //!
+    //! \brief Clears the failure ladder for an arm that supplies no idle value by design.
+    //!
+    //! A run of failures ends when the querying stops, not only when it succeeds. Leaving the ladder
+    //! standing would make the first failure after a spell of Wayland operation report a consecutive count
+    //! accumulated before it, and would suppress the report that failure deserves.
+    //!
+    void NoteNoQueryAttempted();
+
+    //! \brief Shell kind this source resolves for.
+    ShellKind m_kind;
+
+    //!
+    //! \brief Whether a Wayland endpoint candidate was discovered. See SetWaylandEndpointPresent().
+    //!
+    //! Defaults to false, so a shell source constructed before its owner has run discovery attempts the
+    //! ksmserver call once rather than suppressing it. That call returns an error on Plasma 6 Wayland, which
+    //! aggregation excludes. IdleSourcePool pushes the real value at the end of the very Reconcile() that
+    //! created the source, so the default is observable only if a source is resolved outside a pool.
+    //!
+    bool m_wayland_endpoint_present;
+
+    //!
+    //! \brief Whether mutter's IdleMonitor is on the bus. See SetGnomeIdleMonitorPresent().
+    //!
+    //! Defaults to true for the same reason m_wayland_endpoint_present defaults to false: a source
+    //! constructed before its owner has probed the bus should attempt the call once rather than suppress
+    //! it, and a wrong guess costs one excluded IDLE_ERROR.
+    //!
+    bool m_gnome_idle_monitor_present;
+
+    //!
+    //! \brief Consecutive attempted idle queries that returned IDLE_ERROR. Reset by any success, and by an
+    //! arm that makes no attempt at all.
+    //!
+    int m_consecutive_query_failures;
+
+    //!
+    //! \brief Failures currently passing between normal-level reports. Retained so the next interval is a
+    //! doubling of a real value rather than a shift by a failure count that grows without bound.
+    //!
+    int m_query_failure_report_interval;
+
+    //! \brief Failures still to be suppressed before the next normal-level report.
+    int m_query_failures_until_report;
+};
+
+// -----------------------------------------------------------------------------------------------------
+// Production wiring for IdleSourcePool
+// -----------------------------------------------------------------------------------------------------
+//
+// IdleSourcePool is deliberately dependency-free and takes everything that touches the system through
+// injected callables. The four functions below are the production implementations of those callables and
+// of the discovery inputs, and they are the only place where the pool's abstract types are bound to real
+// D-Bus, Wayland and X11 contact. A test builds the same pool with its own lambdas and links none of it.
+//
+
+//!
+//! \brief Everything one discovery pass gathers from the running system.
+//!
+//! The X authority file is carried alongside the hints rather than inside them, because it is not a hint:
+//! DiscoveryHints is the input to DiscoverEndpoints(), which finds endpoints and does not connect to
+//! anything, whereas this value decides whether a connection to a discovered X display can authenticate.
+//! Keeping it out of that struct also keeps session_discovery.h free of a field nothing there reads.
+//!
+struct DiscoveryInputs {
+    //! \brief Endpoint discovery hints, ready to hand to DiscoverEndpoints().
+    DiscoveryHints m_hints;
+
+    //!
+    //! \brief XAUTHORITY as the systemd user manager currently exports it, if it exports one.
+    //!
+    //! Hand it to ApplyXAuthorityHint() before any X display is opened. It is deliberately not applied
+    //! by the function that reads it: see ApplyXAuthorityHint() for why the mutation is named at the
+    //! call site instead.
+    //!
+    std::optional<std::string> m_xauthority;
+};
+
+//!
+//! \brief Gathers endpoint discovery hints, and the X authority file, from the running system.
+//!
+//! Every hint is independently unreliable and none of them is load-bearing: DiscoverEndpoints() takes
+//! their union and each resulting candidate is validated by connecting to it. Five are gathered here --
+//! $XDG_RUNTIME_DIR for the Wayland socket scan, /tmp/.X11-unix for the X socket scan, our uid so that
+//! scan can reject other users' sockets, and the DISPLAY and WAYLAND_DISPLAY assignments the systemd
+//! user manager exports.
+//!
+//! The last two are what make a D-Bus call worth making. The user manager's Environment property is
+//! updated when the graphical session starts, by the display manager or by an equivalent
+//! "systemctl --user import-environment DISPLAY", so it describes the session that exists NOW. The
+//! process's own DISPLAY and WAYLAND_DISPLAY are added as two more hints, but only as hints: they are
+//! frozen at exec, and a daemon started before its GUI session -- the failure this whole design exists
+//! to fix -- does not have them at all.
+//!
+//! WAYLAND_DISPLAY earns its place despite the runtime directory scan finding the ordinary compositor
+//! socket without it, because that scan matches names beginning with "wayland-" and a socket name is
+//! free-form: "weston --socket=mysession", a nested compositor, or a socket outside the runtime
+//! directory are all invisible to it and named by nothing else.
+//!
+//! XAUTHORITY comes out of that same single Properties.Get result. It is the identical staleness problem
+//! one variable over: a discovered DISPLAY is useless if the credentials to authenticate to it are the
+//! ones the process was executed with, which for a daemon started before its GUI session means none at
+//! all. Parsing it out of the result already in hand costs nothing; a second round trip to fetch it
+//! separately would cost a synchronous D-Bus call on every tick.
+//!
+//! That property is annotated EmitsChangedSignal("false"), so it is READ ON DEMAND on every call rather
+//! than subscribed to once and cached. A PropertiesChanged subscription would simply never fire, leaving
+//! the cache frozen at whatever the first read saw, which is the same staleness bug in a new place.
+//!
+//! An unreachable or absent systemd user manager is an ordinary outcome rather than an error: whatever
+//! was gathered is returned, and the socket scans carry discovery by themselves.
+//!
+//! DiscoveryHints::m_logind_displays is deliberately left empty. It is documented as optional enrichment,
+//! and every display a logind graphical session could name is already reachable through the X socket scan
+//! or the manager environment.
+//!
+//! \return Populated inputs. Any field may be empty.
+//!
+DiscoveryInputs BuildDiscoveryInputs();
+
+//!
+//! \brief Points this process at the X authority file the graphical session is actually using.
+//!
+//! MECHANISM. This calls setenv("XAUTHORITY", ...), which mutates process state. That is not the first
+//! choice, it is the only one Xlib offers. XOpenDisplay() resolves the authority file internally through
+//! XauFileName(), which reads getenv("XAUTHORITY") and falls back to $HOME/.Xauthority; there is no
+//! per-connection authority argument anywhere in the Xlib API. The one alternative, XSetAuthorization(),
+//! is no better on the point that matters -- it is also process-global -- and is considerably worse
+//! everywhere else, since it would require this process to parse the authority file with libXau and pick
+//! the right entry for each display's address family itself, adding a dependency and a second copy of
+//! logic libX11 already has. XCB's xcb_connect_to_display_with_auth_info() does take per-connection
+//! authority, but the idle query is XScreenSaver through Xlib, so that path is not available here either.
+//!
+//! Given a process-global mutation, three rules contain it:
+//!
+//!   - It is applied only when the value actually differs from the current one, so the steady state is a
+//!     comparison and no write at all. In practice this writes once, when the graphical session appears.
+//!   - An absent hint never unsets anything. The manager environment is a hint, not authority: a manager
+//!     that exports no XAUTHORITY says nothing about the value we already have, and clearing it would
+//!     break a daemon that was started from inside the session with a perfectly good one.
+//!   - A hint naming a file this process cannot read is not applied either, which keeps a value that
+//!     works from being replaced by one that does not during the window where the display manager has
+//!     announced the file but not yet created it.
+//!
+//! It is called from the reconcile path rather than from inside GetIdleTimeXss(), so that the mutation
+//! appears at the top level ahead of the pass that connects, instead of being hidden inside a function
+//! whose name promises a reading. Both satisfy "before the open"; only one is visible to a reader.
+//!
+//! THREADING. setenv() is not thread safe against a concurrent getenv() in another thread. Two things
+//! bound that here. Discovery runs on the main loop thread only, and the environment array itself is only
+//! ever grown once, on the first call that adds XAUTHORITY where the process had none: glibc copies the
+//! array on that first growth rather than freeing the old one, and every later update replaces the
+//! variable's string in a slot that already exists, without freeing the string a concurrent reader may
+//! be holding. The residual exposure is a reader that observes the change mid-write, which costs one
+//! failed X connection on the tick it happens.
+//!
+//! \param xauthority Value from the systemd user manager, or std::nullopt if it exports none.
+//!
+void ApplyXAuthorityHint(const std::optional<std::string>& xauthority);
+
+//!
+//! \brief Creates the production endpoint source factory for IdleSourcePool.
+//!
+//! Validation lives in the factory because what "validated" means is protocol-specific:
+//!
+//!   - A Wayland candidate is validated by connecting to its socket and binding ext_idle_notifier_v1,
+//!     which is what WaylandIdleSource::Start() does. It is called with that method's one-attempt
+//!     default rather than the fifteen-attempt startup budget, because the pool re-runs discovery on
+//!     every reconcile tick and calls this factory again for any candidate still being offered. The
+//!     reconcile loop is the retry loop; see the commentary on WaylandIdleSource::Start().
+//!
+//!   - An X11 candidate is validated by taking one reading, since X11IdleSource is stateless and has
+//!     nothing to start. A reading of IDLE_ERROR rejects the candidate.
+//!
+//! A rejected candidate yields nullptr, which the pool does not cache: the candidate is offered again on
+//! the next tick and built again then, so a compositor or X server that was still starting up is picked
+//! up shortly afterwards rather than being locked out for the life of the process.
+//!
+//! \param notification_timeout_ms Idle notification threshold handed to each new Wayland source.
+//! \return Factory suitable for IdleSourcePool's constructor.
+//!
+EndpointSourceFactory MakeEndpointSourceFactory(int notification_timeout_ms);
+
+//!
+//! \brief Creates the production shell source factory for IdleSourcePool.
+//!
+//! ShellIdleSource carries two flags that its ShellKind alone does not determine, and they are set from
+//! two different places on purpose, because two different things know them:
+//!
+//!   - Whether mutter's IdleMonitor is on the bus is a session bus fact, and this file is the only place
+//!     that can answer it. The factory probes it with ShellMonitor::HasGnomeIdleMonitor() and stamps it
+//!     onto the source before returning it. The probe is made only for a GNOME shell, because that flag
+//!     is read only by the GNOME arm of ShellIdleSource::ResolveIdleSeconds(); paying a D-Bus round trip
+//!     to answer a question nobody asks would be pure cost.
+//!
+//!   - Whether this is a Wayland session -- which is what separates KDE on Wayland, where Plasma 6
+//!     ksmserver has no GetSessionIdleTime, from KDE on X11, where it does -- is NOT set here, and the
+//!     omission is deliberate rather than an oversight. IdleSourcePool pushes it through
+//!     ShellSourceContext at the end of every Reconcile(), including the Reconcile() that created the
+//!     source, so it is already correct before any GetIdleSeconds() can observe it.
+//!
+//! The second one is not something the factory could do better if it tried. It is handed a ShellKind and
+//! nothing else, and the fact in question is "was a Wayland endpoint discovered on this tick" -- which the
+//! pool knows because discovery hands it the candidate set, and which the factory cannot see. The one
+//! answer a factory could reach for, getenv("WAYLAND_DISPLAY"), is precisely the frozen-at-exec read this
+//! design exists to eliminate. Setting the flag in both places would also make the pool's push and the
+//! factory's guess two sources of truth for one fact, with the staler one winning whenever the factory ran
+//! last.
+//!
+//! Note that the pool answers this from CANDIDATES rather than from live sources, which is not a detail:
+//! a Wayland session whose compositor we cannot read is still a Wayland session, and inferring the
+//! protocol from whether a source validated sent a Plasma 6 Wayland shell down the X11 arm. See
+//! ShellIdleSource::SetWaylandEndpointPresent().
+//!
+//! \return Factory suitable for IdleSourcePool's constructor.
+//!
+ShellSourceFactory MakeShellSourceFactory();
+
+//!
+//! \brief Creates the production inhibition query for IdleSourcePool, wrapping ShellMonitor::IsInhibited().
+//!
+//! The pool calls this on every GetIdleSeconds() with the shell kind it currently tracks, including
+//! ShellKind::NONE. That case is answered without any bus traffic, since nothing that does not exist can
+//! be inhibiting.
+//!
+//! \return Query suitable for IdleSourcePool's constructor.
+//!
+InhibitionQuery MakeInhibitionQuery();
+
+//!
+//! \brief The single process-wide pool of live idle sources, defined in idle_detect.cpp and built from the
+//! production factories above.
+//!
+//! It is declared here rather than in idle_detect.h because it is only meaningful in combination with those
+//! factories, and because idle_detect.h is included BY this header: an IdleSourcePool object declared there
+//! would make the lower-level header depend on the pool, inverting the layering this split exists to
+//! establish. GetIdleTimeSeconds() is the reader; main() is the only thing that reconciles or shuts it down.
+//!
+//! Construction takes no action and makes no system contact, so it is safe at static initialization time. The
+//! pool holds no sources until the first Reconcile(), which is what makes "the GUI session does not exist
+//! yet" an ordinary starting state rather than a startup failure.
+//!
+extern IdleSourcePool g_idle_source_pool;
+
+} // namespace IdleDetect
+
+#endif // IDLE_SOURCES_SYSTEM_H
