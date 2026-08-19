@@ -195,9 +195,32 @@ osc results               # must be run from the package directory
 osc buildlog <repo> <arch>
 ```
 
-Two repositories, `Fedora_Rawhide/x86_64` and `Fedora_38/armv7l`, have been
-`broken` for a while and are unrelated to any given release. Everything else
-should reach `succeeded`.
+**Do not trust the `osc results` summary column on its own.** It conflates two
+different things and will report `broken` for rows where the package built
+perfectly well. Before concluding anything failed, ask the server for the
+package's actual status:
+
+```bash
+osc api "/build/home:jamescowens/<repo>/<arch>/idle_detect/_status"
+```
+
+That returns the authoritative code, e.g. `<status package="idle_detect"
+code="succeeded">`. During the 0.9.2.0 release, `osc results` showed
+`Fedora_Rawhide/x86_64  idle_detect  broken` while `_status` for the same
+target reported `succeeded`.
+
+Also read the third column, not just the last one. A row like
+
+```
+Fedora_38   armv7l   _repository   broken
+```
+
+names **`_repository`**, not `idle_detect`: the repository itself could not be
+set up for that architecture, which says nothing about whether the package
+builds. Fedora_38 built successfully on aarch64, ppc64le and x86_64 at the same
+time that row was showing `broken`.
+
+Every row whose third column is `idle_detect` should reach `succeeded`.
 
 ## 5. Post-release verification
 
@@ -233,6 +256,13 @@ reliably so on 32-bit.
 **`osc results` needs the package directory.** Run elsewhere it reports a
 confusing "Git SCM package working copy" error that has nothing to do with the
 problem.
+
+**`osc results` reports `broken` for things that built.** Its summary column
+mixes package status with repository status, and can disagree outright with the
+server. Confirm against `/build/.../_status` before calling a target failed, and
+check whether the row even names `idle_detect` rather than `_repository`. Both
+mistakes were made while releasing 0.9.2.0, and both times the board was
+actually green.
 
 **Contributors on the release page come from `@mentions`,** not commits. The repo
 Insights graph is separate, is commit-derived, is default-branch only, and its
