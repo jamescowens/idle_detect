@@ -292,7 +292,23 @@ else()
     set(INSTALL_CONFIG_DIR "/${CMAKE_INSTALL_SYSCONFDIR}" CACHE PATH "Installation directory for configuration files")
 endif()
 
-set(INSTALL_SYSTEM_SERVICE_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/system" CACHE PATH "Installation directory for the system level dc_event_detection service")
+# The system unit must live somewhere systemd can read at PID 1 startup, before
+# any non-root filesystem is mounted. On openSUSE (and other btrfs layouts)
+# /usr/local is a SEPARATE SUBVOLUME mounted from fstab well after systemd has
+# already built its unit database, so a unit installed under a /usr/local prefix
+# is invisible at boot: the enable symlink resolves to nothing, systemd skips the
+# unit without logging anything, and the service simply never starts. It then
+# looks perfectly healthy afterwards, because any later daemon-reload picks it up.
+#
+# Package builds use -DCMAKE_INSTALL_PREFIX=/usr and land in /usr/lib/systemd/system,
+# which is on the root filesystem and therefore fine. For any other prefix, install
+# the system unit into /etc/systemd/system instead, which is always present early.
+# The user unit is not affected: user@.service starts long after local-fs.target.
+if(CMAKE_INSTALL_PREFIX STREQUAL "/usr")
+    set(INSTALL_SYSTEM_SERVICE_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/system" CACHE PATH "Installation directory for the system level dc_event_detection service")
+else()
+    set(INSTALL_SYSTEM_SERVICE_DIR "/etc/systemd/system" CACHE PATH "Installation directory for the system level dc_event_detection service")
+endif()
 set(INSTALL_SYSTEM_SERVICE_PRESET_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/system-preset" CACHE PATH "System service preset directory")
 set(INSTALL_USER_SERVICE_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/user" CACHE PATH "Installation directory for the user level dc_idle_detection service")
 set(INSTALL_USER_SERVICE_PRESET_DIR "${CMAKE_INSTALL_PREFIX}/lib/systemd/user-preset" CACHE PATH "Installation directory for the user level dc_idle_detection service preset to auto enable")

@@ -1,6 +1,12 @@
 [Unit]
 Description=DC Event Detection Service
-After=multi-user.target dev-shm.mount
+# Order after udev has started and /dev/shm exists. Do NOT order after
+# multi-user.target: this unit is WantedBy=multi-user.target, so ordering it
+# after that target forms a dependency cycle and systemd silently drops the
+# start job, leaving the service enabled but never started at boot.
+# The ExecStartPre delay below is what gives USB input devices time to
+# enumerate, which is what the multi-user.target ordering was reaching for.
+After=systemd-udevd.service dev-shm.mount
 
 # Bound the restart loop. event_detect exits non-zero on permanent environmental
 # failures (no pointing devices to monitor, unusable data directory), and a full

@@ -184,7 +184,27 @@ systemctl daemon-reload
 # because nothing looks wrong. Note this is NOT the same as the drop-in case handled further
 # down -- a drop-in overrides directives, whereas this replaces the whole unit, and
 # 'systemctl cat' shows the winning file without indicating that another was passed over.
-INSTALLED_SYSTEM_UNIT="${INSTALL_PREFIX}/lib/systemd/system/dc_event_detection.service"
+# The system unit goes to /etc/systemd/system for any prefix other than /usr; see
+# the comment on INSTALL_SYSTEM_SERVICE_DIR in CMakeLists.txt. In short, /usr/local
+# is a separate late-mounted subvolume on openSUSE, so a unit installed under it is
+# invisible to systemd at boot and the service silently never starts.
+if [ "$INSTALL_PREFIX" = "/usr" ]; then
+    INSTALLED_SYSTEM_UNIT="${INSTALL_PREFIX}/lib/systemd/system/dc_event_detection.service"
+else
+    INSTALLED_SYSTEM_UNIT="/etc/systemd/system/dc_event_detection.service"
+
+    # Releases up to 0.9.2.0 installed the unit under the prefix. Retire that copy so
+    # it cannot shadow or confuse the one we just installed.
+    STALE_PREFIX_UNIT="${INSTALL_PREFIX}/lib/systemd/system/dc_event_detection.service"
+    if [ -f "$STALE_PREFIX_UNIT" ]; then
+        echo "INFO: Removing the unit left under the prefix by an earlier release:"
+        echo "INFO:   ${STALE_PREFIX_UNIT}"
+        echo "INFO: systemd cannot read that path at boot when ${INSTALL_PREFIX} is a"
+        echo "INFO: separate filesystem, which is why the service is now installed to /etc."
+        rm -f "$STALE_PREFIX_UNIT"
+        systemctl daemon-reload
+    fi
+fi
 LOADED_SYSTEM_UNIT="$(systemctl show dc_event_detection.service -p FragmentPath --value 2>/dev/null)"
 
 if [ -n "$LOADED_SYSTEM_UNIT" ] && [ "$LOADED_SYSTEM_UNIT" != "$INSTALLED_SYSTEM_UNIT" ] \
