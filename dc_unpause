@@ -1,9 +1,10 @@
 #!/bin/sh
-# dc_unpause — resume the local DC (distributed computing) client.
+# dc_unpause — resume the local DC (distributed computing) clients.
 #
-# Called by idle_detect when the user becomes idle (see idle_command in
-# idle_detect.conf). Default behavior targets BOINC and switches its
-# run mode to "always".
+# Called by idle_detect when the user becomes idle (see idle_command
+# in idle_detect.conf). Handles BOINC and Folding@home independently:
+# each is attempted only if present, and the absence or failure of one
+# never prevents the other from being actioned.
 #
 # NOTE: This script is replaced on every package install and every
 # install.sh run. To customize permanently:
@@ -13,51 +14,134 @@
 #      (use the full path — ~/ does not expand in the config file).
 #   4. systemctl --user restart dc_idle_detection
 #
-# To override the BOINC data directory without editing the script, set
-# BOINC_DATA_DIR in the environment (e.g. via a user-service override
-# at ~/.config/systemd/user/dc_idle_detection.service.d/override.conf).
+# Environment overrides (e.g. via a user-service override at
+# ~/.config/systemd/user/dc_idle_detection.service.d/override.conf):
+#   BOINC_DATA_DIR   BOINC data directory, skipping the probe below.
+#   DC_PAUSE_BOINC   Set to 0 to leave BOINC alone.
+#   DC_PAUSE_FAH     Set to 0 to leave Folding@home alone.
+#   DC_FAH_CLIENT    auto (default), v7, or v8 — force a client generation.
+#
+# Folding@home has two incompatible control surfaces:
+#   v7  FAHClient --send-pause / --send-unpause
+#   v8  fahctl pause / fahctl fold   (note: v8 has no "unpause" verb)
+# fahctl ships with the v8 client and speaks its local WebSocket API on
+# 127.0.0.1:7396, so control stays on this machine and does not involve
+# the hosted web control. It needs python3 plus the websocket-client
+# module. The community 'lufah' tool is an alternative if you prefer it;
+# point this script at it by editing the v8 branch below.
+#
+# We drive pause/resume explicitly rather than relying on either client's
+# own idle detection, which is exactly the unreliability this project exists
+# to work around.
 
-set -eu
+# Deliberately no 'set -e': BOINC and Folding@home are independent, and an
+# error talking to one must not stop us resuming the other.
+set -u
 
-# --- Locate BOINC data directory -------------------------------------
-# Honor a user-provided override first; otherwise probe common paths.
-BOINC_DATA_DIR="${BOINC_DATA_DIR:-}"
+acted=0
+failed=0
 
-if [ -z "$BOINC_DATA_DIR" ]; then
-    for candidate in \
-        /var/lib/boinc \
-        /var/lib/boinc-client \
-        /var/snap/boinc/common \
-        "$HOME/BOINC" \
-        "$HOME/.BOINC" \
-        "$HOME/.var/app/edu.berkeley.BOINC/data"
-    do
-        if [ -r "$candidate/gui_rpc_auth.cfg" ]; then
-            BOINC_DATA_DIR="$candidate"
-            break
+# --- BOINC ------------------------------------------------------------
+if [ "${DC_PAUSE_BOINC:-1}" != "0" ]; then
+    # Honor a user-provided data directory first; otherwise probe common paths.
+    boinc_dir="${BOINC_DATA_DIR:-}"
+
+    if [ -z "$boinc_dir" ]; then
+        for candidate in \
+            /var/lib/boinc \
+            /var/lib/boinc-client \
+            /var/snap/boinc/common \
+            "$HOME/BOINC" \
+            "$HOME/.BOINC" \
+            "$HOME/.var/app/edu.berkeley.BOINC/data"
+        do
+            if [ -r "$candidate/gui_rpc_auth.cfg" ]; then
+                boinc_dir="$candidate"
+                break
+            fi
+        done
+    fi
+
+    if [ -n "$boinc_dir" ] && [ -r "$boinc_dir/gui_rpc_auth.cfg" ] \
+       && command -v boinccmd >/dev/null 2>&1; then
+        password=$(cat "$boinc_dir/gui_rpc_auth.cfg")
+
+        if boinccmd --host localhost --passwd "$password" --set_run_mode always; then
+            echo 'Set BOINC client to run mode "always".'
+            acted=1
+        else
+            echo "dc_unpause: boinccmd failed. Is BOINC running?" >&2
+            failed=1
         fi
-    done
+    fi
 fi
 
-if [ -z "$BOINC_DATA_DIR" ] || [ ! -r "$BOINC_DATA_DIR/gui_rpc_auth.cfg" ]; then
-    echo "dc_unpause: cannot locate a readable gui_rpc_auth.cfg." >&2
-    echo "  Set BOINC_DATA_DIR in the environment, or copy this script" >&2
-    echo "  to ~/.local/bin/ and edit the path — see the header." >&2
+# --- Folding@home -----------------------------------------------------
+if [ "${DC_PAUSE_FAH:-1}" != "0" ]; then
+    # idle_detect runs this via system() in a detached thread and discards the
+    # exit code, so a call that never returns would leak a thread on every
+    # activity transition. Bound it when timeout(1) is available.
+    if command -v timeout >/dev/null 2>&1; then
+        fah_guard="timeout 10"
+    else
+        fah_guard=""
+    fi
+
+    # Pick a generation. In auto mode prefer v8: fahctl ships only with the
+    # v8 client, so its presence is the stronger signal, and a v7 binary can
+    # linger after an upgrade.
+    fah_gen="${DC_FAH_CLIENT:-auto}"
+    if [ "$fah_gen" = "auto" ]; then
+        if command -v fahctl >/dev/null 2>&1; then
+            fah_gen=v8
+        elif command -v FAHClient >/dev/null 2>&1; then
+            fah_gen=v7
+        else
+            fah_gen=none
+        fi
+    fi
+
+    case "$fah_gen" in
+        v7)
+            if $fah_guard FAHClient --send-unpause >/dev/null 2>&1; then
+                echo 'Resumed Folding@home (v7).'
+                acted=1
+            else
+                echo "dc_unpause: FAHClient --send-unpause failed. Is FAHClient running?" >&2
+                failed=1
+            fi
+            ;;
+        v8)
+            if $fah_guard fahctl fold >/dev/null 2>&1; then
+                echo 'Resumed Folding@home (v8).'
+                acted=1
+            else
+                echo "dc_unpause: 'fahctl fold' failed. Is fah-client running, and is" >&2
+                echo "  the websocket-client Python module installed?" >&2
+                failed=1
+            fi
+            ;;
+        none)
+            # A v8 install whose fahctl is missing still leaves fah-client behind.
+            if command -v fah-client >/dev/null 2>&1; then
+                echo "dc_unpause: Folding@home v8 found but no 'fahctl' in PATH." >&2
+                failed=1
+            fi
+            ;;
+        *)
+            echo "dc_unpause: DC_FAH_CLIENT='$fah_gen' is not one of auto, v7, v8." >&2
+            failed=1
+            ;;
+    esac
+fi
+
+# --- Result -----------------------------------------------------------
+if [ "$acted" -eq 0 ] && [ "$failed" -eq 0 ]; then
+    echo "dc_unpause: found no supported DC client (BOINC or Folding@home)." >&2
+    echo "  Set BOINC_DATA_DIR, or copy this script to ~/.local/bin/ and" >&2
+    echo "  edit it — see the header." >&2
     exit 1
 fi
 
-# --- Check boinccmd availability -------------------------------------
-if ! command -v boinccmd >/dev/null 2>&1; then
-    echo "dc_unpause: boinccmd not found in PATH." >&2
-    exit 1
-fi
-
-# --- Issue the resume command ----------------------------------------
-password=$(cat "$BOINC_DATA_DIR/gui_rpc_auth.cfg")
-
-if ! boinccmd --host localhost --passwd "$password" --set_run_mode always; then
-    echo "dc_unpause: boinccmd failed. Is BOINC running?" >&2
-    exit 1
-fi
-
-echo 'Set BOINC client to run mode "always".'
+[ "$failed" -eq 0 ] || exit 1
+exit 0
