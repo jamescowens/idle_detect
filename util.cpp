@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 James C. Owens
+ * Copyright (C) 2025-2026 James C. Owens
  * Portions Copyright (c) 2019 The Bitcoin Core developers
  * Portions Copyright (c) 2025 The Gridcoin developers
  *

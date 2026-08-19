@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 James C. Owens
+ * Copyright (C) 2025-2026 James C. Owens
  *
  * This code is licensed under the MIT license. See LICENSE.md in the repository.
  */
