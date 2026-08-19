@@ -263,7 +263,7 @@ echo "    the user service."
 echo ""
 echo "You may want to customize configuration files:"
 echo "  System config: sudo nano ${SYSTEM_CONFIG_DIR}/event_detect.conf"
-echo "  Helper scripts (installed in ${INSTALL_PREFIX}/bin): dc_pause, dc_unpause"
+echo "  Helper scripts (installed in ${INSTALL_PREFIX}/bin): dc_pause, dc_unpause, dc_fah_v8"
 echo ""
 
 exit 0

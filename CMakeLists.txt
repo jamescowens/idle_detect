@@ -301,7 +301,7 @@ set(INSTALL_CUSTOMIZABLE_USER_SERVICE_DIR "$ENV{HOME}/.config/systemd/user" CACH
 
 # Install the executable and scripts
 install(TARGETS event_detect idle_detect read_shmem_timestamps DESTINATION ${INSTALL_BIN_DIR})
-install(FILES "dc_pause" "dc_unpause" "idle_detect_resources.sh" "force_state.sh" "event_detect_control.sh" "idle_detect_new_user_setup.sh"
+install(FILES "dc_pause" "dc_unpause" "dc_fah_v8" "idle_detect_resources.sh" "force_state.sh" "event_detect_control.sh" "idle_detect_new_user_setup.sh"
         PERMISSIONS OWNER_EXECUTE OWNER_WRITE OWNER_READ GROUP_EXECUTE GROUP_READ WORLD_EXECUTE WORLD_READ
         DESTINATION ${INSTALL_BIN_DIR} )
 
@@ -430,6 +430,7 @@ add_custom_target(install_executables_only
 add_custom_target(dc_control_scripts_only
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_pause" "${INSTALL_BIN_DIR}/dc_pause"
     COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_unpause" "${INSTALL_BIN_DIR}/dc_unpause"
+    COMMAND ${CMAKE_COMMAND} -E copy "${CMAKE_CURRENT_SOURCE_DIR}/dc_fah_v8" "${INSTALL_BIN_DIR}/dc_fah_v8"
 
     COMMENT "installing executables only"
 )

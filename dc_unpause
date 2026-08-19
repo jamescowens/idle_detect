@@ -23,12 +23,14 @@
 #
 # Folding@home has two incompatible control surfaces:
 #   v7  FAHClient --send-pause / --send-unpause
-#   v8  fahctl pause / fahctl fold   (note: v8 has no "unpause" verb)
-# fahctl ships with the v8 client and speaks its local WebSocket API on
-# 127.0.0.1:7396, so control stays on this machine and does not involve
-# the hosted web control. It needs python3 plus the websocket-client
-# module. The community 'lufah' tool is an alternative if you prefer it;
-# point this script at it by editing the v8 branch below.
+#   v8  No CLI ships with the client at all. Control is a WebSocket API on
+#       127.0.0.1:7396, driven here by the bundled dc_fah_v8 helper (Python 3
+#       standard library only). It stays on this machine and never involves
+#       the hosted web control.
+# The official 'fahctl' is deliberately not used: it is not installed by the v8
+# package, it needs the third-party websocket-client module, and against client
+# 8.1.18 it sends a message shape the client ignores while still exiting 0.
+# dc_fah_v8 re-reads the client state to confirm the change instead.
 #
 # We drive pause/resume explicitly rather than relying on either client's
 # own idle detection, which is exactly the unreliability this project exists
@@ -73,6 +75,13 @@ if [ "${DC_PAUSE_BOINC:-1}" != "0" ]; then
             echo "dc_unpause: boinccmd failed. Is BOINC running?" >&2
             failed=1
         fi
+    elif command -v boinccmd >/dev/null 2>&1; then
+        # BOINC tooling is installed but its RPC password is not readable, so we
+        # cannot control it. Say so rather than skipping quietly: silently
+        # leaving compute running is worse than a log line.
+        echo "dc_unpause: BOINC is installed but no readable gui_rpc_auth.cfg was" >&2
+        echo "  found. Add your user to the 'boinc' group, or set BOINC_DATA_DIR." >&2
+        failed=1
     fi
 fi
 
@@ -82,17 +91,25 @@ if [ "${DC_PAUSE_FAH:-1}" != "0" ]; then
     # exit code, so a call that never returns would leak a thread on every
     # activity transition. Bound it when timeout(1) is available.
     if command -v timeout >/dev/null 2>&1; then
-        fah_guard="timeout 10"
+        fah_guard="timeout 20"
     else
         fah_guard=""
     fi
 
-    # Pick a generation. In auto mode prefer v8: fahctl ships only with the
-    # v8 client, so its presence is the stronger signal, and a v7 binary can
-    # linger after an upgrade.
+    # Locate the v8 helper: alongside this script first, then PATH.
+    fah_v8=""
+    if [ -x "$(dirname "$0")/dc_fah_v8" ]; then
+        fah_v8="$(dirname "$0")/dc_fah_v8"
+    elif command -v dc_fah_v8 >/dev/null 2>&1; then
+        fah_v8=dc_fah_v8
+    fi
+
+    # Pick a generation. The v8 package ships no CLI, so the presence of the
+    # fah-client daemon is the signal. A v7 FAHClient binary can linger after an
+    # upgrade, so v8 wins in auto mode.
     fah_gen="${DC_FAH_CLIENT:-auto}"
     if [ "$fah_gen" = "auto" ]; then
-        if command -v fahctl >/dev/null 2>&1; then
+        if command -v fah-client >/dev/null 2>&1; then
             fah_gen=v8
         elif command -v FAHClient >/dev/null 2>&1; then
             fah_gen=v7
@@ -112,21 +129,18 @@ if [ "${DC_PAUSE_FAH:-1}" != "0" ]; then
             fi
             ;;
         v8)
-            if $fah_guard fahctl fold >/dev/null 2>&1; then
-                echo 'Resumed Folding@home (v8).'
+            if [ -z "$fah_v8" ]; then
+                echo "dc_unpause: Folding@home v8 is installed but dc_fah_v8 was not" >&2
+                echo "  found next to this script or in PATH." >&2
+                failed=1
+            elif $fah_guard "$fah_v8" unpause; then
                 acted=1
             else
-                echo "dc_unpause: 'fahctl fold' failed. Is fah-client running, and is" >&2
-                echo "  the websocket-client Python module installed?" >&2
                 failed=1
             fi
             ;;
         none)
-            # A v8 install whose fahctl is missing still leaves fah-client behind.
-            if command -v fah-client >/dev/null 2>&1; then
-                echo "dc_unpause: Folding@home v8 found but no 'fahctl' in PATH." >&2
-                failed=1
-            fi
+            : # No Folding@home client installed; nothing to do.
             ;;
         *)
             echo "dc_unpause: DC_FAH_CLIENT='$fah_gen' is not one of auto, v7, v8." >&2
