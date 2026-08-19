@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2025 James C. Owens
+ * Copyright (C) 2025-2026 James C. Owens
  *
  * This code is licensed under the MIT license. See LICENSE.md in the repository.
  */
@@ -12,7 +12,7 @@
 // release.h (Alternative)
 #define IDLE_DETECT_VERSION_MAJOR 0
 #define IDLE_DETECT_VERSION_MINOR 9
-#define IDLE_DETECT_VERSION_PATCH 1
+#define IDLE_DETECT_VERSION_PATCH 2
 #define IDLE_DETECT_VERSION_TWEAK 0
 
 #define ID__STRINGIFY(x) #x
@@ -24,7 +24,7 @@ ID_STRINGIFY(IDLE_DETECT_VERSION_MAJOR) "." \
     ID_STRINGIFY(IDLE_DETECT_VERSION_PATCH) "." \
     ID_STRINGIFY(IDLE_DETECT_VERSION_TWEAK)
 
-const std::string g_version_datetime = "20260417";
+const std::string g_version_datetime = "20260818";
 
 const std::string g_version = std::string("version ") + std::string(IDLE_DETECT_VERSION_STRING) + " - " + g_version_datetime;
 
