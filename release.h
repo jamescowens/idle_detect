@@ -13,7 +13,7 @@
 #define IDLE_DETECT_VERSION_MAJOR 0
 #define IDLE_DETECT_VERSION_MINOR 9
 #define IDLE_DETECT_VERSION_PATCH 2
-#define IDLE_DETECT_VERSION_TWEAK 0
+#define IDLE_DETECT_VERSION_TWEAK 1
 
 #define ID__STRINGIFY(x) #x
 #define ID_STRINGIFY(x) ID__STRINGIFY(x)
@@ -24,7 +24,7 @@ ID_STRINGIFY(IDLE_DETECT_VERSION_MAJOR) "." \
     ID_STRINGIFY(IDLE_DETECT_VERSION_PATCH) "." \
     ID_STRINGIFY(IDLE_DETECT_VERSION_TWEAK)
 
-const std::string g_version_datetime = "20260819";
+const std::string g_version_datetime = "20261007";
 
 const std::string g_version = std::string("version ") + std::string(IDLE_DETECT_VERSION_STRING) + " - " + g_version_datetime;
 

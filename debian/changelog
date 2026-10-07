@@ -1,3 +1,14 @@
+idle-detect (0.9.2.1-1) unstable; urgency=medium
+
+  * Release 0.9.2.1.
+  * dc_fah_v8: select the Folding@home v8 API by client version; verify
+    against the per-group paused flag that 8.3 and later use.
+  * event_detect: throttle the "No pointing devices" report instead of
+    logging it once a second on machines without a mouse.
+  * See https://github.com/jamescowens/idle_detect/releases for details.
+
+ -- James C. Owens <jamesowens@optonline.net>  Wed, 07 Oct 2026 13:45:56 -0400
+
 idle-detect (0.9.2.0-1) unstable; urgency=medium
 
   * Release 0.9.2.0.
