@@ -12,11 +12,19 @@ Why this exists:
   unacceptable when the job is to stop compute, so this helper sends the verb and
   then re-reads the client's state to confirm the change actually took effect.
 
-Verb compatibility:
-  8.1.x  {"cmd":"pause"} / {"cmd":"unpause"}       (legacy; verified on 8.1.18)
-  8.3+   {"cmd":"state","state":"pause"|"fold"}    (newer shape)
-  Newer clients still accept the legacy verbs, so we try legacy first and fall
-  back to the newer shape.
+API generations, chosen by the client's reported version (info.version):
+  < 8.3   legacy:  verbs {"cmd":"pause"} / {"cmd":"unpause"}
+                   paused flag at config.paused
+  >= 8.3  groups:  verbs {"cmd":"state","state":"pause"|"fold"}
+                   paused flag per resource group at groups.<name>.config.paused;
+                   there is NO top-level config.paused
+  Resource groups were added in 8.1.4, removed in 8.2.1 and returned in 8.3.0
+  (client CHANGELOG), so the version, not the client's age, decides.
+  Verified 2026-10-04 against 8.1.18, 8.3.18, 8.4.9 and 8.5.6. 8.1.18 ignores the
+  groups verbs; 8.3.18+ also still accept the legacy verbs. If the version is
+  missing, the shape of the state decides (a "groups" key means groups).
+  If the chosen verb does not take, the other shape is tried once; the flag is
+  always read where this client version keeps it.
 
 The connection is to the loopback API only; it never contacts the hosted web
 control or any Folding@home server.
@@ -139,9 +147,33 @@ def read_state(host, port, timeout):
         sock.close()
 
 
-def is_paused(host, port, timeout):
-    state = read_state(host, port, timeout)
-    return bool(state.get("config", {}).get("paused", False))
+def client_version(state):
+    """The client's version as a tuple of ints, or None if it does not say."""
+    text = str(state.get("info", {}).get("version", ""))
+    try:
+        return tuple(int(part) for part in text.split("."))
+    except ValueError:
+        return None
+
+
+def api_generation(state):
+    """'legacy' (< 8.3) or 'groups' (>= 8.3); see the module docstring."""
+    version = client_version(state)
+    if version:
+        return "groups" if version >= (8, 3) else "legacy"
+    return "groups" if "groups" in state else "legacy"
+
+
+def paused_flag(state, api):
+    """True or False when the client is uniformly paused or folding; None when unknown or mixed."""
+    if api == "groups":
+        groups = state.get("groups") or {}
+        flags = {g.get("config", {}).get("paused") for g in groups.values()}
+        if len(flags) == 1 and None not in flags:
+            return bool(flags.pop())
+        return None
+    paused = state.get("config", {}).get("paused")
+    return None if paused is None else bool(paused)
 
 
 def send_command(host, port, timeout, message):
@@ -158,12 +190,21 @@ def send_command(host, port, timeout, message):
 
 def apply_paused(host, port, timeout, want):
     """Drive the client to the requested paused state. Returns True if confirmed."""
-    legacy = {"cmd": "pause" if want else "unpause"}
-    modern = {"cmd": "state", "state": "pause" if want else "fold"}
+    try:
+        api = api_generation(read_state(host, port, timeout))
+    except (IOError, OSError, ValueError) as exc:
+        print("dc_fah_v8: %s" % exc, file=sys.stderr)
+        return False
 
-    for attempt, message in enumerate((legacy, modern)):
+    verbs = {
+        "legacy": {"cmd": "pause" if want else "unpause"},
+        "groups": {"cmd": "state", "state": "pause" if want else "fold"},
+    }
+    other = "legacy" if api == "groups" else "groups"
+
+    for attempt, shape in enumerate((api, other)):
         try:
-            send_command(host, port, timeout, message)
+            send_command(host, port, timeout, verbs[shape])
         except (IOError, OSError) as exc:
             print("dc_fah_v8: %s" % exc, file=sys.stderr)
             return False
@@ -171,14 +212,14 @@ def apply_paused(host, port, timeout, want):
         for _ in range(6):                     # up to ~3s for the flag to settle
             time.sleep(0.5)
             try:
-                if is_paused(host, port, timeout) == want:
+                if paused_flag(read_state(host, port, timeout), api) == want:
                     return True
             except (IOError, OSError, ValueError):
                 pass
 
         if attempt == 0:
-            print("dc_fah_v8: legacy verb had no effect; trying the newer API "
-                  "shape.", file=sys.stderr)
+            print("dc_fah_v8: the %s verb had no effect; trying the %s shape."
+                  % (api, other), file=sys.stderr)
 
     return False
 
@@ -188,8 +229,9 @@ def main(argv):
 
     parser = argparse.ArgumentParser(
         description="Pause or resume a Folding@home v8 client.")
-    parser.add_argument("command", choices=["pause", "unpause", "state"],
-                        help="pause and unpause are verified; state prints JSON")
+    parser.add_argument("command", choices=["pause", "unpause", "state", "api"],
+                        help="pause and unpause are verified; state prints JSON; "
+                             "api prints the detected version and API (read-only)")
     parser.add_argument("-a", "--address", default="127.0.0.1:7396",
                         help="client address (default: %(default)s)")
     parser.add_argument("-t", "--timeout", type=float, default=5.0,
@@ -207,6 +249,13 @@ def main(argv):
     try:
         if args.command == "state":
             print(json.dumps(read_state(host, port, args.timeout), indent=2))
+            return 0
+        if args.command == "api":
+            state = read_state(host, port, args.timeout)
+            api = api_generation(state)
+            print("client %s, API %s, paused %s" % (
+                state.get("info", {}).get("version", "unknown"), api,
+                paused_flag(state, api)))
             return 0
     except (IOError, OSError, ValueError) as exc:
         print("dc_fah_v8: cannot reach the client at %s:%d: %s"

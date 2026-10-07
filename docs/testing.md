@@ -1,9 +1,15 @@
-# Testing record — 0.9.2.0
+# Testing record — 0.9.2.0 and 0.9.2.1
 
 What was tested before the 0.9.2.0 release, on what, and what it found. This is a
 record of work actually performed, not a test plan: everything below was run and
 its result observed. Where something was *not* covered, it is listed under
 [Gaps](#gaps).
+
+0.9.2.1 is a patch release with two changes, each recorded in its own place
+below: `dc_fah_v8` now selects the Folding@home v8 API by client version (see
+[Folding@home v8 control](#foldinghome-v8-control)), and `event_detect` no longer
+logs "No pointing devices" once a second on a machine without a mouse (see
+[event_detect without pointing devices](#event_detect-without-pointing-devices)).
 
 0.9.2.0 is largely a correctness release. The GUI-session-readiness rework touched
 session discovery, endpoint lifetime, and the control-script layer, so testing
@@ -147,6 +153,52 @@ standard library, and **re-reads client state to confirm** rather than trusting 
 exit code. Verified with `python3-websocket` deliberately uninstalled, and
 verified to exit non-zero against a stopped client.
 
+#### 0.9.2.1: the paused flag moved in 8.3
+
+The 0.9.2.0 `dc_fah_v8` read the flag at `config.paused`. From 8.3 the client has
+**no top-level `config.paused`**: the flag lives per resource group, at
+`groups.<name>.config.paused`. Against those clients 0.9.2.0 reported failure on
+`pause` although the client had paused, and reported success on `unpause` from a
+check that could not fail — the silent no-op the tool exists to prevent. Resource
+groups were added in 8.1.4, removed in 8.2.1 and returned in 8.3.0 (client
+`CHANGELOG.md`), so the client's reported version decides which API it speaks,
+not the presence of a `groups` key.
+
+Measured per version, each client sandboxed as an ordinary user (`--cpus=0`, GPUs
+hidden, its own loopback port), the flag read from the raw state after each verb:
+
+| client | paused flag lives at | `{"cmd":"pause"/"unpause"}` | `{"cmd":"state","state":"pause"/"fold"}` |
+|---|---|---|---|
+| 8.1.18 | `config.paused` (no `groups` key) | works | **ignored** |
+| 8.3.18 | `groups[""].config.paused` only | works | works |
+| 8.4.9 | same as 8.3.18 | works | works |
+| 8.5.6 | same as 8.3.18 | works | works |
+
+`tests/integration/test_dc_fah_v8_versions.sh` downloads all four, starts each
+sandboxed on a free port, runs six verified pause/unpause steps per version with
+the flag read independently of the tool, then a control in which the verb is
+suppressed and `apply_paused` must refuse to confirm. It needs network access and
+about 16 MB of downloads, so it is a manual test, not part of CTest. Run on the
+handoff's side on 2026-10-04 and reproduced here on 2026-10-07:
+
+| script | result |
+|---|---|
+| 0.9.2.1 `dc_fah_v8` | ALL PASS on all four versions; every control refuses to confirm |
+| 0.9.2.0 `dc_fah_v8` | `BAD pause confirmed=False actual={'': True}` on 8.3.18, 8.4.9 and 8.5.6; 8.1.18 passes |
+
+So the test can fail, and it fails on the actual defect. (Against the 0.9.2.0
+script the harness also dies in its control step, which calls `paused_flag`, a
+function that script does not have — a limitation of the harness, separate from
+the defect it catches.) In production, idle_detect drove one real cycle on each
+API generation on 2026-10-04: media-2 on 8.1.18 (legacy) and media-3 on 8.5.6
+(groups), both printing `Folding@home v8 paused.` / `resumed.` with no
+`could not confirm`.
+
+**Download-channel trap.** Upstream's `debian-stable-64bit` channel is stale and
+still serves 8.1.18. Current Linux builds — 8.5.6 at the time of writing,
+including an RPM — are on `debian-10-64bit`. The 0.9.2.0 note that "only 8.1.18
+was available" was true of that channel only.
+
 ### BOINC shared-memory contract
 
 The `int64_t[2]` layout is frozen. On jco-linux2, the raw 16 bytes were decoded
@@ -238,6 +290,39 @@ cleanly. Verified the package contains `dc_fah_v8` and
 **conffile** so dpkg preserves local edits. Installed from the package and
 confirmed `dc_pause` locates `dc_fah_v8` as a sibling and drives the v8 client.
 
+### event_detect without pointing devices
+
+`event_detect` re-scans `/sys/class/input` every second from its monitor thread
+so hotplugged devices are picked up. On media-2 — a headless media box with no
+pointing device at all, so no `/dev/input/by-id/` either — every scan logged
+`ERROR: EnumerateEventDevices: No pointing devices identified to monitor.`:
+**86,269 lines in the 24 hours before the fix** (measured 2026-10-07). media-3,
+which has a mouse, logged none.
+
+0.9.2.1 puts the report on the repo's existing `FailureReportThrottle` ladder:
+the first scan of a run at error level, later scans at normal level with
+doubling spacing capped at 3600 scans (about hourly), everything in between at
+debug level, and one normal-level line when a device appears again.
+
+Verified in an Ubuntu 26.04 container with an empty directory bind-mounted over
+`/sys/class/input`, running the 0.9.2.1 `event_detect` for 20 seconds (one scan
+per second):
+
+```
+lines about pointing devices: 5   (0.9.2.0 prints one per scan: ~20)
+  ERROR ... No pointing devices identified to monitor. Scanning continues every second; ...
+  INFO  ... Still no pointing devices after 3 scans. Next report in 2 scans.
+  INFO  ... Still no pointing devices after 6 scans. Next report in 4 scans.
+  INFO  ... Still no pointing devices after 11 scans. Next report in 8 scans.
+  INFO  ... Still no pointing devices after 20 scans. Next report in 16 scans.
+```
+
+No other error lines. The recovery line (a device appearing after a run of empty
+scans) was not exercised in the container, since nothing can be hotplugged into
+it; it is the `Reset()` branch of the same ladder that the shared-memory and pipe
+paths in `idle_detect` already use. The real confirmation is media-2's journal
+after it picks up this release.
+
 ## Defects found and fixed during this testing
 
 | area | defect |
@@ -267,7 +352,8 @@ Stated explicitly rather than implied by omission.
   against the final build.
 - **RPM packaging** is built by OBS and was not rebuilt as part of this round;
   the `.deb` path was.
-- **`dc_fah_v8` against v8.3+** is untested. Only 8.1.18 was available, which is
-  what the stable Debian channel serves. The newer message shape is implemented as
-  a fallback but has not been exercised against a client that requires it.
 - **Non-x86_64 architectures** were not tested locally.
+- **`dc_fah_v8` against a client that reports no version** falls back to the
+  shape of the state (a `groups` key means the groups API). That path is covered
+  by the unit-style edge cases in the handoff (no version with groups, no version
+  without), not by a real client, since every client tested reports one.

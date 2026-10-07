@@ -81,6 +81,20 @@ SharedMemoryTimestampExporter g_shmem_exporter(SHMEM_NAME_CONFIG);
 //!
 std::atomic<bool> g_shm_initialized_successfully = false;
 
+//!
+//! \brief Ladder for the "no pointing devices" condition, so a machine without a mouse does not get the
+//! same error line once a second for the life of the daemon.
+//!
+//! EnumerateEventDevices() runs every second from the monitor thread, under mtx_event_monitor, and that is
+//! its only caller -- the single-thread condition FailureReportThrottle documents. Before this ladder, a
+//! headless media box with no pointing device at all logged that line 86,266 times a day.
+//!
+constexpr int NO_POINTING_DEVICE_REPORT_INITIAL_INTERVAL = 1;
+//! \brief Reports double their spacing up to this many scans apart: about hourly at the one-second scan rate.
+constexpr int NO_POINTING_DEVICE_REPORT_MAX_INTERVAL = 3600;
+static FailureReportThrottle g_no_pointing_device_throttle(NO_POINTING_DEVICE_REPORT_INITIAL_INTERVAL,
+                                                           NO_POINTING_DEVICE_REPORT_MAX_INTERVAL);
+
 // Class Monitor
 
 Monitor::Monitor()
@@ -254,14 +268,41 @@ std::vector<fs::path> Monitor::EnumerateEventDevices()
     }
 
     if (event_devices.empty()) {
-        error_log("%s: No pointing devices identified to monitor.",
-                  __func__);
-
         // Deliberately not fatal. This method is re-run every second by the monitor thread via
         // UpdateEventDevices(), tty monitoring does not depend on pointing devices at all, and devices may be
         // hotplugged at any time. Shutting down here killed the whole daemon on a mouseless or headless machine,
         // and turned a transient unplug into a restart loop that the unit's start rate limit then converted into
         // a permanently failed unit.
+        //
+        // Throttled, because "re-run every second" otherwise means one error line per second for the life of
+        // the daemon on any machine without a mouse. The first scan of a run is reported at error level so the
+        // condition is visible at once; later scans are reported at normal level on a doubling ladder that
+        // settles at about hourly, and everything in between is debug only. Recovery is reported once below.
+        const bool report = g_no_pointing_device_throttle.RecordFailure();
+        const int scans = g_no_pointing_device_throttle.ConsecutiveFailures();
+
+        if (scans == 1) {
+            error_log("%s: No pointing devices identified to monitor. Scanning continues every second; "
+                      "further reports back off to about hourly while none are found.",
+                      __func__);
+        } else if (report) {
+            normal_log("INFO: %s: Still no pointing devices after %d scans. Next report in %d scans.",
+                       __func__,
+                       scans,
+                       g_no_pointing_device_throttle.Interval());
+        } else {
+            debug_log("INFO: %s: No pointing devices (%d consecutive scans).",
+                      __func__,
+                      scans);
+        }
+    } else {
+        const int cleared = g_no_pointing_device_throttle.Reset();
+
+        if (cleared > 0) {
+            normal_log("INFO: %s: Pointing device(s) found after %d consecutive scan(s) without any.",
+                       __func__,
+                       cleared);
+        }
     }
 
     debug_log("INFO: %s: event_devices.size() = %u",
