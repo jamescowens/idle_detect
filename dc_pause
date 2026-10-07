@@ -30,7 +30,10 @@
 # The official 'fahctl' is deliberately not used: it is not installed by the v8
 # package, it needs the third-party websocket-client module, and against client
 # 8.1.18 it sends a message shape the client ignores while still exiting 0.
-# dc_fah_v8 re-reads the client state to confirm the change instead.
+# dc_fah_v8 re-reads the client state to confirm the change instead. 8.3 and
+# later accept both message shapes but keep the paused flag per resource group
+# rather than at config.paused, so dc_fah_v8 picks the API by the client's
+# reported version and verifies against the flag that version actually uses.
 #
 # We drive pause/resume explicitly rather than relying on either client's
 # own idle detection, which is exactly the unreliability this project exists
