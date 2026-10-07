@@ -264,6 +264,19 @@ check whether the row even names `idle_detect` rather than `_repository`. Both
 mistakes were made while releasing 0.9.2.0, and both times the board was
 actually green.
 
+**The `jammy / amd64` package job can sit in `Build .deb` for 30+ minutes.** Its
+siblings on the same runner pool finish in 1–10 minutes, and the identical
+pipeline (`apt-get`, `mk-build-deps`, `dpkg-buildpackage` with all 214 tests)
+completes locally in an `ubuntu:jammy` container in under four minutes, so this
+is the runner's environment for that container, not the code. While releasing
+0.9.2.1 the first attempt was cancelled at 32 minutes; the re-run took about 20
+minutes and passed. Two things to know: `gh run rerun --failed` is refused until
+the cancelled run has fully wound down (poll `gh run view --json status` for
+`completed` first), and a re-run keeps the 14 good artifacts, so only the one job
+and the release job repeat. If it is slow but moving — check the current step
+with the `/actions/runs/<id>/attempts/<n>/jobs` API — let it finish rather than
+cancelling again.
+
 **Contributors on the release page come from `@mentions`,** not commits. The repo
 Insights graph is separate, is commit-derived, is default-branch only, and its
 `stats/contributors` endpoint returns `202` while GitHub recomputes it.
