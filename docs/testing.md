@@ -290,6 +290,39 @@ cleanly. Verified the package contains `dc_fah_v8` and
 **conffile** so dpkg preserves local edits. Installed from the package and
 confirmed `dc_pause` locates `dc_fah_v8` as a sibling and drives the v8 client.
 
+### event_detect without pointing devices
+
+`event_detect` re-scans `/sys/class/input` every second from its monitor thread
+so hotplugged devices are picked up. On media-2 — a headless media box with no
+pointing device at all, so no `/dev/input/by-id/` either — every scan logged
+`ERROR: EnumerateEventDevices: No pointing devices identified to monitor.`:
+**86,269 lines in the 24 hours before the fix** (measured 2026-10-07). media-3,
+which has a mouse, logged none.
+
+0.9.2.1 puts the report on the repo's existing `FailureReportThrottle` ladder:
+the first scan of a run at error level, later scans at normal level with
+doubling spacing capped at 3600 scans (about hourly), everything in between at
+debug level, and one normal-level line when a device appears again.
+
+Verified in an Ubuntu 26.04 container with an empty directory bind-mounted over
+`/sys/class/input`, running the 0.9.2.1 `event_detect` for 20 seconds (one scan
+per second):
+
+```
+lines about pointing devices: 5   (0.9.2.0 prints one per scan: ~20)
+  ERROR ... No pointing devices identified to monitor. Scanning continues every second; ...
+  INFO  ... Still no pointing devices after 3 scans. Next report in 2 scans.
+  INFO  ... Still no pointing devices after 6 scans. Next report in 4 scans.
+  INFO  ... Still no pointing devices after 11 scans. Next report in 8 scans.
+  INFO  ... Still no pointing devices after 20 scans. Next report in 16 scans.
+```
+
+No other error lines. The recovery line (a device appearing after a run of empty
+scans) was not exercised in the container, since nothing can be hotplugged into
+it; it is the `Reset()` branch of the same ladder that the shared-memory and pipe
+paths in `idle_detect` already use. The real confirmation is media-2's journal
+after it picks up this release.
+
 ## Defects found and fixed during this testing
 
 | area | defect |
