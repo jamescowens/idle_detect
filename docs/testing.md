@@ -323,6 +323,110 @@ it; it is the `Reset()` branch of the same ladder that the shared-memory and pip
 paths in `idle_detect` already use. The real confirmation is media-2's journal
 after it picks up this release.
 
+### Desktop inhibition type (0.9.2.2)
+
+On jco-monster-ng (Plasma 6.4.2, Wayland) a Thunderbird download held BOINC at
+`never` and Folding@home paused from 2026-10-27 18:05 until Thunderbird was
+restarted at 14:38 the next day. PolicyAgent listed one inhibition, reason
+"Download in progress"; `HasInhibition(1)` was true and `HasInhibition(4)`
+false. `CheckKdeInhibition()` queried type 1 under a comment calling it
+`ChangeScreenSettings`. PowerDevil's enum (`daemon/powerdevilpolicyagent.h`,
+v6.4.2) is `InterruptSession = 1`, `ChangeScreenSettings = 4`: type 1 is the
+sleep inhibit, which xdg-desktop-portal-kde raises for portal flag 4 (Suspend),
+the flag a browser or mail client holds for a background download. The admin
+session reports the same mechanism behind a udisks2 mdraid check pinning DC
+paused on 2026-07-05.
+
+Controls on the live session, a persistent D-Bus client holding each lock for
+14 s and PolicyAgent probed at 8 s:
+
+| lock | `HasInhibition(1)` | `HasInhibition(4)` |
+|---|---|---|
+| none | false | false |
+| `AddInhibition` type 1 | true | false |
+| `AddInhibition` type 4 | true | true |
+| portal `Inhibit` flags=4 (Suspend) | true | false |
+| portal `Inhibit` flags=8 (Idle) | true | true |
+| `org.freedesktop.ScreenSaver.Inhibit` | true | true |
+
+PolicyAgent adds `InterruptSession` implicitly behind every
+`ChangeScreenSettings` lock, so querying type 4 keeps every screen-idle lock
+and drops the sleep-only ones. A first run of the same controls with 5 s holds
+registered nothing at all: PolicyAgent enforces a new inhibition only after a
+5 s single-shot timer, which is also why `kde-inhibit --power` had looked like
+it registered nothing.
+
+`tests/integration/test_kde_inhibition.sh` takes each lock through
+`org.freedesktop.portal.Inhibit` and runs the daemon for 10 s with an isolated
+config (no control scripts, no `event_detect`). Against the 0.9.2.1 binary:
+
+```
+PASS: baseline: HasInhibition(type=1) not inhibited over 10 ticks, expected not inhibited
+FAIL: sleep-only: HasInhibition(type=1) inhibited (10 of 10 ticks) over 10 ticks, expected not inhibited
+PASS: screen-idle: HasInhibition(type=1) inhibited (10 of 10 ticks), expected inhibited
+```
+
+After the fix:
+
+```
+PASS: baseline: HasInhibition(type=4) not inhibited over 10 ticks, expected not inhibited
+PASS: sleep-only: HasInhibition(type=4) not inhibited over 10 ticks, expected not inhibited
+PASS: screen-idle: HasInhibition(type=4) inhibited (10 of 10 ticks), expected inhibited
+```
+
+The GNOME query had the same shape of defect: `IsInhibited(15)` matches
+logout, switch-user and suspend inhibitors as well as idle
+(`gsm-manager.c`, `inhibitor_has_flag` returns `flags & flag`). It now passes
+the idle flag (8) alone, the flag Mozilla's `InhibitGNOME` raises for
+playback. Verified against the sources only; see Gaps.
+
+Installed on jco-monster-ng from `development` at `9c5c951` on 2026-10-28
+(`sudo ./install.sh --prefix=/usr/local`, then `./user_install.sh`, which
+restarted the user service at 15:03:29). The installed binary is the one the
+install built (md5 `4f9867f29fd3`); `~/.config/idle_detect.conf`, the helper
+scripts and `monitor_ttys=0` in `/etc/event_detect.conf` were untouched. The
+integration test run against `/usr/local/bin/idle_detect` passed all three
+cases. A sleep-only portal lock was then held for 15 minutes against the live
+daemon; the user was active for nearly the whole window, so the daemon never
+reached its 300 s idle threshold and the resume-despite-lock transition was not
+observed. The daemon's sends to `event_detect` were confirmed working after the
+restart by the pipe's write timestamps (one per second while the user was
+active, none while idle, and matching the shared-memory last-active time at
+15:05:17 and 15:08:29), since the daemon's own "working again" line never
+appeared; see the next section.
+
+### Log line flushing (0.9.2.2)
+
+`normal_log` wrote to `std::cout` without a flush. Stdout under systemd is a
+socket to the journal, which stdio buffers fully, so a daemon's own lines left
+the process only when an `error_log` line (`cerr` is tied to `cout`), a full
+4 KiB buffer or exit pushed them out, and the journal stamped the whole batch
+with that later moment. On jco-monster-ng all 29 "User became idle/active"
+lines from the 2026-10-24 to 10-28 run of the user daemon carry the single
+timestamp 2026-10-28 15:03:24, the moment the restart's pipe error flushed
+them; the 29 matching "Set BOINC client to run mode" lines from `dc_unpause`
+sit at their true times, since each script is its own process. `event_detect`
+uses the same logger.
+
+Reproduced with the daemon's stdout redirected to a file, which stdio buffers
+the same way, under an isolated config for an 8 s run, reading the file at 5 s
+while the daemon was still running:
+
+| logger | log level | in the file at 5 s | at exit |
+|---|---|---|---|
+| unflushed (0.9.2.1) | normal | 0 bytes | 22 lines, 1708 bytes |
+| unflushed (0.9.2.1) | debug | 12288 bytes, exactly three 4 KiB buffers | 232 lines, 19312 bytes |
+| flushed (0.9.2.2) | normal | 13 lines, 1256 bytes | 22 lines, 1708 bytes |
+| flushed (0.9.2.2) | debug | 176 lines, 14896 bytes | 232 lines, 19312 bytes |
+
+The fix is a `std::flush` after each line in `normal_log`, which `debug_log`
+shares; `error_log` already went through the unit-buffered `cerr`. Two unit
+tests, `NormalLog.FlushesEveryLine` and
+`DebugLog.FlushesWhenEnabledAndWritesNothingWhenDisabled`, point `cout` at a
+streambuf that counts sync calls; both fail against the unflushed header. The
+cost is one `write` per log line, and at normal level the daemons log a few
+lines per state change.
+
 ## Defects found and fixed during this testing
 
 | area | defect |
@@ -335,11 +439,16 @@ after it picks up this release.
 | FAH v8 | `fahctl` reports success while doing nothing on 8.1.18 |
 | install.sh | a shadowing unit elsewhere on the system silently won over the installed one |
 | install.sh | an already-running service was left executing a deleted binary after upgrade |
+| idle_detect | KDE inhibition query asked for the sleep policy (type 1), so any download pinned DC paused; GNOME query matched logout, switch-user and suspend inhibitors too |
+| both daemons | log lines buffered under systemd, so a run's state changes reached the journal as one batch stamped with the time of the next error line or exit |
 
 ## Gaps
 
 Stated explicitly rather than implied by omission.
 
+- **GNOME inhibition flag.** The change from `IsInhibited(15)` to `IsInhibited(8)`
+  is verified against the gnome-session and Mozilla sources, not against a live
+  GNOME session. No host in the fleet runs GNOME.
 - **Cold user-manager start.** The logout/login test on media-2 kept `user@1000`
   alive through an ssh session, so it exercised rediscovery by a *surviving*
   daemon. A login with no pre-existing session for that user — where the user

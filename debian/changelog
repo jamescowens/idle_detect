@@ -1,3 +1,15 @@
+idle-detect (0.9.2.2-1) unstable; urgency=medium
+
+  * Release 0.9.2.2.
+  * idle_detect: count only screen-idle inhibitions when deciding whether the
+    desktop is inhibited. A sleep-only lock (a download in progress) no longer
+    pins distributed computing paused; media playback still does.
+  * Flush every log line so the daemons' own lines reach the journal at the
+    time they are written instead of in a batch at the next error or exit.
+  * See https://github.com/jamescowens/idle_detect/releases for details.
+
+ -- James C. Owens <jamesowens@optonline.net>  Wed, 28 Oct 2026 16:35:57 -0400
+
 idle-detect (0.9.2.1-1) unstable; urgency=medium
 
   * Release 0.9.2.1.

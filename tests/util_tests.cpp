@@ -10,6 +10,8 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
+#include <sstream>
 #include <vector>
 
 namespace fs = std::filesystem;
@@ -608,4 +610,85 @@ TEST(FailureReportThrottle, ClampsACeilingBelowTheFloor)
 
     EXPECT_EQ(ReportedFailureOrdinals(throttle, 20), expected);
     EXPECT_EQ(throttle.Interval(), 4);
+}
+
+// ============================================================================
+// Logging
+// ============================================================================
+
+namespace {
+
+//! A stringbuf that counts how many times the stream asked it to sync, so a test can tell whether a log
+//! call flushed what it wrote.
+class SyncCountingBuf : public std::stringbuf
+{
+public:
+    int syncs = 0;
+
+protected:
+    int sync() override
+    {
+        ++syncs;
+        return std::stringbuf::sync();
+    }
+};
+
+//! Points std::cout at a SyncCountingBuf for the lifetime of the object and turns the timestamp prefix
+//! off so the captured text is predictable. Restores both on destruction.
+class CoutCapture
+{
+public:
+    CoutCapture()
+        : m_saved_buf(std::cout.rdbuf(&m_buf))
+        , m_saved_timestamps(g_log_timestamps.exchange(false))
+    {}
+
+    ~CoutCapture()
+    {
+        std::cout.rdbuf(m_saved_buf);
+        g_log_timestamps.store(m_saved_timestamps);
+    }
+
+    SyncCountingBuf& buf() { return m_buf; }
+
+private:
+    SyncCountingBuf m_buf;
+    std::streambuf* m_saved_buf;
+    bool m_saved_timestamps;
+};
+
+} // anonymous namespace
+
+TEST(NormalLog, FlushesEveryLine)
+{
+    CoutCapture capture;
+
+    // Under systemd stdout is a socket, which stdio buffers fully. Without a flush per line the daemon's
+    // own lines reach the journal only when something else (an error line, a full buffer, exit) pushes
+    // them out, and they all arrive carrying that later moment's timestamp.
+    normal_log("line %d", 1);
+    EXPECT_EQ(capture.buf().syncs, 1);
+    EXPECT_EQ(capture.buf().str(), "line 1\n");
+
+    normal_log("line %d", 2);
+    EXPECT_EQ(capture.buf().syncs, 2);
+    EXPECT_EQ(capture.buf().str(), "line 1\nline 2\n");
+}
+
+TEST(DebugLog, FlushesWhenEnabledAndWritesNothingWhenDisabled)
+{
+    CoutCapture capture;
+
+    const bool saved_debug = g_debug.exchange(false);
+
+    debug_log("hidden");
+    EXPECT_EQ(capture.buf().syncs, 0);
+    EXPECT_EQ(capture.buf().str(), "");
+
+    g_debug.store(true);
+    debug_log("shown");
+    EXPECT_EQ(capture.buf().syncs, 1);
+    EXPECT_EQ(capture.buf().str(), "shown\n");
+
+    g_debug.store(saved_debug);
 }

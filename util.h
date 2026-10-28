@@ -132,13 +132,17 @@ static inline std::string LogPrintStr(const char* fmt, const Args&... args)
 
 template <typename... Args>
 //!
-//! \brief LogPrintStr directed to cout.
+//! \brief LogPrintStr directed to cout, flushed after every line.
+//!
+//! Under systemd stdout is a socket to the journal, which stdio buffers fully. Without the flush a line
+//! leaves the process only when an error_log line (cerr is tied to cout), a full buffer or exit pushes it
+//! out, and the journal stamps every line in the batch with that later moment.
 //! \param fmt
 //! \param args
 //!
 void normal_log(const char* fmt, const Args&... args)
 {
-    std::cout << LogPrintStr(fmt, args...);
+    std::cout << LogPrintStr(fmt, args...) << std::flush;
 }
 
 template <typename... Args>
