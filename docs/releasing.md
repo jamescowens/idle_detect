@@ -28,6 +28,19 @@ dpkg-parsechangelog -l debian/changelog -S Version
 
 Set `g_version_datetime` to the date you actually expect to tag on.
 
+`dpkg-parsechangelog` is in `dpkg-dev`, which openSUSE does not ship, and the
+base `debian` container images do not include it either. When cutting from
+openSUSE, check the entry in a throwaway container (about a minute):
+
+```bash
+podman run --rm -v "$PWD/debian:/d:ro,Z" docker.io/library/debian:bookworm sh -c \
+  'apt-get -qq update >/dev/null && apt-get -qq install -y --no-install-recommends dpkg-dev >/dev/null; \
+   for f in Version Date Distribution; do dpkg-parsechangelog -l /d/changelog -S $f; done'
+```
+
+The date line must be RFC 2822 (`date -R` produces it), and the `.deb` workflow
+is the first thing that parses the entry otherwise, after the tag is pushed.
+
 ### 1.2 Packaging file-set audit — do not skip this
 
 **This is the check that would have prevented the 0.9.2.0 OBS breakage.** The RPM
