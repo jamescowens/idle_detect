@@ -1,4 +1,4 @@
-# Testing record — 0.9.2.0 and 0.9.2.1
+# Testing record — 0.9.2.0, 0.9.2.1 and 0.9.2.2
 
 What was tested before the 0.9.2.0 release, on what, and what it found. This is a
 record of work actually performed, not a test plan: everything below was run and
@@ -10,6 +10,13 @@ below: `dc_fah_v8` now selects the Folding@home v8 API by client version (see
 [Folding@home v8 control](#foldinghome-v8-control)), and `event_detect` no longer
 logs "No pointing devices" once a second on a machine without a mouse (see
 [event_detect without pointing devices](#event_detect-without-pointing-devices)).
+
+0.9.2.2 is a patch release with two fixes: `idle_detect` counts only
+screen-idle inhibitions (see
+[Desktop inhibition type](#desktop-inhibition-type-0922)), and both daemons
+flush every log line (see [Log line flushing](#log-line-flushing-0922)). The
+release itself is recorded under
+[0.9.2.2 release verification](#0922-release-verification).
 
 0.9.2.0 is largely a correctness release. The GUI-session-readiness rework touched
 session discovery, endpoint lifetime, and the control-script layer, so testing
@@ -427,6 +434,26 @@ streambuf that counts sync calls; both fail against the unflushed header. The
 cost is one `write` per log line, and at normal level the daemons log a few
 lines per state change.
 
+### 0.9.2.2 release verification
+
+Cut from `development` at `ce34327` on 2026-10-28, merged to `master` as
+`0e433d1` and tagged. CI was green on the tagged commit for gcc and clang. The
+`.deb` workflow built all 15 packages and attached 22 assets in 16 minutes,
+with no stall on `jammy / amd64` this time. OBS revision 120 built all 22
+`idle_detect` targets (Leap 15.6 and 16.0, Tumbleweed, Arch, Fedora 38 through
+Rawhide) in three minutes; every row reported `succeeded`, leaving only the
+known `Fedora_38 armv7l _repository broken` row, which names the repository,
+not the package. The release was published as latest at 20:56 UTC.
+
+`tests/integration/test_kde_inhibition.sh` was run against the binary built
+from the tagged sources once Chrome had released the audio and video locks it
+held for most of the afternoon (the test skips while PolicyAgent holds any
+inhibition): all three cases pass. The 0.9.2.2 RPM (`0.9.2.2-lp160.1.1`) was
+visible from media-2's `home_jamescowens` repository nine seconds after the
+16.0 build published. The upgrade there, and the reboot, were not performed
+from this session (see Gaps). jco-linux2 through jco-linux7 were unreachable
+at the time.
+
 ## Defects found and fixed during this testing
 
 | area | defect |
@@ -446,6 +473,10 @@ lines per state change.
 
 Stated explicitly rather than implied by omission.
 
+- **Post-release package upgrade not yet performed.** media-2 sees the 0.9.2.2
+  RPM but still runs `0.9.2.1-lp160.1.1`; the upgrade, service check and
+  reboot of step 5 in `docs/releasing.md` are outstanding. jco-monster-ng runs
+  the `9c5c951` source build, which has the inhibition fix but not the flush.
 - **GNOME inhibition flag.** The change from `IsInhibited(15)` to `IsInhibited(8)`
   is verified against the gnome-session and Mozilla sources, not against a live
   GNOME session. No host in the fleet runs GNOME.

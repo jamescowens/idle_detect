@@ -288,7 +288,8 @@ the cancelled run has fully wound down (poll `gh run view --json status` for
 `completed` first), and a re-run keeps the 14 good artifacts, so only the one job
 and the release job repeat. If it is slow but moving — check the current step
 with the `/actions/runs/<id>/attempts/<n>/jobs` API — let it finish rather than
-cancelling again.
+cancelling again. The 0.9.2.2 run completed all 15 jobs in 16 minutes with no
+stall, so the slowness is intermittent.
 
 **Contributors on the release page come from `@mentions`,** not commits. The repo
 Insights graph is separate, is commit-derived, is default-branch only, and its
