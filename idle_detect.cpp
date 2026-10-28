@@ -609,6 +609,10 @@ bool CheckKdeInhibition() {
     return is_inhibited;
 }
 
+// gnome-session inhibitor flags (gnome-session/gsm-inhibitor-flag.h): 1 = logout, 2 = switch user,
+// 4 = suspend, 8 = idle, 16 = automount. Only the idle flag means "do not treat the session as idle".
+constexpr guint32 GNOME_INHIBITOR_FLAG_IDLE = 8;
+
 // Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this from ShellMonitor.
 bool CheckGnomeInhibition() {
     // This function assumes it might be called even if not strictly a GNOME session,
@@ -632,8 +636,11 @@ bool CheckGnomeInhibition() {
         return false; // Cannot determine state, assume not inhibited
     }
 
-    // Flags: 1=logout, 2=user-switch, 4=suspend, 8=idle. Check if any are active.
-    guint32 flags_to_check = 1 | 2 | 4 | 8; // = 15
+    // IsInhibited(flags) is true when any inhibitor matches ANY of the flags passed. 0.9.2.1 and earlier
+    // passed all four (15), so an unsaved document (logout) or a download in progress (suspend) read as
+    // "the user is active" for as long as it was held. Only the idle flag belongs here; it is the flag
+    // browsers and media players raise for playback.
+    const guint32 flags_to_check = GNOME_INHIBITOR_FLAG_IDLE;
 
     const char* service_name = "org.gnome.SessionManager";
     const char* object_path = "/org/gnome/SessionManager";
