@@ -450,9 +450,16 @@ from the tagged sources once Chrome had released the audio and video locks it
 held for most of the afternoon (the test skips while PolicyAgent holds any
 inhibition): all three cases pass. The 0.9.2.2 RPM (`0.9.2.2-lp160.1.1`) was
 visible from media-2's `home_jamescowens` repository nine seconds after the
-16.0 build published. The upgrade there, and the reboot, were not performed
-from this session (see Gaps). jco-linux2 through jco-linux7 were unreachable
-at the time.
+16.0 build published. jco upgraded it by hand at 17:18 (`zypper up
+idle_detect`, then a restart of the user service): the package's own scriptlet
+restarted the system service at 17:18:59 and the user service came back at
+17:19:02, `zypper ps -s` found no process using deleted files, and
+`read_shmem_timestamps` reports 0.9.2.2. The journal there shows the flush on
+a host with no pointing device: the "No pointing devices" ladder lines from
+0.9.2.1 are stamped at 1, 3, 6 and 11 seconds after start, as the ladder
+specifies, rather than in a batch. Not rebooted; the unit placement did not
+change in this release and boot start on media-2 was verified at 0.9.2.0.
+jco-linux2 through jco-linux7 were unreachable at the time.
 
 Installed on jco-monster-ng from the tagged sources at 17:16 the same day
 (`sudo ./install.sh --prefix=/usr/local`, ten seconds including the rebuild,
@@ -489,10 +496,10 @@ at 17:16:22 and is updating once a second.
 
 Stated explicitly rather than implied by omission.
 
-- **Post-release package upgrade not yet performed.** media-2 sees the 0.9.2.2
-  RPM but still runs `0.9.2.1-lp160.1.1`; the upgrade, service check and
-  reboot of step 5 in `docs/releasing.md` are outstanding. jco-monster-ng runs
-  0.9.2.2 from a source install.
+- **0.9.2.2 boot start not re-verified by reboot.** media-2 was upgraded in
+  place and not rebooted; nothing in this release touches unit placement. The
+  rest of the fleet was unreachable when the release was cut and still runs
+  0.9.2.1.
 - **GNOME inhibition flag.** The change from `IsInhibited(15)` to `IsInhibited(8)`
   is verified against the gnome-session and Mozilla sources, not against a live
   GNOME session. No host in the fleet runs GNOME.
