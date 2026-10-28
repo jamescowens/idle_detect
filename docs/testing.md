@@ -454,6 +454,22 @@ visible from media-2's `home_jamescowens` repository nine seconds after the
 from this session (see Gaps). jco-linux2 through jco-linux7 were unreachable
 at the time.
 
+Installed on jco-monster-ng from the tagged sources at 17:16 the same day
+(`sudo ./install.sh --prefix=/usr/local`, ten seconds including the rebuild,
+then `./user_install.sh`). `read_shmem_timestamps` reports 0.9.2.2 - 20261028;
+the helper scripts, `~/.config/idle_detect.conf` and `monitor_ttys=0` were
+untouched. The system service restarted at 17:16:22 and the user service at
+17:16:57, and this time the user daemon started after the registration pipe
+existed, so the pipe error seen on the 15:03 restart did not recur. The flush
+shows directly in the journal: `event_detect`'s four startup lines are stamped
+within 60 ms of the unit's start, and the user daemon's fifteen lines in its
+first ten seconds carry their own times, 100 ms apart at startup and then one
+to five seconds apart. The daemon it replaced showed the old behavior one last
+time on its way out: its four "User became idle/active" lines from the
+afternoon all carry 17:16:17, the moment the system service's stop broke the
+pipe and an error line flushed them. The shared-memory segment was recreated
+at 17:16:22 and is updating once a second.
+
 ## Defects found and fixed during this testing
 
 | area | defect |
@@ -476,7 +492,7 @@ Stated explicitly rather than implied by omission.
 - **Post-release package upgrade not yet performed.** media-2 sees the 0.9.2.2
   RPM but still runs `0.9.2.1-lp160.1.1`; the upgrade, service check and
   reboot of step 5 in `docs/releasing.md` are outstanding. jco-monster-ng runs
-  the `9c5c951` source build, which has the inhibition fix but not the flush.
+  0.9.2.2 from a source install.
 - **GNOME inhibition flag.** The change from `IsInhibited(15)` to `IsInhibited(8)`
   is verified against the gnome-session and Mozilla sources, not against a live
   GNOME session. No host in the fleet runs GNOME.
