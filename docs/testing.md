@@ -323,7 +323,7 @@ it; it is the `Reset()` branch of the same ladder that the shared-memory and pip
 paths in `idle_detect` already use. The real confirmation is media-2's journal
 after it picks up this release.
 
-### Desktop inhibition type (development, after 0.9.2.1)
+### Desktop inhibition type (0.9.2.2)
 
 On jco-monster-ng (Plasma 6.4.2, Wayland) a Thunderbird download held BOINC at
 `never` and Folding@home paused from 2026-10-27 18:05 until Thunderbird was
@@ -393,7 +393,39 @@ observed. The daemon's sends to `event_detect` were confirmed working after the
 restart by the pipe's write timestamps (one per second while the user was
 active, none while idle, and matching the shared-memory last-active time at
 15:05:17 and 15:08:29), since the daemon's own "working again" line never
-appeared — see the buffering gap below.
+appeared; see the next section.
+
+### Log line flushing (0.9.2.2)
+
+`normal_log` wrote to `std::cout` without a flush. Stdout under systemd is a
+socket to the journal, which stdio buffers fully, so a daemon's own lines left
+the process only when an `error_log` line (`cerr` is tied to `cout`), a full
+4 KiB buffer or exit pushed them out, and the journal stamped the whole batch
+with that later moment. On jco-monster-ng all 29 "User became idle/active"
+lines from the 2026-10-24 to 10-28 run of the user daemon carry the single
+timestamp 2026-10-28 15:03:24, the moment the restart's pipe error flushed
+them; the 29 matching "Set BOINC client to run mode" lines from `dc_unpause`
+sit at their true times, since each script is its own process. `event_detect`
+uses the same logger.
+
+Reproduced with the daemon's stdout redirected to a file, which stdio buffers
+the same way, under an isolated config for an 8 s run, reading the file at 5 s
+while the daemon was still running:
+
+| logger | log level | in the file at 5 s | at exit |
+|---|---|---|---|
+| unflushed (0.9.2.1) | normal | 0 bytes | 22 lines, 1708 bytes |
+| unflushed (0.9.2.1) | debug | 12288 bytes, exactly three 4 KiB buffers | 232 lines, 19312 bytes |
+| flushed (0.9.2.2) | normal | 13 lines, 1256 bytes | 22 lines, 1708 bytes |
+| flushed (0.9.2.2) | debug | 176 lines, 14896 bytes | 232 lines, 19312 bytes |
+
+The fix is a `std::flush` after each line in `normal_log`, which `debug_log`
+shares; `error_log` already went through the unit-buffered `cerr`. Two unit
+tests, `NormalLog.FlushesEveryLine` and
+`DebugLog.FlushesWhenEnabledAndWritesNothingWhenDisabled`, point `cout` at a
+streambuf that counts sync calls; both fail against the unflushed header. The
+cost is one `write` per log line, and at normal level the daemons log a few
+lines per state change.
 
 ## Defects found and fixed during this testing
 
@@ -408,21 +440,12 @@ appeared — see the buffering gap below.
 | install.sh | a shadowing unit elsewhere on the system silently won over the installed one |
 | install.sh | an already-running service was left executing a deleted binary after upgrade |
 | idle_detect | KDE inhibition query asked for the sleep policy (type 1), so any download pinned DC paused; GNOME query matched logout, switch-user and suspend inhibitors too |
+| both daemons | log lines buffered under systemd, so a run's state changes reached the journal as one batch stamped with the time of the next error line or exit |
 
 ## Gaps
 
 Stated explicitly rather than implied by omission.
 
-- **Daemon log lines are buffered under systemd.** `normal_log` writes to
-  `std::cout` with no flush, and stdout under systemd is a socket, so the
-  daemon's own lines reach the journal only when an `error_log` line (which
-  goes through `std::cerr` and flushes `cout` first) or a full buffer pushes
-  them out, or at exit. Child-script lines are prompt because each script is
-  its own process. On jco-monster-ng all 29 "User became idle/active" lines
-  from the 2026-10-24 to 10-28 run carry the single timestamp 2026-10-28
-  15:03:24, the moment the restart error flushed them, while the 29 matching
-  "Set BOINC client to run mode" lines sit at their true times. Not fixed in
-  this change.
 - **GNOME inhibition flag.** The change from `IsInhibited(15)` to `IsInhibited(8)`
   is verified against the gnome-session and Mozilla sources, not against a live
   GNOME session. No host in the fleet runs GNOME.
