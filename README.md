@@ -212,7 +212,10 @@ Two processes, coordinated via a named pipe and POSIX shared memory:
   compositor and its XWayland display, say). Each is validated by
   connecting to it, never trusted from an environment variable, and the
   session's idle time is the smallest value any of them reports —
-  unless something is inhibiting idle, which wins outright.
+  unless something is inhibiting idle, which wins outright. Only an
+  *idle* inhibition counts (a video playing, `org.freedesktop.ScreenSaver`
+  held). Sleep, logout and switch-user inhibitions — a download in
+  progress, an unsaved document — do not keep the session "active".
 - Reports activity to `event_detect` via named pipe as
   `timestamp:USER_ACTIVE` messages
 

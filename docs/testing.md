@@ -323,6 +323,63 @@ it; it is the `Reset()` branch of the same ladder that the shared-memory and pip
 paths in `idle_detect` already use. The real confirmation is media-2's journal
 after it picks up this release.
 
+### Desktop inhibition type (development, after 0.9.2.1)
+
+On jco-monster-ng (Plasma 6.4.2, Wayland) a Thunderbird download held BOINC at
+`never` and Folding@home paused from 2026-10-27 18:05 until Thunderbird was
+restarted at 14:38 the next day. PolicyAgent listed one inhibition, reason
+"Download in progress"; `HasInhibition(1)` was true and `HasInhibition(4)`
+false. `CheckKdeInhibition()` queried type 1 under a comment calling it
+`ChangeScreenSettings`. PowerDevil's enum (`daemon/powerdevilpolicyagent.h`,
+v6.4.2) is `InterruptSession = 1`, `ChangeScreenSettings = 4`: type 1 is the
+sleep inhibit, which xdg-desktop-portal-kde raises for portal flag 4 (Suspend),
+the flag a browser or mail client holds for a background download. The admin
+session reports the same mechanism behind a udisks2 mdraid check pinning DC
+paused on 2026-07-05.
+
+Controls on the live session, a persistent D-Bus client holding each lock for
+14 s and PolicyAgent probed at 8 s:
+
+| lock | `HasInhibition(1)` | `HasInhibition(4)` |
+|---|---|---|
+| none | false | false |
+| `AddInhibition` type 1 | true | false |
+| `AddInhibition` type 4 | true | true |
+| portal `Inhibit` flags=4 (Suspend) | true | false |
+| portal `Inhibit` flags=8 (Idle) | true | true |
+| `org.freedesktop.ScreenSaver.Inhibit` | true | true |
+
+PolicyAgent adds `InterruptSession` implicitly behind every
+`ChangeScreenSettings` lock, so querying type 4 keeps every screen-idle lock
+and drops the sleep-only ones. A first run of the same controls with 5 s holds
+registered nothing at all: PolicyAgent enforces a new inhibition only after a
+5 s single-shot timer, which is also why `kde-inhibit --power` had looked like
+it registered nothing.
+
+`tests/integration/test_kde_inhibition.sh` takes each lock through
+`org.freedesktop.portal.Inhibit` and runs the daemon for 10 s with an isolated
+config (no control scripts, no `event_detect`). Against the 0.9.2.1 binary:
+
+```
+PASS: baseline: HasInhibition(type=1) not inhibited over 10 ticks, expected not inhibited
+FAIL: sleep-only: HasInhibition(type=1) inhibited (10 of 10 ticks) over 10 ticks, expected not inhibited
+PASS: screen-idle: HasInhibition(type=1) inhibited (10 of 10 ticks), expected inhibited
+```
+
+After the fix:
+
+```
+PASS: baseline: HasInhibition(type=4) not inhibited over 10 ticks, expected not inhibited
+PASS: sleep-only: HasInhibition(type=4) not inhibited over 10 ticks, expected not inhibited
+PASS: screen-idle: HasInhibition(type=4) inhibited (10 of 10 ticks), expected inhibited
+```
+
+The GNOME query had the same shape of defect: `IsInhibited(15)` matches
+logout, switch-user and suspend inhibitors as well as idle
+(`gsm-manager.c`, `inhibitor_has_flag` returns `flags & flag`). It now passes
+the idle flag (8) alone, the flag Mozilla's `InhibitGNOME` raises for
+playback. Verified against the sources only; see Gaps.
+
 ## Defects found and fixed during this testing
 
 | area | defect |
@@ -335,11 +392,15 @@ after it picks up this release.
 | FAH v8 | `fahctl` reports success while doing nothing on 8.1.18 |
 | install.sh | a shadowing unit elsewhere on the system silently won over the installed one |
 | install.sh | an already-running service was left executing a deleted binary after upgrade |
+| idle_detect | KDE inhibition query asked for the sleep policy (type 1), so any download pinned DC paused; GNOME query matched logout, switch-user and suspend inhibitors too |
 
 ## Gaps
 
 Stated explicitly rather than implied by omission.
 
+- **GNOME inhibition flag.** The change from `IsInhibited(15)` to `IsInhibited(8)`
+  is verified against the gnome-session and Mozilla sources, not against a live
+  GNOME session. No host in the fleet runs GNOME.
 - **Cold user-manager start.** The logout/login test on media-2 kept `user@1000`
   alive through an ssh session, so it exercised rediscovery by a *surviving*
   daemon. A login with no pre-existing session for that user — where the user

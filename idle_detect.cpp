@@ -532,11 +532,27 @@ int64_t GetIdleTimeKdeDBus() {
     return idle_time_seconds;
 }
 
+// PowerDevil's PolicyAgent::RequiredPolicy (plasma/powerdevil, daemon/powerdevilpolicyagent.h):
+// InterruptSession = 1, ChangeScreenSettings = 4. Only ChangeScreenSettings means "do not treat the session
+// as idle". InterruptSession is the sleep inhibit.
+constexpr guint32 KDE_POLICY_CHANGE_SCREEN_SETTINGS = 4;
+
 // Declared in idle_detect.h. Not static: idle_sources_system.cpp calls this from ShellMonitor.
 //
 // This is needed because ext_idle_notifier_v1 may not reflect D-Bus-level inhibitions (e.g. from video players
-// using org.freedesktop.ScreenSaver.Inhibit). The HasInhibition(1) call checks for ChangeScreenSettings
-// inhibitions (type 1), which prevent screen idle/blanking.
+// using org.freedesktop.ScreenSaver.Inhibit). The HasInhibition call asks PolicyAgent whether a
+// ChangeScreenSettings inhibition is held, which is the policy that keeps the screen from idling or blanking.
+//
+// It must query ChangeScreenSettings (4) and not InterruptSession (1). xdg-desktop-portal-kde maps portal
+// flag 4 (Suspend) to InterruptSession and portal flag 8 (Idle) to ChangeScreenSettings, and a browser or
+// mail client holds the Suspend flag alone for a background download. 0.9.2.1 and earlier queried type 1
+// and therefore reported "inhibited" for the whole life of any download, pinning distributed computing
+// paused. PolicyAgent adds InterruptSession implicitly whenever ChangeScreenSettings is added, so type 4 is
+// the discriminating query: true for screen-idle locks (portal flag 8, org.freedesktop.ScreenSaver.Inhibit,
+// video playback), false for sleep-only locks.
+//
+// PolicyAgent enforces a new inhibition only after a 5 s grace period, so HasInhibition reflects it after
+// that, not immediately. See tests/integration/test_kde_inhibition.sh.
 bool CheckKdeInhibition() {
     debug_log("INFO: %s: Checking KDE screen idle inhibitions via PolicyAgent D-Bus HasInhibition.", __func__);
 
@@ -561,8 +577,8 @@ bool CheckKdeInhibition() {
     const char* interface_name = "org.kde.Solid.PowerManagement.PolicyAgent";
     const char* method_name = "HasInhibition";
 
-    // Type 1 = ChangeScreenSettings (prevents screen idle/blanking)
-    guint32 inhibition_type = 1;
+    // ChangeScreenSettings, not InterruptSession. See the commentary above this function.
+    const guint32 inhibition_type = KDE_POLICY_CHANGE_SCREEN_SETTINGS;
 
     dbus_result = g_dbus_connection_call_sync(connection,
                                               service_name, object_path, interface_name, method_name,

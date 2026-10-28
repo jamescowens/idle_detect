@@ -144,6 +144,17 @@ produces no endpoints and no shell, so aggregation returns
 `IDLE_NO_GUI_SESSION` and the caller falls back to `event_detect`, which is
 where tty monitoring lives.
 
+**Which inhibitions count.** Only an inhibition of *idle* keeps the session
+active. On KDE the shell asks PolicyAgent `HasInhibition(4)`,
+`ChangeScreenSettings`: the policy xdg-desktop-portal-kde raises for portal
+flag 8 (Idle) and kwin raises for `org.freedesktop.ScreenSaver.Inhibit`. It
+does not ask for `InterruptSession` (1), the sleep inhibit a download holds,
+which PolicyAgent also adds implicitly behind every screen lock. On GNOME the
+shell asks `IsInhibited(8)`, the idle flag alone, not logout, switch-user or
+suspend. 0.9.2.1 and earlier asked for type 1 on KDE and all four flags on
+GNOME, so a download in progress or an unsaved document held distributed
+computing paused for as long as it existed.
+
 ### Dependency separation
 
 `idle_source`, `session_discovery` and `idle_source_pool` are dependency-free
