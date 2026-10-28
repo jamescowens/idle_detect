@@ -380,6 +380,21 @@ logout, switch-user and suspend inhibitors as well as idle
 the idle flag (8) alone, the flag Mozilla's `InhibitGNOME` raises for
 playback. Verified against the sources only; see Gaps.
 
+Installed on jco-monster-ng from `development` at `9c5c951` on 2026-10-28
+(`sudo ./install.sh --prefix=/usr/local`, then `./user_install.sh`, which
+restarted the user service at 15:03:29). The installed binary is the one the
+install built (md5 `4f9867f29fd3`); `~/.config/idle_detect.conf`, the helper
+scripts and `monitor_ttys=0` in `/etc/event_detect.conf` were untouched. The
+integration test run against `/usr/local/bin/idle_detect` passed all three
+cases. A sleep-only portal lock was then held for 15 minutes against the live
+daemon; the user was active for nearly the whole window, so the daemon never
+reached its 300 s idle threshold and the resume-despite-lock transition was not
+observed. The daemon's sends to `event_detect` were confirmed working after the
+restart by the pipe's write timestamps (one per second while the user was
+active, none while idle, and matching the shared-memory last-active time at
+15:05:17 and 15:08:29), since the daemon's own "working again" line never
+appeared — see the buffering gap below.
+
 ## Defects found and fixed during this testing
 
 | area | defect |
@@ -398,6 +413,16 @@ playback. Verified against the sources only; see Gaps.
 
 Stated explicitly rather than implied by omission.
 
+- **Daemon log lines are buffered under systemd.** `normal_log` writes to
+  `std::cout` with no flush, and stdout under systemd is a socket, so the
+  daemon's own lines reach the journal only when an `error_log` line (which
+  goes through `std::cerr` and flushes `cout` first) or a full buffer pushes
+  them out, or at exit. Child-script lines are prompt because each script is
+  its own process. On jco-monster-ng all 29 "User became idle/active" lines
+  from the 2026-10-24 to 10-28 run carry the single timestamp 2026-10-28
+  15:03:24, the moment the restart error flushed them, while the 29 matching
+  "Set BOINC client to run mode" lines sit at their true times. Not fixed in
+  this change.
 - **GNOME inhibition flag.** The change from `IsInhibited(15)` to `IsInhibited(8)`
   is verified against the gnome-session and Mozilla sources, not against a live
   GNOME session. No host in the fleet runs GNOME.
