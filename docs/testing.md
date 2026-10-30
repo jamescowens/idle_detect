@@ -457,9 +457,15 @@ restarted the system service at 17:18:59 and the user service came back at
 `read_shmem_timestamps` reports 0.9.2.2. The journal there shows the flush on
 a host with no pointing device: the "No pointing devices" ladder lines from
 0.9.2.1 are stamped at 1, 3, 6 and 11 seconds after start, as the ladder
-specifies, rather than in a batch. Not rebooted; the unit placement did not
-change in this release and boot start on media-2 was verified at 0.9.2.0.
-jco-linux2 through jco-linux7 were unreachable at the time.
+specifies, rather than in a batch. Rebooted on 2026-10-30 at 11:53: back on
+a new boot id after 122 s, kernel up at 11:55:09, `dc_event_detection`
+active at 11:55:23 with its first journal lines 60 ms later, and
+`read_shmem_timestamps` reporting 0.9.2.2. The user service was inactive
+after the reboot because the box came up at the sddm greeter: the unit is
+`WantedBy=graphical-session.target` and media-2 has no autologin, so it
+starts at the next desktop login, as it did after the previous boot (booted
+2026-10-17, first desktop login 2026-10-24). jco-linux2 through jco-linux7
+were unreachable at the time.
 
 Installed on jco-monster-ng from the tagged sources at 17:16 the same day
 (`sudo ./install.sh --prefix=/usr/local`, ten seconds including the rebuild,
@@ -496,10 +502,8 @@ at 17:16:22 and is updating once a second.
 
 Stated explicitly rather than implied by omission.
 
-- **0.9.2.2 boot start not re-verified by reboot.** media-2 was upgraded in
-  place and not rebooted; nothing in this release touches unit placement. The
-  rest of the fleet was unreachable when the release was cut and still runs
-  0.9.2.1.
+- **Only media-2 and jco-monster-ng run 0.9.2.2.** The rest of the fleet was
+  unreachable when the release was cut and still runs 0.9.2.1.
 - **GNOME inhibition flag.** The change from `IsInhibited(15)` to `IsInhibited(8)`
   is verified against the gnome-session and Mozilla sources, not against a live
   GNOME session. No host in the fleet runs GNOME.
