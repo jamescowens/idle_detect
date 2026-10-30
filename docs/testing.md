@@ -464,8 +464,11 @@ active at 11:55:23 with its first journal lines 60 ms later, and
 after the reboot because the box came up at the sddm greeter: the unit is
 `WantedBy=graphical-session.target` and media-2 has no autologin, so it
 starts at the next desktop login, as it did after the previous boot (booted
-2026-10-17, first desktop login 2026-10-24). jco-linux2 through jco-linux7
-were unreachable at the time.
+2026-10-17, first desktop login 2026-10-24). jco logged in at 11:59: the user
+manager started fresh with that login (the one my ssh session had created was
+gone by then), the unit started at 11:59:20.70, discovery found the Wayland
+socket 60 ms later, and the first ten minutes of journal hold no error line.
+jco-linux2 through jco-linux7 were unreachable at the time.
 
 Installed on jco-monster-ng from the tagged sources at 17:16 the same day
 (`sudo ./install.sh --prefix=/usr/local`, ten seconds including the rebuild,
@@ -507,11 +510,11 @@ Stated explicitly rather than implied by omission.
 - **GNOME inhibition flag.** The change from `IsInhibited(15)` to `IsInhibited(8)`
   is verified against the gnome-session and Mozilla sources, not against a live
   GNOME session. No host in the fleet runs GNOME.
-- **Cold user-manager start.** The logout/login test on media-2 kept `user@1000`
-  alive through an ssh session, so it exercised rediscovery by a *surviving*
-  daemon. A login with no pre-existing session for that user — where the user
-  manager itself starts fresh — has not been separately tested. It is the easier
-  case, since discovery then begins with a fully populated environment.
+- **Cold user-manager start** was covered incidentally by the media-2 reboot
+  on 2026-10-30 (see [0.9.2.2 release verification](#0922-release-verification)):
+  the user manager started with the desktop login and discovery found the
+  Wayland socket on the first pass. The deliberate logout/login test before
+  0.9.2.0 had only exercised rediscovery by a surviving daemon.
 - **Boot verification is not fleet-wide.** Placement is verified everywhere;
   boot-start after the final change was verified by reboot on media-2 and
   jco-linux3 only.
